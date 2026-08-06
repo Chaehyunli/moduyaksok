@@ -16,14 +16,16 @@
 
 ```
 moduyaksok/
-├── docs/       PRD, ERD, API 명세서, 기능명세서, 기술설계, 유저플로우, 와이어프레임, 코딩컨벤션
-├── backend/    FastAPI 서버
-├── frontend/   Vue 3 앱
-└── db/         개발용 Postgres docker compose
+├── docs/                 PRD, ERD, API 명세서, 기능명세서, 기술설계, 유저플로우, 와이어프레임, 코딩컨벤션
+├── moduyaksok-backend/   FastAPI 서버
+├── moduyaksok-frontend/  Vue 3 앱
+└── moduyaksok-db/        개발용 Postgres docker compose
 ```
 
 각 폴더 하위 README/문서:
-- [`frontend/README.md`](frontend/README.md) — 디자인 시스템, 화면별 와이어프레임·컴포넌트 매핑
+- [`moduyaksok-backend/README.md`](moduyaksok-backend/README.md) — 실행, 환경변수, 마이그레이션, 개발 도구
+- [`moduyaksok-db/README.md`](moduyaksok-db/README.md) — DB 컨테이너 실행/초기화
+- [`moduyaksok-frontend/README.md`](moduyaksok-frontend/README.md) — 디자인 시스템, 화면별 와이어프레임·컴포넌트 매핑
 - [`docs/기술설계_2026-08-06.md`](docs/기술설계_2026-08-06.md) — 아키텍처, DB 스키마, AI 파이프라인 설계
 - [`docs/ERD_2026-08-06.md`](docs/ERD_2026-08-06.md) — 테이블 명세
 - [`docs/API명세서_2026-08-06.md`](docs/API명세서_2026-08-06.md) — 엔드포인트 명세
@@ -33,17 +35,18 @@ moduyaksok/
 
 ```bash
 # DB (터미널 1)
-cd db && docker compose up -d
+cd moduyaksok-db && docker compose up -d
 
 # 백엔드 (터미널 2)
-cd backend
+cd moduyaksok-backend
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+alembic upgrade head
 uvicorn app.main:app --reload
 
 # 프런트엔드 (터미널 3)
-cd frontend
+cd moduyaksok-frontend
 npm install
 cp .env.example .env
 npm run dev
@@ -56,7 +59,7 @@ npm run dev
 ## 백엔드 개발 도구
 
 ```bash
-cd backend && source .venv/bin/activate
+cd moduyaksok-backend && source .venv/bin/activate
 pip install -r requirements-dev.txt   # ruff, pytest, pre-commit
 pre-commit install                     # 최초 1회 — 커밋 시 ruff 자동 실행
 

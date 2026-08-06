@@ -1,6 +1,6 @@
 # 모두약속 — 프런트엔드
 
-Vue 3 + TypeScript + Vite. 백엔드는 `../backend` (FastAPI), DB는 `../db` (docker compose) 참고.
+Vue 3 + TypeScript + Vite. 백엔드는 `../moduyaksok-backend` (FastAPI), DB는 `../moduyaksok-db` (docker compose) 참고.
 
 ## 실행
 
