@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: moduyaksok-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: moduyaksok
+      POSTGRES_PASSWORD: moduyaksok
+      POSTGRES_DB: moduyaksok
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
