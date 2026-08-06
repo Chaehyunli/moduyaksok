@@ -4,6 +4,7 @@
 # 작성일      : 2026-08-06
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-06, provider 기본값 제거, 등록 시 Claude/GPT 중 선택 필수로 변경
+# 2026-08-06, __tablename__ 명시 (SQLModel 기본 테이블명이 ERD의 snake_case와 불일치해서 수정)
 # ------------------------------------------------------------------
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -12,6 +13,8 @@ from sqlmodel import Field, SQLModel
 
 
 class LLMCredential(SQLModel, table=True):
+    __tablename__ = "llm_credential"
+
     id: UUID = Field(primary_key=True, default_factory=uuid4)
     user_id: UUID = Field(foreign_key="user.id", unique=True)
     provider: str  # "anthropic" | "openai" — API 요청 스키마(Pydantic Literal)에서 값 제한
