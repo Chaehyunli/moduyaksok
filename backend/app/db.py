@@ -5,7 +5,7 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 #
 # ------------------------------------------------------------------
-from sqlmodel import SQLModel, Session, create_engine
+from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
 

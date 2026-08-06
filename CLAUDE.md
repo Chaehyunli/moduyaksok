@@ -17,7 +17,17 @@ cd backend && source .venv/bin/activate && uvicorn app.main:app --reload
 # 프런트엔드 (터미널 3)
 cd frontend && npm run dev
 ```
-백엔드는 `http://localhost:8000`, 프런트는 `http://localhost:5173`, DB는 `localhost:5432`(`moduyaksok`/`moduyaksok`) 기준으로 설정되어 있음.
+백엔드는 `http://localhost:8000`, 프런트는 `http://localhost:5173`, DB는 `localhost:5433`(`moduyaksok`/`moduyaksok`, 로컬 Homebrew Postgres와 포트 충돌 피하려고 5433 사용) 기준으로 설정되어 있음.
+
+## 백엔드 개발 도구
+```bash
+cd backend && source .venv/bin/activate
+pip install -r requirements-dev.txt   # ruff, pytest, pre-commit 포함
+pre-commit install                     # 최초 1회, 커밋 시 ruff 자동 실행
+
+ruff check . && ruff format .          # lint + format
+pytest -q                              # 테스트 (DB 컨테이너 켜져 있어야 함)
+```
 
 ## 개발 시 참고
 - 아키텍처/DB 스키마/AI 파이프라인 설계는 `docs/기술설계_2026-08-06.md` 참고
