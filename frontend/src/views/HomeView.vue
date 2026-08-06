@@ -33,7 +33,7 @@ const steps = [
           모두약속
           <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
         </div>
-        <DoodleButton variant="ghost" class="!px-4 !py-1.5 !text-base">시작하기</DoodleButton>
+        <DoodleButton variant="ghost" size="sm">시작하기</DoodleButton>
       </header>
 
       <!-- 히어로 -->
