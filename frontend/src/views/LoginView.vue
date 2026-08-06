@@ -3,7 +3,6 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
-import DoodleUnderline from '../components/doodle/DoodleUnderline.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,10 +23,6 @@ async function loginWithGoogle() {
 <template>
   <div class="notebook-bg flex min-h-dvh items-center justify-center px-6">
     <div class="w-full max-w-sm text-center">
-      <div class="relative mb-10 inline-block font-hand text-2xl text-ink">
-        모두약속
-        <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
-      </div>
       <p class="mb-8 font-hand text-lg text-ink/70">구글 계정으로 로그인하고 시작해요</p>
       <DoodleButton class="w-full justify-center" :disabled="loading" @click="loginWithGoogle">
         {{ loading ? '로그인 중...' : '구글로 로그인' }}

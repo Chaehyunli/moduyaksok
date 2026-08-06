@@ -32,12 +32,8 @@ const steps = [
 <template>
   <div class="notebook-bg min-h-dvh">
     <div class="mx-auto max-w-5xl px-6">
-      <!-- 네비게이션 -->
-      <header class="flex h-16 items-center justify-between">
-        <div class="relative font-hand text-xl text-ink">
-          모두약속
-          <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
-        </div>
+      <!-- 네비게이션 (로고는 전역 고정 헤더에 있음) -->
+      <header class="flex h-16 items-center justify-end">
         <DoodleButton v-if="store.loggedIn" variant="ghost" size="sm" @click="router.push('/settings')">설정</DoodleButton>
         <DoodleButton v-else variant="ghost" size="sm" @click="router.push('/new')">시작하기</DoodleButton>
       </header>

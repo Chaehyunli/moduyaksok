@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
-import DoodleUnderline from '../components/doodle/DoodleUnderline.vue'
 
 const route = useRoute()
 const store = useAppStore()
@@ -16,11 +15,6 @@ const candidate = computed(() => (route.params.slug === store.shareSlug ? store.
 <template>
   <div class="notebook-bg min-h-dvh px-6 py-10">
     <div class="mx-auto max-w-lg">
-      <div class="relative mb-8 inline-block font-hand text-xl text-ink">
-        모두약속
-        <DoodleUnderline class="absolute -bottom-1 left-0 h-2 w-full text-red" />
-      </div>
-
       <template v-if="candidate">
         <h1 class="mb-1 font-hand text-2xl text-ink">{{ candidate.title }}</h1>
         <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>
