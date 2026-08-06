@@ -1,9 +1,14 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
+import { useAppStore } from '../stores/app'
 import DoodleArrow from '../components/doodle/DoodleArrow.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleStar from '../components/doodle/DoodleStar.vue'
 import DoodleUnderline from '../components/doodle/DoodleUnderline.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
+
+const router = useRouter()
+const store = useAppStore()
 
 const steps = [
   {
@@ -33,7 +38,8 @@ const steps = [
           모두약속
           <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
         </div>
-        <DoodleButton variant="ghost" size="sm">시작하기</DoodleButton>
+        <DoodleButton v-if="store.loggedIn" variant="ghost" size="sm" @click="router.push('/settings')">설정</DoodleButton>
+        <DoodleButton v-else variant="ghost" size="sm" @click="router.push('/new')">시작하기</DoodleButton>
       </header>
 
       <!-- 히어로 -->
@@ -56,7 +62,7 @@ const steps = [
 
         <div class="relative mt-8 inline-block">
           <DoodleArrow class="pointer-events-none absolute -left-24 -top-14 hidden h-16 w-24 -rotate-[10deg] text-ink/70 md:block" />
-          <DoodleButton>일정 만들기 시작</DoodleButton>
+          <DoodleButton @click="router.push('/new')">일정 만들기 시작</DoodleButton>
         </div>
       </section>
 

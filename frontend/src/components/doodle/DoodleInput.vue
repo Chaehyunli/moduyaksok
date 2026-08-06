@@ -1,7 +1,7 @@
 <script setup lang="ts">
-withDefaults(
+const props = withDefaults(
   defineProps<{
-    modelValue?: string
+    modelValue?: string | number
     type?: string
     placeholder?: string
     label?: string
@@ -9,7 +9,12 @@ withDefaults(
   }>(),
   { modelValue: '', type: 'text' },
 )
-defineEmits<{ 'update:modelValue': [value: string] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: string | number] }>()
+
+function onInput(event: Event) {
+  const raw = (event.target as HTMLInputElement).value
+  emit('update:modelValue', props.type === 'number' ? Number(raw) : raw)
+}
 </script>
 
 <template>
@@ -21,7 +26,7 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
       :placeholder="placeholder"
       class="doodle-wobble w-full rounded-[2px] border-[2.5px] bg-paper px-4 py-2.5 text-lg text-ink placeholder:text-ink/40 focus:outline-none focus:ring-2 focus:ring-red/50"
       :class="error ? 'border-red' : 'border-ink'"
-      @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+      @input="onInput"
     />
     <span v-if="error" class="mt-1 block text-sm text-red">{{ error }}</span>
   </label>
