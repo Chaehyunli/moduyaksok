@@ -6,6 +6,7 @@ psycopg[binary]
 pydantic-settings
 python-jose[cryptography]
 google-auth
+requests
 cryptography
 anthropic
 openai

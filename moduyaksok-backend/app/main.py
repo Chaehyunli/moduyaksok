@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.models  # noqa: F401 — SQLModel 메타데이터에 테이블 등록
-from app.routers import health
+from app.routers import auth, health
 
 app = FastAPI(title="모두약속 API")
 
@@ -23,3 +23,4 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
