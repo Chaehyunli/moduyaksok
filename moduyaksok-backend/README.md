@@ -26,6 +26,12 @@ uvicorn app.main:app --reload
 | `CREDENTIAL_ENCRYPTION_KEY` | BYOK 키 암호화용 Fernet 키. 생성: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `ANTHROPIC_API_KEY` | 개발자 본인 키 (개발 편의용 폴백, `ENV=development`에서만 사용) |
 
+> **알아둘 점**: `CREDENTIAL_ENCRYPTION_KEY`를 가진 사람(지금은 이 `.env`에 접근 가능한
+> 사람)은 DB에 저장된 어떤 사용자의 BYOK 키든 복호화할 수 있다. 이 구조적 한계와
+> 검토했던 대안(클라이언트 사이드 호출, PIN 기반 envelope encryption 등), 왜 지금은
+> 구조를 안 바꾸기로 했는지는 [`docs/기술설계_2026-08-06.md` §3.4](../docs/기술설계_2026-08-06.md)
+> 참고.
+
 ## 구조
 
 ```
@@ -68,10 +74,10 @@ tests/           pytest
 |---|---|---|---|
 | `models.py` | - | - | ✅ provider(`anthropic`/`openai`/`upstage`) × `ModelTier`(LOW/MID/HIGH) → 모델 ID 매핑, `get_model()` |
 | `schemas.py` | - | - | ✅ 단계 간 입출력 Pydantic 모델 (`NormalizedConditions`, `CandidateDraft`, `ScheduleResponse` 등) |
-| `normalize.py` | Step1 조건 정규화 | LOW | ✅ 구현 완료. `structured_llm.call_structured`로 liked_text/disliked_text만 태그 추출, 나머지 필드는 그대로 조립. 실제 Solar 키로 end-to-end 확인함 |
-| `generate.py` | Step2 후보 생성 (Fan-out N=3) | MID | ⬜ 미구현 |
-| `enrich.py` | Step3 이동 동선 보강 | - | ⬜ 미구현. LLM 안 씀 (네이버 지도 Directions API) |
-| `synthesize.py` | Step4 검증·병합 (Aggregator) | HIGH | ⬜ 미구현. 후보 간 비교(유사도 검사 포함)가 필요해 1번 호출에 3개를 같이 넣음. 랭킹 없이 동등한 3개 확정, why_recommended만 생성 |
+| `normalize_step1.py` | Step1 조건 정규화 | MID | ✅ 구현 완료. `structured_llm.call_structured`로 liked_text/disliked_text만 태그(PreferenceTag) 추출, 나머지 필드는 그대로 조립. RTF+few-shot 프롬프트. 처음엔 LOW로 시작했으나 verifiable 필드 추가로 스키마가 복잡해지자 LOW(solar-mini)가 빈 입력에서 few-shot 예시를 베끼는 문제가 DeepEval로 실측돼 MID(solar-pro)로 격상, 골든셋 9/9 통과 |
+| `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ⬜ 미구현 |
+| `enrich_step3.py` | Step3 이동 동선 보강 | - | ⬜ 미구현. LLM 안 씀 (네이버 지도 Directions API) |
+| `synthesize_step4.py` | Step4 검증·병합 (Aggregator) | HIGH | ⬜ 미구현. 후보 간 비교(유사도 검사 포함)가 필요해 1번 호출에 3개를 같이 넣음. 랭킹 없이 동등한 3개 확정, why_recommended만 생성 |
 
 ## 모델 (`app/models/`)
 
@@ -102,7 +108,47 @@ pip install -r requirements-dev.txt   # ruff, pytest, pre-commit
 pre-commit install                     # 최초 1회 — 커밋 시 ruff 자동 실행
 
 ruff check . && ruff format .          # lint + format
-pytest -q                              # 테스트 (DB 컨테이너 켜져 있어야 함)
+pytest -q                              # 유닛 테스트 (DB 컨테이너 켜져 있어야 함)
 ```
 
 파일 헤더 주석, 네이밍 규칙은 [`../docs/코딩컨벤션_2026-08-06.md`](../docs/코딩컨벤션_2026-08-06.md) 참고.
+
+## 테스트 — 유닛 테스트 vs 파이프라인 성능평가(DeepEval)
+
+두 종류가 완전히 분리돼 있다.
+
+**유닛 테스트 (`tests/*.py`, `pytest` 기본 실행)** — provider SDK를 `monkeypatch`로
+mock. 네트워크 안 타고, 비용 안 들고, 실제 API 키 없어도 항상 돌아간다. 코드가
+"입력을 올바른 형태로 만들고 응답을 올바르게 파싱하는지"만 검증 — 모델이 실제로
+좋은 답을 주는지는 이 테스트 범위 밖.
+
+```bash
+pytest -q          # 전체 유닛 테스트 (eval은 자동 제외됨)
+pytest -q -k credential   # 특정 모듈만
+```
+
+**파이프라인 성능평가 (`tests/eval/*.py`, `pytest -m eval`)** — mock 없이 실제 LLM을
+호출해서 "이 단계의 판단이 실제로 괜찮은가"를 [DeepEval](https://deepeval.com/)의
+`GEval`(LLM-judge) 메트릭으로 채점한다. 골든 데이터셋(`tests/eval/golden_step*.py`)에
+현실적인 입력을 미리 만들어두고, 프롬프트나 모델을 바꿀 때마다 같은 세트로 다시
+돌려서 회귀를 잡는 용도 — 일회성 점검이 아니라 회귀 테스트.
+
+```bash
+pytest -m eval tests/eval -v                              # 전체 파이프라인 평가
+pytest -m eval tests/eval/test_step1_normalize_eval.py -v # Step1만
+```
+
+- 기본 `pytest`/`pytest -q`에서 자동으로 빠진다 (`pyproject.toml`의
+  `addopts = "-m 'not eval'"`) — 실제 API 키로 과금되는 테스트라 일반 개발 루프와
+  분리했다.
+- 쓰는 키는 사용자 BYOK 키와 무관한 **평가 전용** 키다: `.env`의
+  `DEEPEVAL_UPSTAGE_API_KEY` → `DEEPEVAL_OPENAI_API_KEY` → `DEEPEVAL_ANTHROPIC_API_KEY`
+  순으로 값이 있고 실제로 동작하는(`ping_provider`로 확인) 첫 번째 키를 자동으로
+  골라 쓴다(`tests/eval/conftest.py`의 `resolve_eval_credential()`). 지금은
+  Upstage 키만 채워져 있음 — 나중에 다른 키로 바꾸고 싶으면 `.env` 값만 채우면
+  되고 순서/로직은 안 바뀐다.
+- 같은 키가 "평가 대상 파이프라인 호출"과 "GEval judge"에 둘 다 쓰인다 — provider가
+  하나뿐인 지금은 자기 자신을 채점하는 셈이라는 한계가 있음, 여러 키가 갖춰지면
+  개선 여지 있음.
+- 단계 늘어날 때마다 `tests/eval/test_step{N}_*_eval.py` 파일을 추가하는 방식으로
+  확장 — 파일 단위로 원하는 단계만 골라 돌릴 수 있음.
