@@ -4,11 +4,13 @@
 #              LLM이 실제로 잘 뽑는지가 아니라 우리 조립 로직을 검증한다.
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-07, liked_tags/disliked_tags가 PreferenceTag(verifiable 포함)로 바뀐 것
+#             반영
 # ------------------------------------------------------------------
 from datetime import datetime
 
-from app.pipeline.normalize import _ExtractedTags, normalize_conditions
+from app.pipeline.normalize_step1 import _ExtractedTags, normalize_conditions
+from app.pipeline.schemas import PreferenceTag
 
 _RAW_INPUT = {
     "purpose": "date",
@@ -20,13 +22,18 @@ _RAW_INPUT = {
     "budget_per_person": 50000,
 }
 
+_SAMPLE_LIKED = [
+    PreferenceTag(tag="콩국수", verifiable=True),
+    PreferenceTag(tag="텐동", verifiable=True),
+    PreferenceTag(tag="와플", verifiable=True),
+]
+_SAMPLE_DISLIKED = [PreferenceTag(tag="해산물", verifiable=True)]
+
 
 def test_normalize_conditions_passes_through_already_structured_fields(monkeypatch):
     monkeypatch.setattr(
-        "app.pipeline.normalize.call_structured",
-        lambda **kwargs: _ExtractedTags(
-            liked_tags=["콩국수", "텐동", "와플"], disliked_tags=["해산물"]
-        ),
+        "app.pipeline.normalize_step1.call_structured",
+        lambda **kwargs: _ExtractedTags(liked_tags=_SAMPLE_LIKED, disliked_tags=_SAMPLE_DISLIKED),
     )
 
     result = normalize_conditions("anthropic", "sk-ant-fake", _RAW_INPUT)
@@ -40,16 +47,30 @@ def test_normalize_conditions_passes_through_already_structured_fields(monkeypat
 
 def test_normalize_conditions_uses_llm_extracted_tags(monkeypatch):
     monkeypatch.setattr(
-        "app.pipeline.normalize.call_structured",
-        lambda **kwargs: _ExtractedTags(
-            liked_tags=["콩국수", "텐동", "와플"], disliked_tags=["해산물"]
-        ),
+        "app.pipeline.normalize_step1.call_structured",
+        lambda **kwargs: _ExtractedTags(liked_tags=_SAMPLE_LIKED, disliked_tags=_SAMPLE_DISLIKED),
     )
 
     result = normalize_conditions("anthropic", "sk-ant-fake", _RAW_INPUT)
 
-    assert result.liked_tags == ["콩국수", "텐동", "와플"]
-    assert result.disliked_tags == ["해산물"]
+    assert result.liked_tags == _SAMPLE_LIKED
+    assert result.disliked_tags == _SAMPLE_DISLIKED
+
+
+def test_normalize_conditions_preserves_verifiable_flag(monkeypatch):
+    mixed = [
+        PreferenceTag(tag="해산물", verifiable=True),
+        PreferenceTag(tag="사람 많은 곳", verifiable=False),
+    ]
+    monkeypatch.setattr(
+        "app.pipeline.normalize_step1.call_structured",
+        lambda **kwargs: _ExtractedTags(liked_tags=[], disliked_tags=mixed),
+    )
+
+    result = normalize_conditions("anthropic", "sk-ant-fake", _RAW_INPUT)
+
+    assert result.disliked_tags[0].verifiable is True
+    assert result.disliked_tags[1].verifiable is False
 
 
 def test_normalize_conditions_passes_correct_tier_model_and_provider(monkeypatch):
@@ -59,7 +80,7 @@ def test_normalize_conditions_passes_correct_tier_model_and_provider(monkeypatch
         captured.update(kwargs)
         return _ExtractedTags(liked_tags=[], disliked_tags=[])
 
-    monkeypatch.setattr("app.pipeline.normalize.call_structured", fake_call_structured)
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fake_call_structured)
 
     normalize_conditions("upstage", "up-fake", _RAW_INPUT)
 
@@ -77,7 +98,7 @@ def test_normalize_conditions_handles_empty_preference_text(monkeypatch):
         captured.update(kwargs)
         return _ExtractedTags(liked_tags=[], disliked_tags=[])
 
-    monkeypatch.setattr("app.pipeline.normalize.call_structured", fake_call_structured)
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fake_call_structured)
 
     raw = {**_RAW_INPUT, "liked_text": "", "disliked_text": ""}
     result = normalize_conditions("anthropic", "sk-ant-fake", raw)

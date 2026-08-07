@@ -4,7 +4,10 @@
 #              docs/API명세서_2026-08-06.md POST /schedules 기준)
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-07, liked_tags/disliked_tags를 list[str] -> list[PreferenceTag]로 변경.
+#             "해산물"처럼 장소 카테고리로 확인 가능한 태그와 "사람 많은 곳"처럼
+#             확인할 데이터가 없는 주관적 태그를 구분해서 Step2에 넘겨야, Step2가
+#             전자는 확실히 보장(필터)하고 후자는 참고만(소프트 신호) 하게 만들 수 있음.
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -14,13 +17,22 @@ from pydantic import BaseModel
 # ── Step 1. 조건 정규화 (normalize_conditions) 출력 ────────────────────────
 
 
+class PreferenceTag(BaseModel):
+    tag: str
+    # place_candidates의 카테고리/이름 같은 데이터로 확인 가능한 객관적 태그면 True
+    # (예: "해산물", "파스타", "스타벅스"). 분위기/혼잡도처럼 확인할 데이터가 없는
+    # 주관적 태그면 False (예: "사람 많은 곳", "조용한 분위기"). Step2가 이 값으로
+    # "반드시 지킬 것"과 "참고만 할 것"을 구분한다.
+    verifiable: bool
+
+
 class NormalizedConditions(BaseModel):
     purpose: Literal["date", "friends", "family", "party", "other"]
     headcount: int
     time_range: tuple[datetime, datetime]
     region: str
-    liked_tags: list[str]
-    disliked_tags: list[str]
+    liked_tags: list[PreferenceTag]
+    disliked_tags: list[PreferenceTag]
     budget_per_person: int
 
 
