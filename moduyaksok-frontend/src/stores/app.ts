@@ -59,7 +59,7 @@ export const useAppStore = defineStore('app', {
     loggedIn: !!localStorage.getItem('access_token'),
     userName: localStorage.getItem('user_name') ?? '',
     apiKeyRegistered: false,
-    apiKeyProvider: null as 'anthropic' | 'openai' | null,
+    apiKeyProvider: null as 'anthropic' | 'openai' | 'upstage' | null,
     apiKeyMasked: '',
     conditions: null as Conditions | null,
     candidates: [] as Candidate[],
@@ -84,7 +84,7 @@ export const useAppStore = defineStore('app', {
       this.loggedIn = false
       this.userName = ''
     },
-    selectProvider(provider: 'anthropic' | 'openai') {
+    selectProvider(provider: 'anthropic' | 'openai' | 'upstage') {
       this.apiKeyProvider = provider
     },
     saveApiKey(rawKey: string) {

@@ -9,7 +9,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useAppStore()
 
-const provider = ref<'anthropic' | 'openai'>(store.apiKeyProvider ?? 'anthropic')
+const provider = ref<'anthropic' | 'openai' | 'upstage'>(store.apiKeyProvider ?? 'anthropic')
 
 function next() {
   store.selectProvider(provider.value)
@@ -35,6 +35,12 @@ function next() {
           subtitle="OpenAI · platform.openai.com에서 키 발급"
           :selected="provider === 'openai'"
           @select="provider = 'openai'"
+        />
+        <DoodleSelectCard
+          title="Solar"
+          subtitle="Upstage · console.upstage.ai에서 키 발급"
+          :selected="provider === 'upstage'"
+          @select="provider = 'upstage'"
         />
       </div>
 

@@ -9,6 +9,8 @@ import DoodleDivider from '../../components/doodle/DoodleDivider.vue'
 const router = useRouter()
 const store = useAppStore()
 
+const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar' } as const
+
 function removeKey() {
   store.clearApiKey()
 }
@@ -24,7 +26,7 @@ function removeKey() {
 
       <DoodleCard v-if="store.apiKeyRegistered" class="space-y-4">
         <div class="flex items-center gap-2">
-          <DoodleBadge tone="ok">{{ store.apiKeyProvider === 'anthropic' ? 'Claude' : 'GPT' }}</DoodleBadge>
+          <DoodleBadge tone="ok">{{ providerNames[store.apiKeyProvider ?? 'anthropic'] }}</DoodleBadge>
         </div>
         <p class="font-hand text-lg text-ink">{{ store.apiKeyMasked }}</p>
         <DoodleDivider />
