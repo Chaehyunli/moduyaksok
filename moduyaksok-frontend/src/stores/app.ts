@@ -58,9 +58,13 @@ export const useAppStore = defineStore('app', {
   state: () => ({
     loggedIn: !!localStorage.getItem('access_token'),
     userName: localStorage.getItem('user_name') ?? '',
-    apiKeyRegistered: false,
-    apiKeyProvider: null as 'anthropic' | 'openai' | 'upstage' | null,
-    apiKeyMasked: '',
+    apiKeyRegistered: !!localStorage.getItem('api_key_masked'),
+    apiKeyProvider: (localStorage.getItem('api_key_provider') || null) as
+      | 'anthropic'
+      | 'openai'
+      | 'upstage'
+      | null,
+    apiKeyMasked: localStorage.getItem('api_key_masked') ?? '',
     conditions: null as Conditions | null,
     candidates: [] as Candidate[],
     selectedCandidateId: null as string | null,
@@ -81,17 +85,26 @@ export const useAppStore = defineStore('app', {
     logout() {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user_name')
+      localStorage.removeItem('api_key_masked')
+      localStorage.removeItem('api_key_provider')
       this.loggedIn = false
       this.userName = ''
+      this.apiKeyRegistered = false
+      this.apiKeyProvider = null
+      this.apiKeyMasked = ''
     },
     selectProvider(provider: 'anthropic' | 'openai' | 'upstage') {
       this.apiKeyProvider = provider
     },
     saveApiKey(maskedKey: string) {
+      localStorage.setItem('api_key_masked', maskedKey)
+      localStorage.setItem('api_key_provider', this.apiKeyProvider ?? '')
       this.apiKeyRegistered = true
       this.apiKeyMasked = maskedKey
     },
     clearApiKey() {
+      localStorage.removeItem('api_key_masked')
+      localStorage.removeItem('api_key_provider')
       this.apiKeyRegistered = false
       this.apiKeyProvider = null
       this.apiKeyMasked = ''
