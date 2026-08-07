@@ -15,10 +15,11 @@
 | Swagger 설정 (앱 설명, 라우터별 태그) | ✅ | 2026-08-07 | - | `/docs`에서 라우터가 헬스체크/인증/API 키로 그룹핑됨 |
 | AI 파이프라인 모델 티어 설정 (`pipeline/models.py`) | ✅ | 2026-08-07 | 🔴 | provider×LOW/MID/HIGH → 모델 ID. openai/upstage 모델명은 임시값, 실제 연동 전 최신 모델명 확인 필요 |
 | AI 파이프라인 스키마·단계 스캐폴딩 (`pipeline/schemas.py` 등) | ✅ | 2026-08-07 | 🔴 | Step1~4 Pydantic 스키마 + 함수 시그니처. LLM 호출부는 `NotImplementedError` |
-| AI 파이프라인 Step1 — 조건 정규화 (`normalize_conditions`) | ⬜ | | 🔴 | LOW 티어. 자유 텍스트 선호/비선호 → 구조화 태그, provider별 structured output 구현 필요 |
+| Provider별 structured output 공용 인터페이스 (`services/structured_llm.py`) | ✅ | 2026-08-07 | 🔴 | Claude=tool use, GPT/Solar=`.parse()` 공용 (Solar가 이 방식 지원하는 것 실키로 확인) — 2갈래 분기 |
+| AI 파이프라인 Step1 — 조건 정규화 (`normalize_conditions`) | ✅ | 2026-08-07 | 🔴 | LOW 티어. liked_text/disliked_text만 LLM으로 태그 추출, 나머지는 그대로 조립. 실제 Solar 키로 end-to-end 확인 |
 | AI 파이프라인 Step2 — 후보 생성 Fan-out (`generate_candidates`) | ⬜ | | 🔴 | MID 티어. `asyncio.gather`, N=3 관점, provider별 SDK 분기 |
 | AI 파이프라인 Step3 — 이동 동선 보강 (`enrich_routes`) | ⬜ | | 🔴 | LLM 안 씀. 네이버 지도 Directions API 키 발급 + 연동 필요 |
-| AI 파이프라인 Step4 — 검증·병합·랭킹 (`synthesize_and_validate`) | ⬜ | | 🔴 | HIGH 티어. MoA Aggregator, 최대 1회 재시도 |
+| AI 파이프라인 Step4 — 검증·병합 (`synthesize_and_validate`) | ⬜ | | 🔴 | HIGH 티어. MoA Aggregator, 후보 간 유사도 검사 포함, 최대 1회 재시도, 랭킹 없이 동등한 3개 확정 |
 | AI 파이프라인 성능평가 (DeepEval) | ⬜ | | 🟡 | 후보 일정 출력 품질(관련성/환각 등) 자동 채점. Step1~4 구현 후 진행 |
 | 일정 생성 API (`POST /schedules`) | ⬜ | | 🔴 | Step1~4 연결, 422/409 처리 |
 | 일정 조회 API (`GET /schedules/{id}`) | ⬜ | | 🟡 | 본인 소유 확인 (403) |
