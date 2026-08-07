@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../../stores/app'
 import { api } from '../../lib/api'
@@ -11,6 +12,22 @@ const router = useRouter()
 const store = useAppStore()
 
 const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar' } as const
+
+const testing = ref(false)
+const testResult = ref<{ ok: boolean; message: string } | null>(null)
+
+async function testKey() {
+  testing.value = true
+  testResult.value = null
+  try {
+    const { data } = await api.post('/me/llm-credential/test')
+    testResult.value = { ok: true, message: `정상 작동해요 — 응답: "${data.reply}"` }
+  } catch (err: any) {
+    testResult.value = { ok: false, message: err.response?.data?.detail ?? '테스트에 실패했어요.' }
+  } finally {
+    testing.value = false
+  }
+}
 
 async function removeKey() {
   try {
@@ -38,8 +55,14 @@ async function removeKey() {
         <DoodleDivider />
         <div class="flex flex-wrap gap-3">
           <DoodleButton size="sm" @click="router.push('/settings/api-key/provider')">제공자·키 변경</DoodleButton>
+          <DoodleButton size="sm" variant="ghost" :disabled="testing" @click="testKey">
+            {{ testing ? '테스트 중...' : '키 테스트' }}
+          </DoodleButton>
           <DoodleButton size="sm" variant="ghost" @click="removeKey">키 삭제</DoodleButton>
         </div>
+        <p v-if="testResult" class="font-hand text-sm" :class="testResult.ok ? 'text-ink/70' : 'text-red'">
+          {{ testResult.ok ? '✓' : '!' }} {{ testResult.message }}
+        </p>
       </DoodleCard>
 
       <DoodleButton v-else @click="router.push('/settings/api-key/provider')">API 키 등록하기</DoodleButton>
