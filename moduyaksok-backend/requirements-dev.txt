@@ -2,3 +2,4 @@
 ruff
 pytest
 pre-commit
+deepeval

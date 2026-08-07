@@ -12,3 +12,9 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.params.Depends"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# eval 마커 테스트(tests/eval/)는 기본 실행에서 빠진다 — 실제 API 키로 과금되는
+# DeepEval 성능평가라 CI/일반 pytest 흐름과 분리. 돌리려면: pytest -m eval
+addopts = "-m 'not eval'"
+markers = [
+    "eval: DeepEval 기반 파이프라인 단계별 성능평가 (실제 LLM 키 필요, 기본 실행 제외)",
+]
