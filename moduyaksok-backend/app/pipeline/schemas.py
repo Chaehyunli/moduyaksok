@@ -42,14 +42,29 @@ class CandidateDraft(BaseModel):
 
 
 # ── Step 3. 이동 동선 보강 (enrich_routes) 출력 ────────────────────────────
+#
+# 구간마다 교통수단 옵션을 여러 개 보여주고 사용자가 고르게 한다 (도보/버스/택시
+# 등 하나로 자동 선택하지 않음 — 사용자가 원치 않는 교통편이 자동으로 박히면
+# UX가 깨진다는 판단). recommended_mode는 기본 선택값(예: 최단 소요시간)일 뿐,
+# 최종 선택은 프런트에서 사용자가 바꿀 수 있다.
+#
+# 조회 시각은 각 구간 직전 활동의 end_time을 출발 시각으로 넣어야 한다 — "지금
+# 시각" 기준으로 조회하면 막차 끊긴 늦은 시간대 일정에서 엉뚱한 결과가 나온다.
+# 특정 시간대에 옵션이 아예 없으면(막차 없음 등) options가 비거나 줄어들 수 있고,
+# 그 경우 feasibility_warning으로 올린다.
+
+
+class RouteOption(BaseModel):
+    mode: Literal["walk", "transit", "car"]
+    duration_minutes: int
+    fare_krw: int
 
 
 class RouteSegment(BaseModel):
     from_order: int
     to_order: int
-    mode: Literal["walk", "transit", "car"]
-    duration_minutes: int
-    fare_krw: int
+    options: list[RouteOption]
+    recommended_mode: Literal["walk", "transit", "car"]
 
 
 class EnrichedCandidate(BaseModel):
@@ -58,7 +73,9 @@ class EnrichedCandidate(BaseModel):
     feasibility_warning: str | None = None
 
 
-# ── Step 4. 검증·병합·랭킹 (synthesize_and_validate) 출력 = 최종 응답 ─────────
+# ── Step 4. 검증·병합 (synthesize_and_validate) 출력 = 최종 응답 ──────────────
+# 랭킹 없음 — 3개는 서로 다른 관점으로 만든 동등한 선택지라 rank 필드가 없다.
+# candidate_id도 순위를 암시하는 숫자 대신 "A"/"B"/"C" 문자를 쓴다.
 
 
 class Activity(BaseModel):
