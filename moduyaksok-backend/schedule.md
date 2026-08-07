@@ -10,11 +10,14 @@
 | 개발 도구 (ruff, pytest, pre-commit) | ✅ | 2026-08-06 | 🟡 | `requirements-dev.txt` |
 | Alembic 마이그레이션 도입 | ✅ | 2026-08-06 | 🔴 | 초기 스키마 마이그레이션 적용, 앱 기동 시 자동 `create_all` 제거 |
 | Google 로그인 (`POST /auth/google`, `GET /me`) | ✅ | 2026-08-06 | 🔴 | TDD로 구현 (`tests/test_auth.py`), `google-auth`로 id_token 검증 |
-| API 키 등록·조회·삭제 (`POST`/`GET`/`DELETE /me/llm-credential`) | ✅ | 2026-08-07 | 🔴 | Fernet 암호화 + 제공자별(Claude/GPT/Solar) 접두사 정규식 검증까지 완료. 실제 키로 ping 호출해 유효성 검증하는 건 아직 미구현 |
+| API 키 등록·조회·삭제 (`POST`/`GET`/`DELETE /me/llm-credential`) | ✅ | 2026-08-07 | 🔴 | Fernet 암호화 + 제공자별(Claude/GPT/Solar) 접두사 정규식 검증까지 완료 |
+| API 키 실동작 테스트 (`POST /me/llm-credential/test`) | ✅ | 2026-08-07 | 🟡 | provider에 "안녕" 보내 응답 확인, 성공 시 `verified_at` 갱신 (`services/llm_ping.py`) |
+| Swagger 설정 (앱 설명, 라우터별 태그) | ✅ | 2026-08-07 | - | `/docs`에서 라우터가 헬스체크/인증/API 키로 그룹핑됨 |
 | AI 파이프라인 Step1 — 조건 정규화 (`normalize_conditions`) | ⬜ | | 🔴 | 자유 텍스트 선호/비선호 → 구조화 태그 |
 | AI 파이프라인 Step2 — 후보 생성 Fan-out (`generate_candidates`) | ⬜ | | 🔴 | `asyncio.gather`, N=3 관점, provider별 SDK 분기 |
 | AI 파이프라인 Step3 — 이동 동선 보강 (`enrich_routes`) | ⬜ | | 🔴 | 네이버 지도 Directions API 연동 필요 |
 | AI 파이프라인 Step4 — 검증·병합·랭킹 (`synthesize_and_validate`) | ⬜ | | 🔴 | MoA Aggregator, 최대 1회 재시도 |
+| AI 파이프라인 성능평가 (DeepEval) | ⬜ | | 🟡 | 후보 일정 출력 품질(관련성/환각 등) 자동 채점. Step1~4 구현 후 진행 |
 | 일정 생성 API (`POST /schedules`) | ⬜ | | 🔴 | Step1~4 연결, 422/409 처리 |
 | 일정 조회 API (`GET /schedules/{id}`) | ⬜ | | 🟡 | 본인 소유 확인 (403) |
 | 피드백 반영 (`POST /schedules/{id}/feedback`, `apply_feedback`) | ⬜ | | 🔴 | 부분 재실행으로 토큰 절약 |

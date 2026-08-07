@@ -47,7 +47,7 @@ tests/           pytest
 |---|---|---|---|
 | `health.py` | `GET /health` | 서버 상태 확인 | - |
 | `auth.py` | `POST /auth/google`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>현재 로그인 사용자 조회 | `services/auth.py`, `models/user.py` |
-| `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>키 삭제 | `services/credential.py`, `models/llm_credential.py` |
+| `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
 
 ## 서비스 (`app/services/`)
 
@@ -55,6 +55,7 @@ tests/           pytest
 |---|---|
 | `auth.py` | Google id_token 검증(`verify_google_id_token`), 세션 JWT 발급/검증(`create_access_token`, `get_current_user`) |
 | `credential.py` | BYOK 키 Fernet 암호화/복호화(`encrypt_key`, `decrypt_key`), 표시용 마스킹(`mask_key`) |
+| `llm_ping.py` | provider(Claude/GPT/Solar)별 SDK로 짧은 메시지를 보내 키가 실제로 동작하는지 확인(`ping_provider`). Solar는 openai SDK에 Upstage `base_url`만 바꿔서 사용 |
 
 ## 모델 (`app/models/`)
 
