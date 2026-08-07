@@ -57,6 +57,22 @@ tests/           pytest
 | `credential.py` | BYOK 키 Fernet 암호화/복호화(`encrypt_key`, `decrypt_key`), 표시용 마스킹(`mask_key`) |
 | `llm_ping.py` | provider(Claude/GPT/Solar)별 SDK로 짧은 메시지를 보내 키가 실제로 동작하는지 확인(`ping_provider`). Solar는 openai SDK에 Upstage `base_url`만 바꿔서 사용 |
 
+## AI 파이프라인 (`app/pipeline/`)
+
+`docs/기술설계_2026-08-06.md` §4의 4단계를 그대로 파일로 분리. `models.py`가 단계별로
+필요한 모델 성능 등급(`ModelTier`)과 provider별 실제 모델 ID를 한 곳에서 관리 —
+모델을 바꾸고 싶으면 이 파일만 고치면 된다. 아직 스키마·함수 시그니처만 있고
+실제 LLM 호출부는 미구현(`NotImplementedError`).
+
+| 파일 | 단계 | 티어 | 이유 |
+|---|---|---|---|
+| `models.py` | - | - | provider(`anthropic`/`openai`/`upstage`) × `ModelTier`(LOW/MID/HIGH) → 모델 ID 매핑, `get_model()` |
+| `schemas.py` | - | - | 단계 간 입출력 Pydantic 모델 (`NormalizedConditions`, `CandidateDraft`, `ScheduleResponse` 등) |
+| `normalize.py` | Step1 조건 정규화 | LOW | 자유 텍스트 → 구조화 태그. 단순 추출/분류라 창의성 불필요 |
+| `generate.py` | Step2 후보 생성 (Fan-out N=3) | MID | 관점별 창의성은 필요하지만 3배 병렬 호출이라 비용도 고려 |
+| `enrich.py` | Step3 이동 동선 보강 | - | LLM 안 씀 (네이버 지도 Directions API) |
+| `synthesize.py` | Step4 검증·병합·랭킹 (Aggregator) | HIGH | 호출 1회뿐이고 파이프라인 품질을 가장 크게 좌우하는 판단 단계 |
+
 ## 모델 (`app/models/`)
 
 | 파일 | 테이블 | 용도 |
