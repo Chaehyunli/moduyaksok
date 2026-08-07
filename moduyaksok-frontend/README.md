@@ -43,7 +43,8 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 |---|---|
 | `DoodleButton` | 버튼. `variant="primary\|ghost"`, `size="md\|sm"` |
 | `DoodleInput` | 텍스트 입력. `label`, `error` prop |
-| `DoodleTextarea` | 여러 줄 입력 (피드백 등) |
+| `DoodleSelect` | 커스텀 드롭다운(리스트박스). 옵션 패널까지 손그림 스타일 적용 — 네이티브 `<select>`는 펼침 목록을 CSS로 못 건드려서 직접 구현. `options`(`{value,label}[]`), `placeholder`, `disabled` prop, 키보드 네비게이션(↑↓/Enter/Esc) 지원 (지역 시/도·세부지역 선택 등 — 목록이 길어 `DoodleSelectCard` 대신 씀) |
+| `DoodleTextarea` | 여러 줄 입력 (피드백, 선호/비선호 자유 텍스트 등). `maxlength` prop 주면 우측에 글자수 카운터 표시 |
 | `DoodleChip` | on/off 토글 태그 (선호/비선호 선택 등) |
 | `DoodleSelectCard` | 라디오형 선택 카드 (AI 제공자 선택 등) |
 | `DoodleCard` | 각지지 않은 기본 카드 (리스트용, 회전 없음) |
@@ -65,7 +66,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 |---|---|---|---|---|
 | `HomeView.vue` | `/` | [01_홈_랜딩_페이지](../docs/와이어프레임/01_홈_랜딩_페이지.png) | ✗ | `DoodleButton`, `DoodleStar`, `DoodleArrow`, `DoodleUnderline`, `StickyNote` |
 | `LoginView.vue` | `/login` | [02_로그인_화면](../docs/와이어프레임/02_로그인_화면.png) | ✗ | `DoodleButton`, `DoodleUnderline` |
-| `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleInput`, `DoodleChip`, `DoodleCard`, `DoodleButton` |
+| `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton` |
 | `CandidatesView.vue` | `/schedules` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton` |
 | `CandidateDetailView.vue` | `/schedules/:id` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton` |
 | `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |

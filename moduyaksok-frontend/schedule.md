@@ -13,6 +13,8 @@
 | Google 로그인 연동 (`POST /auth/google` 실연결) | ✅ | 2026-08-07 | 🔴 | Google Identity Services SDK(`index.html` 스크립트) + `LoginView`에서 발급받은 id_token으로 실제 로그인. JWT는 `localStorage`에 저장해 새로고침 유지 |
 | API 키 등록 연동 (`POST`/`GET`/`DELETE /me/llm-credential`) | ✅ | 2026-08-07 | 🔴 | `ApiKeyEditView`/`ApiKeyView` 실제 API 호출로 교체, 제공자별 정규식 형식 검증 추가, 등록 상태 `localStorage` 유지 |
 | API 키 테스트 버튼 (`POST /me/llm-credential/test`) | ✅ | 2026-08-07 | 🟡 | `ApiKeyView`에 "키 테스트" 버튼 추가, 응답/실패 메시지 인라인 표시 |
+| 지역 입력을 자연어 텍스트 → 시/도·세부지역 드롭다운으로 변경 | ✅ | 2026-08-07 | 🟡 | `ConditionWizardView`, 새 `DoodleSelect` 컴포넌트(옵션 패널까지 손그림 스타일 입힌 커스텀 리스트박스, 네이티브 select 아님) + `lib/regions.ts`. 세부지역 비우면 시/도 전체로 검색 |
+| 선호/비선호를 태그 선택 → 자유 텍스트로 변경 | ✅ | 2026-08-07 | 🔴 | `ConditionWizardView`, 각 100자 제한(`DoodleTextarea`의 `maxlength` prop). Step1 조건 정규화(LLM)가 태그를 추출하는 구조라 프런트는 원문 그대로 전달 |
 | 일정 생성 연동 (`POST /schedules`) | ⬜ | | 🔴 | `stores/app.ts`의 `buildMockCandidates` 교체 |
 | 일정 상세·동선 연동 (`GET /schedules/{id}`) | ⬜ | | 🟡 | `CandidateDetailView` |
 | 피드백 연동 (`POST /schedules/{id}/feedback`) | ⬜ | | 🔴 | `FeedbackView` |
