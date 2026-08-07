@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
+import { PROVINCES, REGIONS } from '../lib/regions'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleInput from '../components/doodle/DoodleInput.vue'
+import DoodleSelect from '../components/doodle/DoodleSelect.vue'
 import DoodleSelectCard from '../components/doodle/DoodleSelectCard.vue'
-import DoodleChip from '../components/doodle/DoodleChip.vue'
+import DoodleTextarea from '../components/doodle/DoodleTextarea.vue'
 import DoodleStepper from '../components/doodle/DoodleStepper.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 
@@ -19,7 +21,9 @@ const PURPOSES = [
   { value: 'party', title: '파티', subtitle: '여러 명이 모이는 자리' },
 ]
 
-const TAG_POOL = ['보드게임카페', 'VR체험', '파스타', '스테이크', '해산물', '실내활동', '카페투어', '전시관람']
+// 태그 선택이 아니라 자유 텍스트 그대로 받는다 — Step1 조건 정규화(LLM)가 여기서
+// 구조화 태그를 뽑아낸다. 짧은 한두 문장 수준으로 100자 제한.
+const PREFERENCE_MAX_LENGTH = 100
 
 const step = ref(0)
 const totalSteps = 6
@@ -29,22 +33,34 @@ const form = reactive({
   headcount: 2,
   startTime: '10:00',
   endTime: '21:00',
-  region: '',
-  likedTags: [] as string[],
-  dislikedTags: [] as string[],
+  regionProvince: '',
+  regionArea: '',
+  likedText: '',
+  dislikedText: '',
   budgetPerPerson: 50000,
 })
 
-function toggleTag(list: string[], tag: string) {
-  const i = list.indexOf(tag)
-  if (i === -1) list.push(tag)
-  else list.splice(i, 1)
-}
+const areaOptions = computed(
+  () => REGIONS[form.regionProvince]?.map((name) => ({ value: name, label: name })) ?? [],
+)
+
+// 시/도를 바꾸면 이전 세부지역이 새 시/도 목록에 없을 수 있으니 초기화한다.
+watch(
+  () => form.regionProvince,
+  () => {
+    form.regionArea = ''
+  },
+)
+
+// region: '' 이면 시/도 전체, 아니면 "서울 잠실"처럼 세부지역까지 합쳐서 검색한다.
+const region = computed(() =>
+  form.regionArea ? `${form.regionProvince} ${form.regionArea}` : form.regionProvince,
+)
 
 const canNext = computed(() => {
   if (step.value === 0) return !!form.purpose
   if (step.value === 1) return form.headcount > 0 && form.startTime < form.endTime
-  if (step.value === 2) return form.region.trim().length > 0
+  if (step.value === 2) return form.regionProvince.length > 0
   if (step.value === 4) return form.budgetPerPerson > 0
   return true
 })
@@ -62,10 +78,10 @@ function submit() {
   store.submitConditions({
     purpose: form.purpose,
     headcount: form.headcount,
-    region: form.region,
+    region: region.value,
     budgetPerPerson: form.budgetPerPerson,
-    likedTags: form.likedTags,
-    dislikedTags: form.dislikedTags,
+    likedText: form.likedText.trim(),
+    dislikedText: form.dislikedText.trim(),
   })
   router.push('/schedules')
 }
@@ -105,44 +121,41 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
       <!-- 2: 지역 -->
       <div v-else-if="step === 2" class="space-y-5">
         <h1 class="mb-4 font-hand text-2xl text-ink">어디서 만나나요?</h1>
-        <DoodleInput v-model="form.region" placeholder="예: 서울 강남" label="지역" />
+        <DoodleSelect
+          v-model="form.regionProvince"
+          :options="PROVINCES.map((p) => ({ value: p, label: p }))"
+          placeholder="시/도 선택"
+          label="시/도"
+        />
+        <DoodleSelect
+          v-model="form.regionArea"
+          :options="[{ value: '', label: '전체' }, ...areaOptions]"
+          :disabled="!form.regionProvince"
+          label="세부지역 (선택)"
+        />
       </div>
 
       <!-- 3: 선호/비선호 (선택 입력) -->
       <div v-else-if="step === 3" class="space-y-6">
         <h1 class="font-hand text-2xl text-ink">좋아하는 것과 싫어하는 것 (선택)</h1>
-        <div>
-          <p class="mb-2 font-hand text-base text-ink/70">좋아하는 것</p>
-          <div class="flex flex-wrap gap-2">
-            <DoodleChip
-              v-for="tag in TAG_POOL"
-              :key="'like-' + tag"
-              :model-value="form.likedTags.includes(tag)"
-              @update:model-value="toggleTag(form.likedTags, tag)"
-            >
-              {{ tag }}
-            </DoodleChip>
-          </div>
-        </div>
-        <div>
-          <p class="mb-2 font-hand text-base text-ink/70">싫어하는 것</p>
-          <div class="flex flex-wrap gap-2">
-            <DoodleChip
-              v-for="tag in TAG_POOL"
-              :key="'dislike-' + tag"
-              :model-value="form.dislikedTags.includes(tag)"
-              @update:model-value="toggleTag(form.dislikedTags, tag)"
-            >
-              {{ tag }}
-            </DoodleChip>
-          </div>
-        </div>
+        <DoodleTextarea
+          v-model="form.likedText"
+          label="좋아하는 것"
+          :maxlength="PREFERENCE_MAX_LENGTH"
+          placeholder="날씨가 너무 더워서, 실내 일정 위주로하는데, 콩국수나 텐동을 점심으로 먹고 싶어, 간식으로 와플을 꼭 먹고 싶어!!"
+        />
+        <DoodleTextarea
+          v-model="form.dislikedText"
+          label="싫어하는 것"
+          :maxlength="PREFERENCE_MAX_LENGTH"
+          placeholder="해산물은 못 먹고, 사람 너무 많고 시끄러운 곳은 별로예요"
+        />
       </div>
 
       <!-- 4: 예산 -->
       <div v-else-if="step === 4" class="space-y-5">
         <h1 class="mb-4 font-hand text-2xl text-ink">1인당 예산은요?</h1>
-        <DoodleInput v-model="form.budgetPerPerson" type="number" label="1인당 예산 (원)" />
+        <DoodleInput v-model="form.budgetPerPerson" type="number" step="1000" label="1인당 예산 (원)" />
       </div>
 
       <!-- 5: 요약 -->
@@ -151,10 +164,10 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         <DoodleCard class="space-y-2 font-hand text-lg text-ink">
           <p>목적: {{ purposeLabel }}</p>
           <p>인원: {{ form.headcount }}명 · {{ form.startTime }} ~ {{ form.endTime }}</p>
-          <p>지역: {{ form.region }}</p>
+          <p>지역: {{ region }}</p>
           <p>1인 예산: {{ form.budgetPerPerson.toLocaleString() }}원</p>
-          <p v-if="form.likedTags.length">좋아하는 것: {{ form.likedTags.join(', ') }}</p>
-          <p v-if="form.dislikedTags.length">싫어하는 것: {{ form.dislikedTags.join(', ') }}</p>
+          <p v-if="form.likedText">좋아하는 것: {{ form.likedText }}</p>
+          <p v-if="form.dislikedText">싫어하는 것: {{ form.dislikedText }}</p>
         </DoodleCard>
       </div>
 

@@ -6,6 +6,7 @@ const props = withDefaults(
     placeholder?: string
     label?: string
     error?: string
+    step?: string | number
   }>(),
   { modelValue: '', type: 'text' },
 )
@@ -24,6 +25,7 @@ function onInput(event: Event) {
       :type="type"
       :value="modelValue"
       :placeholder="placeholder"
+      :step="step"
       class="doodle-wobble w-full rounded-[2px] border-[2.5px] bg-paper px-4 py-2.5 text-lg text-ink placeholder:text-ink/40 focus:outline-none focus:ring-2 focus:ring-red/50"
       :class="error ? 'border-red' : 'border-ink'"
       @input="onInput"

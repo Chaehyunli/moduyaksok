@@ -20,8 +20,10 @@ export interface Conditions {
   headcount: number
   region: string
   budgetPerPerson: number
-  likedTags: string[]
-  dislikedTags: string[]
+  // 태그 선택이 아니라 자유 텍스트 그대로 백엔드로 보낸다 — Step1 조건 정규화(LLM)가
+  // 여기서 구조화 태그를 뽑아낸다 (docs/기술설계_2026-08-06.md §4 Step1).
+  likedText: string
+  dislikedText: string
 }
 
 // 백엔드에 일정 생성 API가 아직 없어서, 조건에 따라 그럴듯한 후보 3개를 그 자리에서 만든다.
@@ -42,7 +44,7 @@ function buildMockCandidates(conditions: Conditions): Candidate[] {
     feasible: true,
     activities: [
       { name: '카페 무드', category: '카페', time: '14:00-15:30', priceRange: '8,000~12,000원' },
-      { name: conditions.likedTags[0] ?? '보드게임 카페', category: '체험', time: '15:45-17:15', priceRange: '15,000~20,000원' },
+      { name: '보드게임 카페', category: '체험', time: '15:45-17:15', priceRange: '15,000~20,000원' },
       { name: '동네 파스타집', category: '식당', time: '17:30-19:00', priceRange: '18,000~25,000원' },
     ],
   }))
