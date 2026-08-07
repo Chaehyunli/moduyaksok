@@ -3,9 +3,15 @@ import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleBadge from '../components/doodle/DoodleBadge.vue'
+import DoodleButton from '../components/doodle/DoodleButton.vue'
 
 const router = useRouter()
 const store = useAppStore()
+
+function handleLogout() {
+  store.logout()
+  router.push('/login')
+}
 </script>
 
 <template>
@@ -25,6 +31,8 @@ const store = useAppStore()
         </div>
         <span class="font-hand text-ink/50">→</span>
       </DoodleCard>
+
+      <DoodleButton class="mt-8" variant="ghost" @click="handleLogout">로그아웃</DoodleButton>
     </div>
   </div>
 </template>

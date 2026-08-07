@@ -1,32 +1,59 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
-import DoodleButton from '../components/doodle/DoodleButton.vue'
+import { api } from '../lib/api'
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize(config: { client_id: string; callback: (resp: { credential: string }) => void }): void
+          renderButton(parent: HTMLElement, options: { theme?: string; size?: string; width?: number }): void
+        }
+      }
+    }
+  }
+}
 
 const router = useRouter()
 const route = useRoute()
 const store = useAppStore()
 const loading = ref(false)
+const error = ref('')
+const buttonEl = ref<HTMLElement | null>(null)
 
-// TODO: 백엔드 POST /auth/google 붙이면, Google Identity Services에서 받은
-// id_token을 여기로 넘겨 실제 검증하도록 교체. 지금은 클릭하면 바로 로그인 성공 처리.
-async function loginWithGoogle() {
+async function handleCredential(resp: { credential: string }) {
   loading.value = true
-  await new Promise((r) => setTimeout(r, 400))
-  store.login('테스터')
-  const redirect = (route.query.redirect as string) || '/new'
-  router.push(redirect)
+  error.value = ''
+  try {
+    const { data } = await api.post('/auth/google', { id_token: resp.credential })
+    store.login(data.access_token, data.user)
+    const redirect = (route.query.redirect as string) || '/new'
+    router.push(redirect)
+  } catch {
+    error.value = '로그인에 실패했어요. 다시 시도해주세요.'
+  } finally {
+    loading.value = false
+  }
 }
+
+onMounted(() => {
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
+  if (!clientId || !window.google || !buttonEl.value) return
+  window.google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+  window.google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
+})
 </script>
 
 <template>
   <div class="notebook-bg flex min-h-dvh items-center justify-center px-6">
     <div class="w-full max-w-sm text-center">
       <p class="mb-8 font-hand text-lg text-ink/70">구글 계정으로 로그인하고 시작해요</p>
-      <DoodleButton class="w-full justify-center" :disabled="loading" @click="loginWithGoogle">
-        {{ loading ? '로그인 중...' : '구글로 로그인' }}
-      </DoodleButton>
+      <div ref="buttonEl" class="flex justify-center"></div>
+      <p v-if="loading" class="mt-4 font-hand text-ink/50">로그인 중...</p>
+      <p v-if="error" class="mt-4 font-hand text-red-500">{{ error }}</p>
     </div>
   </div>
 </template>

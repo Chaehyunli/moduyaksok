@@ -48,10 +48,16 @@ function buildMockCandidates(conditions: Conditions): Candidate[] {
   }))
 }
 
+export interface AuthUser {
+  id: string
+  email: string
+  name: string | null
+}
+
 export const useAppStore = defineStore('app', {
   state: () => ({
-    loggedIn: false,
-    userName: '',
+    loggedIn: !!localStorage.getItem('access_token'),
+    userName: localStorage.getItem('user_name') ?? '',
     apiKeyRegistered: false,
     apiKeyProvider: null as 'anthropic' | 'openai' | null,
     apiKeyMasked: '',
@@ -66,11 +72,15 @@ export const useAppStore = defineStore('app', {
     },
   },
   actions: {
-    login(name: string) {
+    login(accessToken: string, user: AuthUser) {
+      localStorage.setItem('access_token', accessToken)
+      localStorage.setItem('user_name', user.name ?? user.email)
       this.loggedIn = true
-      this.userName = name
+      this.userName = user.name ?? user.email
     },
     logout() {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('user_name')
       this.loggedIn = false
       this.userName = ''
     },
