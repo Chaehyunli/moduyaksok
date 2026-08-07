@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../../stores/app'
+import { api } from '../../lib/api'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleInput from '../../components/doodle/DoodleInput.vue'
 
@@ -11,20 +12,38 @@ const store = useAppStore()
 
 const key = ref('')
 const error = ref('')
+const loading = ref(false)
 
 const providerNames = { openai: 'GPT', anthropic: 'Claude', upstage: 'Solar' } as const
 const placeholders = { openai: 'sk-...', anthropic: 'sk-ant-...', upstage: 'up_...' } as const
-const providerName = providerNames[store.apiKeyProvider ?? 'anthropic']
-const placeholder = placeholders[store.apiKeyProvider ?? 'anthropic']
+// 발급 기관이 공개한 키 접두사 기준 형식 검증. 완전한 형식 보증은 아니고
+// 오탈자·다른 제공자 키를 잘못 넣는 실수를 막는 용도.
+const keyPatterns = {
+  anthropic: /^sk-ant-[A-Za-z0-9_-]{20,}$/,
+  openai: /^sk-[A-Za-z0-9_-]{20,}$/,
+  upstage: /^up_[A-Za-z0-9]{20,}$/,
+} as const
+const provider = store.apiKeyProvider ?? 'anthropic'
+const providerName = providerNames[provider]
+const placeholder = placeholders[provider]
 
-// TODO: 백엔드 POST /me/llm-credential 붙이면 여기서 저장 전 검증 호출.
-function save() {
-  if (key.value.trim().length < 8) {
-    error.value = 'API 키가 유효하지 않아요'
+async function save() {
+  const trimmed = key.value.trim()
+  if (!keyPatterns[provider].test(trimmed)) {
+    error.value = `${providerName} API 키 형식이 아니에요`
     return
   }
-  store.saveApiKey(key.value.trim())
-  router.push({ name: 'api-key-saved', query: route.query })
+  error.value = ''
+  loading.value = true
+  try {
+    const { data } = await api.post('/me/llm-credential', { provider, api_key: trimmed })
+    store.saveApiKey(data.masked_key)
+    router.push({ name: 'api-key-saved', query: route.query })
+  } catch {
+    error.value = '저장에 실패했어요. 다시 시도해주세요.'
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 
@@ -35,8 +54,8 @@ function save() {
       <DoodleInput v-model="key" :placeholder="placeholder" label="API 키" :error="error" />
       <p class="mt-2 font-hand text-sm text-ink/50">발급받은 키를 붙여넣으세요. 저장 전 유효성을 확인해요.</p>
       <div class="mt-6 flex gap-3">
-        <DoodleButton variant="ghost" @click="router.back()">이전</DoodleButton>
-        <DoodleButton @click="save">저장</DoodleButton>
+        <DoodleButton variant="ghost" :disabled="loading" @click="router.back()">이전</DoodleButton>
+        <DoodleButton :disabled="loading" @click="save">{{ loading ? '저장 중...' : '저장' }}</DoodleButton>
       </div>
     </div>
   </div>

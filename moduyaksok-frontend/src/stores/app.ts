@@ -87,9 +87,9 @@ export const useAppStore = defineStore('app', {
     selectProvider(provider: 'anthropic' | 'openai' | 'upstage') {
       this.apiKeyProvider = provider
     },
-    saveApiKey(rawKey: string) {
+    saveApiKey(maskedKey: string) {
       this.apiKeyRegistered = true
-      this.apiKeyMasked = rawKey.slice(0, 7) + '••••••••' + rawKey.slice(-4)
+      this.apiKeyMasked = maskedKey
     },
     clearApiKey() {
       this.apiKeyRegistered = false

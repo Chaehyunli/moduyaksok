@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../../stores/app'
+import { api } from '../../lib/api'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleCard from '../../components/doodle/DoodleCard.vue'
 import DoodleBadge from '../../components/doodle/DoodleBadge.vue'
@@ -11,7 +12,12 @@ const store = useAppStore()
 
 const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar' } as const
 
-function removeKey() {
+async function removeKey() {
+  try {
+    await api.delete('/me/llm-credential')
+  } catch {
+    // 이미 삭제됐거나 없는 경우도 로컬 상태는 정리한다.
+  }
   store.clearApiKey()
 }
 </script>
