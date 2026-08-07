@@ -17,11 +17,12 @@ const loading = ref(false)
 const providerNames = { openai: 'GPT', anthropic: 'Claude', upstage: 'Solar' } as const
 const placeholders = { openai: 'sk-...', anthropic: 'sk-ant-...', upstage: 'up_...' } as const
 // 발급 기관이 공개한 키 접두사 기준 형식 검증. 완전한 형식 보증은 아니고
-// 오탈자·다른 제공자 키를 잘못 넣는 실수를 막는 용도.
+// 오탈자·다른 제공자 키를 잘못 넣는 실수를 막는 용도. 저장 API 호출 전에 여기서 먼저
+// 걸러서 즉시 피드백을 주고, 같은 패턴으로 서버(app/routers/credential.py)에서도 다시 검증한다.
 const keyPatterns = {
-  anthropic: /^sk-ant-[A-Za-z0-9_-]{20,}$/,
-  openai: /^sk-[A-Za-z0-9_-]{20,}$/,
-  upstage: /^up_[A-Za-z0-9]{20,}$/,
+  anthropic: /^sk-ant-[A-Za-z0-9_-]{20,}$/, // Claude: "sk-ant-" 접두사
+  openai: /^sk-[A-Za-z0-9_-]{20,}$/, // GPT: "sk-" 접두사
+  upstage: /^up_[A-Za-z0-9]{20,}$/, // Solar: "up_" 접두사
 } as const
 const provider = store.apiKeyProvider ?? 'anthropic'
 const providerName = providerNames[provider]
