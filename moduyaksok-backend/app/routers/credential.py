@@ -1,11 +1,13 @@
 # ------------------------------------------------------------------
 # 작성자      : 임채현
 # 작성목적    : POST/GET/DELETE /me/llm-credential — 사용자 BYOK API 키 등록/조회/삭제
+#              POST /me/llm-credential/test — 등록된 키로 provider에 핑 보내 유효성 확인
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-07, /me/llm-credential/test 추가
 # ------------------------------------------------------------------
 import re
+from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,6 +19,7 @@ from app.models.llm_credential import LLMCredential
 from app.models.user import User
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key, encrypt_key, mask_key
+from app.services.llm_ping import ping_provider
 
 router = APIRouter()
 
@@ -51,6 +54,10 @@ class CredentialIn(BaseModel):
 class CredentialOut(BaseModel):
     provider: str
     masked_key: str
+
+
+class CredentialTestOut(BaseModel):
+    reply: str
 
 
 def _get_credential(session: Session, user_id) -> LLMCredential | None:
@@ -88,6 +95,27 @@ def read_credential(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "등록된 API 키가 없습니다.")
     masked_key = mask_key(decrypt_key(credential.encrypted_key))
     return CredentialOut(provider=credential.provider, masked_key=masked_key)
+
+
+@router.post("/me/llm-credential/test", response_model=CredentialTestOut)
+def test_credential(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> CredentialTestOut:
+    credential = _get_credential(session, current_user.id)
+    if credential is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "등록된 API 키가 없습니다.")
+    raw_key = decrypt_key(credential.encrypted_key)
+    try:
+        reply = ping_provider(credential.provider, raw_key)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"API 키 테스트에 실패했어요: {exc}"
+        ) from exc
+    credential.verified_at = datetime.utcnow()
+    session.add(credential)
+    session.commit()
+    return CredentialTestOut(reply=reply)
 
 
 @router.delete("/me/llm-credential", status_code=status.HTTP_204_NO_CONTENT)
