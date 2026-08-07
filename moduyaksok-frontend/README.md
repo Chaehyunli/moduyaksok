@@ -42,7 +42,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | 컴포넌트 | 용도 |
 |---|---|
 | `DoodleButton` | 버튼. `variant="primary\|ghost"`, `size="md\|sm"` |
-| `DoodleInput` | 텍스트 입력. `label`, `error` prop |
+| `DoodleInput` | 텍스트 입력. `label`, `error`, `step`(숫자 입력 증감 단위) prop |
 | `DoodleSelect` | 커스텀 드롭다운(리스트박스). 옵션 패널까지 손그림 스타일 적용 — 네이티브 `<select>`는 펼침 목록을 CSS로 못 건드려서 직접 구현. `options`(`{value,label}[]`), `placeholder`, `disabled` prop, 키보드 네비게이션(↑↓/Enter/Esc) 지원 (지역 시/도·세부지역 선택 등 — 목록이 길어 `DoodleSelectCard` 대신 씀) |
 | `DoodleTextarea` | 여러 줄 입력 (피드백, 선호/비선호 자유 텍스트 등). `maxlength` prop 주면 우측에 글자수 카운터 표시 |
 | `DoodleChip` | on/off 토글 태그 (선호/비선호 선택 등) |
