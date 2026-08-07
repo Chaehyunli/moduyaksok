@@ -5,13 +5,23 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-06, 개발 DB를 Postgres(docker)로 고정, JSON 컬럼을 JSONB로 변경
 # 2026-08-06, __tablename__ 명시 (SQLModel 기본 테이블명이 ERD의 snake_case와 불일치해서 수정)
+# 2026-08-07, status 값을 "draft"/"confirmed"로 제약 — DB에는 CHECK 제약 추가
+#             (마이그레이션 f4f8459f626b). SQLModel(이 버전)은 table=True 모델의
+#             컬럼에 Literal을 못 붙여서 필드 자체는 str로 두고, ScheduleStatus
+#             타입 별칭을 남겨서 나중에 라우터 Pydantic 스키마(테이블 아닌 곳)에서
+#             쓰게 한다. draft→confirmed 전이는 한 방향만 허용 — POST
+#             /schedules/{id}/confirm 라우터 구현 시 이미 confirmed인 세션은
+#             재확정 못 하게 막을 것 (아직 라우터 자체가 없어 미구현).
 # ------------------------------------------------------------------
 from datetime import datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+ScheduleStatus = Literal["draft", "confirmed"]
 
 
 class ScheduleSession(SQLModel, table=True):
@@ -21,7 +31,7 @@ class ScheduleSession(SQLModel, table=True):
     user_id: UUID = Field(foreign_key="user.id")
     conditions: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     candidates: dict = Field(default_factory=dict, sa_column=Column(JSONB))
-    status: str = "draft"
+    status: str = "draft"  # 허용값은 ScheduleStatus 참고, 실제 제약은 DB CHECK가 건다
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
