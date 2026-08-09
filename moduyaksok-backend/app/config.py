@@ -5,6 +5,8 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, DeepEval 파이프라인 성능평가용 키 3종 추가 (tests/eval/ 전용,
 #             앱 런타임 로직은 안 씀)
+# 2026-08-09, Step2가 쓸 네이버 지역검색 API 키 추가 (네이버 지도 API와는
+#             다른 상품 — Step3가 쓸 NAVER_MAP_CLIENT_ID/SECRET과 구분)
 # ------------------------------------------------------------------
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -28,6 +30,10 @@ class Settings(BaseSettings):
     deepeval_upstage_api_key: str | None = None
     deepeval_openai_api_key: str | None = None
     deepeval_anthropic_api_key: str | None = None
+
+    # Step2 place_candidates 조회용 (NAVER Developers 포털 발급, 지도 API와 별개).
+    naver_search_client_id: str = ""
+    naver_search_client_secret: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
