@@ -12,6 +12,8 @@
 #             no_hallucinated_places_small_candidate_list는 "후보가 적을 때 환각
 #             안 하는지"가 목적이라 의도적으로 그대로 둠(늘리면 그 케이스 목적이
 #             사라짐).
+# 2026-08-09, region: str -> regions: list[str] 변경 반영. 여러 지역이 섞인
+#             multi_region_place_candidates_mixed 케이스 추가.
 # ------------------------------------------------------------------
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,7 +34,7 @@ def _conditions(**overrides) -> NormalizedConditions:
         purpose="date",
         headcount=2,
         time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
-        region="서울 잠실",
+        regions=["서울 잠실"],
         liked_tags=[],
         disliked_tags=[],
         budget_per_person=50000,
@@ -132,7 +134,7 @@ GOLDEN_STEP2_CASES = [
     ),
     GoldenCase(
         name="no_hallucinated_places_small_candidate_list",
-        conditions=_conditions(region="서울 성수"),
+        conditions=_conditions(regions=["서울 성수"]),
         place_candidates=[
             {
                 "title": "성수 베이커리",
@@ -180,6 +182,33 @@ GOLDEN_STEP2_CASES = [
             "명백히 고가인 카테고리를 예산 무시하고 넣었으면 감점(특정 단어 하나만 "
             "피하는 게 아니라 일반화됐는지 확인용). 분식집·편의점카페 같은 저가 "
             "대안이 있으니 예산 안에서 조합을 다양하게 만들 여지가 충분함"
+        ),
+    ),
+    GoldenCase(
+        name="multi_region_place_candidates_mixed",
+        conditions=_conditions(regions=["서울 잠실", "서울 성수"]),
+        place_candidates=[
+            {"title": "잠실 국숫집", "category": "음식점>한식", "address": "서울 송파구 잠실동"},
+            {
+                "title": "OO베이커리",
+                "category": "카페,디저트>베이커리",
+                "address": "서울 송파구 잠실동",
+            },
+            {
+                "title": "성수 브런치카페",
+                "category": "카페",
+                "address": "서울 성동구 성수동",
+            },
+            {
+                "title": "성수 소품샵",
+                "category": "쇼핑>소품샵",
+                "address": "서울 성동구 성수동",
+            },
+        ],
+        notes=(
+            "regions가 2개(서울 잠실, 서울 성수) — place_candidates도 두 지역이 "
+            "섞여 있음. 두 지역 장소를 모두 활동 후보로 쓸 수 있어야 하고, "
+            "input에 없는 지역(예: 서울 강남)을 언급하거나 지어내면 감점"
         ),
     ),
 ]

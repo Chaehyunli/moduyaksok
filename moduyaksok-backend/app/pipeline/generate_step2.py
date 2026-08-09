@@ -37,6 +37,9 @@
 #             원인. PERSPECTIVES를 (라벨, 상세 지시문) 쌍으로 바꿔서 관점마다
 #             구체적 판단 기준(실내/실외 구분, 동선은 address 근접도로 판단, 취향
 #             태그 최대 반영 기준)을 따로 명시.
+# 2026-08-09, NormalizedConditions.region: str -> regions: list[str] 변경(Task 1)에
+#             맞춰 _build_user_prompt가 지역을 콤마로 이어 붙여 전부 프롬프트에
+#             주입하도록 수정.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -135,7 +138,8 @@ def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[
         f"목적: {conditions.purpose}\n"
         f"인원: {conditions.headcount}명\n"
         f"시간: {start.isoformat()} ~ {end.isoformat()}\n"
-        f"지역: {conditions.region}\n"
+        f"지역(복수 가능, place_candidates는 이 지역들에서 조회된 것): "
+        f"{', '.join(conditions.regions)}\n"
         f"1인 예산: {conditions.budget_per_person}원\n"
         f"좋아하는 것: {_format_tags(conditions.liked_tags)}\n"
         f"싫어하는 것: {_format_tags(conditions.disliked_tags)}\n\n"

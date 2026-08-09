@@ -15,6 +15,9 @@
 #             함수 + asyncio.run()으로 매 테스트마다 새 이벤트루프를 만들고
 #             완전히 닫으면 GEval이 재진입할 "이미 실행 중인 루프"가 없어져
 #             해결됨.
+# 2026-08-09, _format_input/_print_report가 실제 프롬프트(_build_user_prompt)에
+#             있는 purpose/headcount를 안 보여주고 있던 표시 누락을 보완.
+#             region: str -> regions: list[str] 변경도 같이 반영.
 # ------------------------------------------------------------------
 import asyncio
 
@@ -29,7 +32,8 @@ from tests.eval.golden_step2 import GOLDEN_STEP2_CASES
 pytestmark = pytest.mark.eval
 
 _QUALITY_CRITERIA = (
-    "actual_output은 place_candidates 목록과 조건이 주어졌을 때 생성된 최대 3개의 "
+    "actual_output은 place_candidates 목록과 조건(purpose/headcount/regions 포함)이 "
+    "주어졌을 때 생성된 최대 3개의 "
     "일정 후보(candidate)를 'title=... activities=[...] rationale=...' 형태로 "
     "나열한 것이다. 각 activity는 'name(category, start_time-end_time)' 형태이고, "
     "input의 time_range는 이 일정 전체가 진행되는 시작~종료 시각이다. "
@@ -82,7 +86,8 @@ def _format_input(case) -> str:
     c = case.conditions
     start, end = c.time_range
     return (
-        f"region={c.region}, time_range={start.isoformat()}~{end.isoformat()}, "
+        f"purpose={c.purpose}, headcount={c.headcount}, "
+        f"regions={c.regions}, time_range={start.isoformat()}~{end.isoformat()}, "
         f"budget_per_person={c.budget_per_person}, "
         f"liked_tags={_format_tags(c.liked_tags)}, "
         f"disliked_tags={_format_tags(c.disliked_tags)}, "
@@ -119,7 +124,9 @@ def _print_report(case, drafts: list[CandidateDraft], metric: GEval) -> None:
 
     start, end = c.time_range
     print("--- input ---")
-    print(f"  region            : {c.region}")
+    print(f"  purpose           : {c.purpose}")
+    print(f"  headcount         : {c.headcount}")
+    print(f"  regions           : {c.regions}")
     print(f"  time_range        : {start.strftime('%H:%M')} ~ {end.strftime('%H:%M')}")
     print(f"  budget_per_person : {c.budget_per_person}")
     print(f"  liked_tags        : {_format_tags(c.liked_tags)}")

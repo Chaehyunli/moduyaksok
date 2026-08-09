@@ -5,7 +5,8 @@
 #              처리 로직을 검증한다.
 # 작성일      : 2026-08-09
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-09, region: str -> regions: list[str] 변경 반영. 지역 2개를 넣어 프롬프트에
+#             둘 다 들어가는지 검증하는 assert 추가.
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -23,7 +24,7 @@ _CONDITIONS = NormalizedConditions(
     purpose="date",
     headcount=2,
     time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
-    region="서울 잠실",
+    regions=["서울 잠실", "서울 성수"],
     liked_tags=[PreferenceTag(tag="콩국수", verifiable=True)],
     disliked_tags=[
         PreferenceTag(tag="해산물", verifiable=True),
@@ -134,6 +135,7 @@ def test_build_user_prompt_injects_place_candidates_and_conditions():
     assert "잠실장어와 한우" in prompt
     assert "OO카페" in prompt
     assert "서울 잠실" in prompt
+    assert "서울 성수" in prompt
     assert "50000" in prompt
 
 
