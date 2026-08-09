@@ -38,7 +38,8 @@ class NormalizedConditions(BaseModel):
     time_range: tuple[datetime, datetime]
     # 총 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만 —
     # validate_regions()가 강제. 여러 지역 각각에 대해 네이버 지역검색을 호출해
-    # 병합한다(app/services/naver_local_search.py의 search_places_for_regions()).
+    # 병합한다(app/services/naver_local_search.py의 search_places_for_regions(),
+    # 이 함수를 부를 POST /schedules 라우터는 아직 없음).
     regions: list[str]
 
     # 프런트(ConditionWizardView)에서 같은 규칙으로 먼저 걸러주지만, 요청을 직접

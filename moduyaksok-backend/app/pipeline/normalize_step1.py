@@ -77,7 +77,7 @@ class _ExtractedTags(BaseModel):
 def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> NormalizedConditions:
     """POST /schedules 요청 바디를 NormalizedConditions로 변환한다.
 
-    raw_input의 purpose/headcount/time_range/region/budget_per_person은 프런트에서
+    raw_input의 purpose/headcount/time_range/regions/budget_per_person은 프런트에서
     이미 구조화해서 보낸 값이라 그대로 통과시키고, liked_text/disliked_text(자유
     텍스트, 각 최대 100자)만 LLM 1회 호출로 구조화 태그(PreferenceTag)로 뽑는다.
 

@@ -87,9 +87,18 @@ async def search_places_for_regions(regions: list[str]) -> list[dict]:
     )
 
     merged: dict[str, dict] = {}
+    any_failed = False
     for result in results_per_query:
         if isinstance(result, BaseException):
+            any_failed = True
             continue
         for place in result:
             merged.setdefault(place["title"], place)
+
+    # merged가 비어도 "이 지역들에 후보가 진짜 없음"과 "호출이 전부 실패해서 못
+    # 받아온 것"은 다른 상황이다 — 후자를 빈 리스트로 조용히 돌려주면 호출부가
+    # "후보 없음"으로 오해한다. 일부만 실패했을 땐(partial success) 성공한 결과가
+    # 있으므로 raise하지 않는다.
+    if not merged and any_failed:
+        raise NaverSearchError("모든 지역·카테고리 조회가 실패해 병합할 결과가 없습니다.")
     return list(merged.values())

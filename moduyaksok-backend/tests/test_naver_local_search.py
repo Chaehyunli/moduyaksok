@@ -9,7 +9,11 @@
 import httpx
 import pytest
 
-from app.services.naver_local_search import NaverSearchError, search_places
+from app.services.naver_local_search import (
+    NaverSearchError,
+    search_places,
+    search_places_for_regions,
+)
 
 
 class _FakeResponse:
@@ -155,9 +159,6 @@ async def test_search_places_caps_display_at_max_five(monkeypatch):
     assert _FakeAsyncClient.captured["params"]["display"] == 5
 
 
-from app.services.naver_local_search import search_places_for_regions
-
-
 class _RecordingFakeAsyncClient:
     """query별로 다른 결과를 돌려주는 fake — region×category 팬아웃 검증용."""
 
@@ -224,3 +225,29 @@ async def test_search_places_for_regions_queries_each_region_with_every_category
 
     for category in _PLACE_CATEGORIES:
         assert f"서울 {category}" in _RecordingFakeAsyncClient.calls
+
+
+async def test_search_places_for_regions_raises_when_every_query_fails(monkeypatch):
+    # 모든 region×category 조회가 실패(타임아웃 등)하면 "후보 없음"(빈 리스트)과
+    # 구분해서 NaverSearchError를 올려야 한다 — 안 그러면 호출부가 "이 지역엔
+    # 진짜로 후보가 없다"로 오해한다.
+    _patch_client(monkeypatch, raise_timeout=True)
+
+    with pytest.raises(NaverSearchError):
+        await search_places_for_regions(["서울 잠실"])
+
+
+async def test_search_places_for_regions_partial_failure_does_not_raise(monkeypatch):
+    # 일부 쿼리만 실패했을 땐 성공한 결과가 있으므로 raise하지 않는다.
+    async def flaky_search_places(query, display=5):
+        if "카페" in query:
+            raise NaverSearchError("일부러 실패")
+        return [{"title": f"{query} 결과", "category": "한식", "address": "서울"}]
+
+    monkeypatch.setattr(
+        "app.services.naver_local_search.search_places", flaky_search_places
+    )
+
+    results = await search_places_for_regions(["서울 잠실"])
+
+    assert len(results) > 0

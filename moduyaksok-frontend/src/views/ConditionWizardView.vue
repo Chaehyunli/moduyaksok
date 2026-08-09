@@ -51,9 +51,12 @@ function areaOptionsFor(province: string) {
 }
 
 // 전체 개수는 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만.
-// "서울"처럼 넓은 지역을 여러 개 겹쳐 넣으면 백엔드가 네이버 API를 지역×카테고리로
-// 그만큼 더 호출해야 해서 비용/응답시간이 커지기 때문(2026-08-09 결정). 백엔드
-// NormalizedConditions.validate_regions()가 같은 규칙으로 다시 검증한다.
+// 네이버 API 호출 횟수는 지역 수 × 카테고리 수라 넓은/좁은 지역이나 다 똑같이
+// 계산된다 — 호출 비용 때문이 아니다. "서울"처럼 넓은 지역은 결과 상한(카테고리당
+// 5개)이 넓은 면적에 그대로 적용돼 검색 결과가 희석되므로, 넓은 지역을 여러 개
+// 겹쳐 넣으면 좁고 구체적인 지역 검색보다 관련성 낮은 결과가 병합 후보 풀을
+// 채우게 된다(2026-08-09 결정). 백엔드 NormalizedConditions.validate_regions()가
+// 같은 규칙으로 다시 검증한다.
 const broadCount = computed(() => regions.value.filter((r) => r.province && !r.area).length)
 const tooManyBroadRegions = computed(() => broadCount.value > 1)
 const canAddRegion = computed(() => regions.value.length < 3)
