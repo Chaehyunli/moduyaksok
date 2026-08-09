@@ -5,7 +5,8 @@
 #              기본 pytest 실행에서 빠짐 — 돌리려면: pytest -m eval tests/eval
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-09, judge(Solar)의 JSON 파싱 실패로 채점 자체가 깨지는 문제(Step2 eval에서
+#             실측)가 여기도 똑같이 해당돼 conftest.py의 measure_with_retry()로 완화.
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -15,6 +16,7 @@ from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 
 from app.pipeline.normalize_step1 import normalize_conditions
 from app.pipeline.schemas import PreferenceTag
+from tests.eval.conftest import measure_with_retry
 from tests.eval.golden_step1 import GOLDEN_STEP1_CASES
 
 pytestmark = pytest.mark.eval
@@ -79,7 +81,7 @@ def test_normalize_conditions_tag_extraction_quality(case, eval_credential, eval
         model=eval_judge_model,
         threshold=0.7,
     )
-    metric.measure(test_case)
+    measure_with_retry(metric, test_case)
 
     # 통과/실패 상관없이 항상 출력 — pytest -m eval ... -s로 실행해야 바로 보인다
     # (-s 없으면 pytest가 stdout을 캡처해서 실패한 테스트에서만 보여줌).

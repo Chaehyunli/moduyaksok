@@ -5,18 +5,30 @@
 #              conftest.py라 tests/eval/ 밑 테스트 파일들이 import 없이 바로 씀.
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-09, measure_with_retry() 추가 — judge(Solar)가 가끔 GEval이 기대하는
+#             JSON 뒤에 여분의 텍스트를 붙여서 ValueError로 채점 자체가 깨지는 걸
+#             실측으로 확인(Step2 eval에서 재현). 채점 대상 파이프라인의 결함이
+#             아니라 judge 쪽 출력 형식 불안정이라 재시도로 완화 — Step1/Step2 eval
+#             테스트 둘 다 여기서 가져다 씀(conftest.py라 import 없이 바로 보임).
 # ------------------------------------------------------------------
 import pytest
 from anthropic import Anthropic
+from deepeval.metrics import GEval
 from deepeval.models import DeepEvalBaseLLM
+from deepeval.test_case import LLMTestCase
 from openai import OpenAI
 
 from app.config import settings
 from app.pipeline.models import ModelTier, get_model
 from app.services.llm_ping import ping_provider
 
-_UPSTAGE_BASE_URL = "https://api.upstage.ai/v1/solar"
+# provider별 OpenAI 호환 엔드포인트. anthropic은 여기 없음 — Anthropic SDK를
+# 따로 쓰기 때문에(ProviderJudgeModel.generate() 참고) base_url 개념 자체가
+# 적용 안 됨. 3개 provider 중 upstage/openai만 이 SDK를 공유한다.
+_OPENAI_COMPATIBLE_BASE_URLS: dict[str, str | None] = {
+    "upstage": "https://api.upstage.ai/v1/solar",
+    "openai": None,  # OpenAI SDK 기본 엔드포인트(api.openai.com) 그대로 사용
+}
 
 # DEEPEVAL_UPSTAGE_API_KEY -> DEEPEVAL_OPENAI_API_KEY -> DEEPEVAL_ANTHROPIC_API_KEY
 # 순으로 시도. 지금은 upstage만 실제로 채워져 있고 나머지는 비어있을 수 있음 —
@@ -71,7 +83,7 @@ class ProviderJudgeModel(DeepEvalBaseLLM):
             )
             return response.content[0].text
 
-        base_url = _UPSTAGE_BASE_URL if self.provider == "upstage" else None
+        base_url = _OPENAI_COMPATIBLE_BASE_URLS[self.provider]
         client = OpenAI(api_key=self.api_key, base_url=base_url)
         response = client.chat.completions.create(
             model=self.name,
@@ -97,3 +109,20 @@ def eval_credential() -> tuple[str, str]:
 def eval_judge_model(eval_credential: tuple[str, str]) -> ProviderJudgeModel:
     provider, api_key = eval_credential
     return ProviderJudgeModel(provider, api_key)
+
+
+_JUDGE_JSON_RETRY_ATTEMPTS = 3
+
+
+def measure_with_retry(metric: GEval, test_case: LLMTestCase) -> None:
+    """judge가 GEval이 기대하는 JSON 뒤에 여분 텍스트를 붙여 ValueError로 채점이
+    깨지면 몇 번 재시도한다 — 보통 다음 시도에서 정상적인 JSON을 돌려준다. 다
+    실패하면 마지막 예외를 그대로 올린다."""
+    for attempt in range(1, _JUDGE_JSON_RETRY_ATTEMPTS + 1):
+        try:
+            metric.measure(test_case)
+            return
+        except ValueError:
+            if attempt == _JUDGE_JSON_RETRY_ATTEMPTS:
+                raise
+            print(f"  [judge JSON 파싱 실패, 재시도 {attempt}/{_JUDGE_JSON_RETRY_ATTEMPTS}]")

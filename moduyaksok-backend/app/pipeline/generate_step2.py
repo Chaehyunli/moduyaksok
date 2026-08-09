@@ -40,6 +40,17 @@
 # 2026-08-09, NormalizedConditions.region: str -> regions: list[str] 변경(Task 1)에
 #             맞춰 _build_user_prompt가 지역을 콤마로 이어 붙여 전부 프롬프트에
 #             주입하도록 수정.
+# 2026-08-09, eval 재실행에서 재현된 미해결 이슈 3건 중 2건 해결:
+#             (1) Solar가 activity의 name/category를 다른 place_candidates 항목
+#             것과 뒤섞어 반환하는 결함 — 프롬프트로 못 고치는 모델 신뢰성 문제라,
+#             반환 직전 _correct_categories()로 place_candidates 기준 category를
+#             결정론적으로 재보정(LLM이 만든 category는 아예 안 믿음).
+#             (2) 활동 가격 합이 budget_per_person을 넘는데도 "초과될 수 있다"고만
+#             적고 그대로 내는 사례 실측 — Task에 "하한 합 계산해서 넘으면 다시
+#             구성해라" 명시.
+#             (3) place_candidates가 적을 때 같은 장소를 반복 방문시켜 time_range를
+#             억지로 채우는 사례도 실측 — "같은 장소는 최대 1번만, 활동 개수 줄여도
+#             된다"고 명시.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -48,8 +59,14 @@ from app.pipeline.models import ModelTier, get_model
 from app.pipeline.schemas import CandidateDraft, NormalizedConditions, PreferenceTag
 from app.services.structured_llm import call_structured
 
-# 후보마다 어느 정도 창의성이 필요하지만 3배로 병렬 호출되니 비용도 고려 — MID 티어.
-TIER = ModelTier.MID
+# MID -> HIGH로 격상(2026-08-09). 예산 합산·중복 방문 금지 지시를 추가하자 MID
+# (solar-pro)가 하드 제약(환각 방지/verifiable=true/예산 합/중복 금지) + 소프트
+# 신호 + 관점 3개를 동시에 못 버티는 걸 실측 확인 — rationale엔 "활동을 줄여
+# 재설계한다"고 써놓고 실제 activities에는 반영을 안 하는 등 텍스트와 구조화
+# 출력이 어긋나는 패턴이 나옴. Step1이 스키마 복잡화 때 겪은 것과 같은 패턴
+# (PreferenceTag 2필드로 복잡해지자 LOW가 못 버텨서 MID로 올려 즉시 해결됨,
+# 2026-08-07) — 여기서도 같은 처방으로 HIGH까지 올려서 재검증.
+TIER = ModelTier.HIGH
 
 # 관점을 다르게 줘서 후보 간 실질적 차별성을 확보한다 (기술설계 §4 Step 2).
 # (라벨, 상세 지시문) 쌍 — 라벨만 주면 관점별로 뭘 다르게 판단해야 하는지 모델이
@@ -93,6 +110,13 @@ _ROLE_TASK = """\
 지켜라. place_candidates에는 가격 정보가 없으니 category/title 이름만으로 판단해라 \
 — '파인다이닝', '오마카세'처럼 카테고리 이름 자체가 명백히 고가를 뜻하는 장소는 \
 budget_per_person이 낮으면(예: 2만원 이하) activities에서 제외해라.
+- 활동을 다 고른 뒤, 각 activity의 price_range_per_person 하한을 모두 더해봐라. \
+그 합이 budget_per_person을 넘으면 활동을 빼거나 더 저렴한 후보로 바꿔서 합이 \
+budget_per_person 이내가 되게 다시 구성해라 — "넘을 수도 있다"고 rationale에 \
+적어두는 걸로 대신하지 마라.
+- 같은 장소는 한 초안 안에서 최대 1번만 써라. place_candidates가 적어서 \
+time_range를 다 못 채우더라도 괜찮다 — 활동 개수를 줄여라. 같은 곳을 여러 번 \
+반복 방문시켜서 시간을 억지로 채우지 마라.
 - disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 \
 판단해 반드시 배제해라.
 - liked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
@@ -179,6 +203,24 @@ def _call_all_perspectives_sync(
         return results
 
 
+def _correct_categories(draft: CandidateDraft, place_candidates: list[dict]) -> CandidateDraft:
+    """LLM이 돌려준 activity.category는 못 믿는다 — Solar가 서로 다른 두 활동의
+    name/category를 뒤섞어 반환하는 결함이 실측으로 확인됨(2026-08-09, golden_step2.py
+    soft_signal_crowdedness_needs_hedge 등에서 재현). name이 place_candidates의
+    title과 정확히 일치하면 category를 그 place_candidates 항목 것으로 덮어쓴다 —
+    place_candidates는 이미 확정된 신뢰 데이터라 LLM이 다시 만들 필요가 없다.
+    일치하는 title이 없으면(환각 의심) 손대지 않는다 — 그건 GEval 채점의 몫이다.
+    """
+    category_by_title = {p.get("title", ""): p.get("category", "") for p in place_candidates}
+    corrected_activities = [
+        activity.model_copy(update={"category": category_by_title[activity.name]})
+        if activity.name in category_by_title
+        else activity
+        for activity in draft.activities
+    ]
+    return draft.model_copy(update={"activities": corrected_activities})
+
+
 async def generate_candidates(
     provider: str,
     api_key: str,
@@ -199,6 +241,9 @@ async def generate_candidates(
 
     관점 3개 중 일부가 timeout(180초)이나 예외로 실패하면 해당 관점만 스킵하고
     나머지로 진행한다. 3개 다 실패하면 RuntimeError.
+
+    반환 직전 각 활동의 category를 place_candidates 기준으로 재보정한다
+    (_correct_categories) — LLM이 만든 category는 신뢰하지 않는다.
     """
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(
@@ -207,4 +252,4 @@ async def generate_candidates(
     drafts = [r for r in results if isinstance(r, CandidateDraft)]
     if not drafts:
         raise RuntimeError("Step2: 3개 관점 호출이 모두 실패했습니다.")
-    return drafts
+    return [_correct_categories(draft, place_candidates) for draft in drafts]

@@ -129,6 +129,65 @@ async def test_generate_candidates_all_failures_raises_runtime_error(monkeypatch
         await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
 
 
+async def test_generate_candidates_corrects_category_mismatched_from_place_candidates(monkeypatch):
+    """Solar가 activity의 category를 다른 장소 것과 뒤섞어 반환하는 결함이 실측으로
+    확인됨(golden_step2.py 여러 케이스에서 재현) — LLM이 되돌려준 category는 못 믿고,
+    place_candidates의 title이 일치하는 항목에서 category를 다시 가져와 덮어쓴다.
+    """
+
+    def fake_call_structured(**kwargs):
+        return CandidateDraft(
+            title="초안",
+            activities=[
+                ActivityDraft(
+                    name="잠실장어와 한우",
+                    category="공원,자연>한강공원",  # place_candidates의 실제 category("한식")와 다름
+                    start_time="11:00",
+                    end_time="12:30",
+                    price_range_per_person=(20000, 30000),
+                )
+            ],
+            rationale="반영",
+        )
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    drafts = await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
+
+    for draft in drafts:
+        assert draft.activities[0].category == "한식"
+
+
+async def test_generate_candidates_leaves_category_unchanged_when_name_not_in_place_candidates(
+    monkeypatch,
+):
+    """place_candidates에 없는 이름(환각)이면 고칠 근거가 없으니 category를 그대로
+    둔다 — 환각 자체를 잡아내는 건 GEval 채점의 몫이고, 이 보정은 "이름은 맞는데
+    category만 틀린" 경우만 고친다."""
+
+    def fake_call_structured(**kwargs):
+        return CandidateDraft(
+            title="초안",
+            activities=[
+                ActivityDraft(
+                    name="place_candidates에 없는 장소",
+                    category="아무 카테고리",
+                    start_time="11:00",
+                    end_time="12:30",
+                    price_range_per_person=(20000, 30000),
+                )
+            ],
+            rationale="반영",
+        )
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    drafts = await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
+
+    for draft in drafts:
+        assert draft.activities[0].category == "아무 카테고리"
+
+
 def test_build_user_prompt_injects_place_candidates_and_conditions():
     prompt = _build_user_prompt(_CONDITIONS, _PLACE_CANDIDATES)
 
