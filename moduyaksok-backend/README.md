@@ -77,7 +77,7 @@ tests/           pytest
 | `schemas.py` | - | - | ✅ 단계 간 입출력 Pydantic 모델 (`NormalizedConditions`, `CandidateDraft`, `ScheduleResponse` 등) |
 | `normalize_step1.py` | Step1 조건 정규화 | MID | ✅ 구현 완료. `structured_llm.call_structured`로 liked_text/disliked_text만 태그(PreferenceTag) 추출, 나머지 필드는 그대로 조립. RTF+few-shot 프롬프트. 처음엔 LOW로 시작했으나 verifiable 필드 추가로 스키마가 복잡해지자 LOW(solar-mini)가 빈 입력에서 few-shot 예시를 베끼는 문제가 DeepEval로 실측돼 MID(solar-pro)로 격상, 골든셋 9/9 통과 |
 | `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ✅ 구현 완료. 관점 3개(가성비/동선최소화/취향반영)를 `concurrent.futures`로 병렬 호출(개별 타임아웃 180초, 부분 실패 허용 — `asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제). RTF 프롬프트(few-shot 생략 — 관점 간 차별성 확보 목적), verifiable=true 하드 제약/false 소프트 신호+hedge 지시. `naver_local_search.py`로 조회한 place_candidates 안에서만 장소 선택하게 해 환각 방지. 골든 4케이스 GEval 4/4 통과 |
-| `enrich_step3.py` | Step3 이동 동선 보강 | - | ⬜ 미구현. LLM 안 씀 (네이버 지도 Directions API) |
+| `enrich_step3.py` | Step3 이동 동선 보강 | - | ⬜ 미구현. LLM 안 씀 (ODsay 대중교통 길찾기 API) |
 | `synthesize_step4.py` | Step4 검증·병합 (Aggregator) | HIGH | ⬜ 미구현. 후보 간 비교(유사도 검사 포함)가 필요해 1번 호출에 3개를 같이 넣음. 랭킹 없이 동등한 3개 확정, why_recommended만 생성 |
 
 ## 모델 (`app/models/`)
