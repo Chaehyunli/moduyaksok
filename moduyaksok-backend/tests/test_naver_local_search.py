@@ -153,3 +153,74 @@ async def test_search_places_caps_display_at_max_five(monkeypatch):
     await search_places("아무거나", display=20)
 
     assert _FakeAsyncClient.captured["params"]["display"] == 5
+
+
+from app.services.naver_local_search import search_places_for_regions
+
+
+class _RecordingFakeAsyncClient:
+    """query별로 다른 결과를 돌려주는 fake — region×category 팬아웃 검증용."""
+
+    calls: list[str] = []
+
+    def __init__(self, responses_by_query: dict[str, list[dict]]):
+        self._responses = responses_by_query
+
+    def __call__(self, *args, **kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        query = params["query"]
+        _RecordingFakeAsyncClient.calls.append(query)
+        items = self._responses.get(query, [])
+        return _FakeResponse(200, {"items": items})
+
+
+async def test_search_places_for_regions_merges_results_across_regions(monkeypatch):
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 맛집": [{"title": "잠실집", "category": "한식", "address": "서울 잠실"}],
+            "서울 성수 맛집": [{"title": "성수집", "category": "한식", "address": "서울 성수"}],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_regions(["서울 잠실", "서울 성수"])
+
+    titles = {r["title"] for r in results}
+    assert "잠실집" in titles
+    assert "성수집" in titles
+
+
+async def test_search_places_for_regions_dedupes_by_title(monkeypatch):
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 맛집": [{"title": "중복집", "category": "한식", "address": "서울 잠실"}],
+            "서울 잠실 카페": [{"title": "중복집", "category": "한식", "address": "서울 잠실"}],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_regions(["서울 잠실"])
+
+    assert len([r for r in results if r["title"] == "중복집"]) == 1
+
+
+async def test_search_places_for_regions_queries_each_region_with_every_category(monkeypatch):
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    await search_places_for_regions(["서울"])
+
+    from app.services.naver_local_search import _PLACE_CATEGORIES
+
+    for category in _PLACE_CATEGORIES:
+        assert f"서울 {category}" in _RecordingFakeAsyncClient.calls

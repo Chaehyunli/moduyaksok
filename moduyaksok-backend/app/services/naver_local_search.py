@@ -10,7 +10,12 @@
 #             엔드포인트 도메인과 인증 헤더 이름이 바뀐 것으로 확인(실측+문서
 #             확인). X-Naver-Client-Id/Secret이 아니라
 #             X-NCP-APIGW-API-KEY-ID/X-NCP-APIGW-API-KEY를 쓴다.
+# 2026-08-09, search_places_for_regions() 추가 — regions(최대 3개)를 받아 지역×
+#             카테고리(_PLACE_CATEGORIES)로 팬아웃 검색 후 title 기준 중복 제거해
+#             병합. search_places() 자체는 안 건드림. 이 함수를 부를 POST /schedules
+#             라우터는 아직 없음(Step2와 같은 패턴 — 함수 먼저, 라우터는 나중).
 # ------------------------------------------------------------------
+import asyncio
 import re
 
 import httpx
@@ -61,3 +66,30 @@ async def search_places(query: str, display: int = _MAX_DISPLAY) -> list[dict]:
         item["title"] = _TAG_RE.sub("", item.get("title", ""))
         item["description"] = _TAG_RE.sub("", item.get("description", ""))
     return items
+
+
+# region마다 이 카테고리들로 각각 검색해서 place_candidates를 채운다. 실제 사용
+# 데이터 보고 필요한 카테고리 추가/조정할 것(REGIONS 목록과 같은 원칙).
+_PLACE_CATEGORIES = ("맛집", "카페", "액티비티", "문화시설")
+
+
+async def search_places_for_regions(regions: list[str]) -> list[dict]:
+    """regions(최대 3개, 호출부가 이미 검증했다고 가정) 각각에 대해
+    _PLACE_CATEGORIES로 병렬 검색하고 title 기준으로 중복 제거해 병합한다.
+
+    "서울"처럼 시/도만 있는 넓은 지역과 "서울 잠실"처럼 세부지역까지 있는 좁은
+    지역을 구분하지 않고 동일하게 처리한다 — query 문자열에 그대로 이어붙일 뿐이라
+    네이버 지역검색이 알아서 관련도 순으로 걸러준다(display=5로 이미 상한).
+    """
+    queries = [f"{region} {category}" for region in regions for category in _PLACE_CATEGORIES]
+    results_per_query = await asyncio.gather(
+        *(search_places(query) for query in queries), return_exceptions=True
+    )
+
+    merged: dict[str, dict] = {}
+    for result in results_per_query:
+        if isinstance(result, BaseException):
+            continue
+        for place in result:
+            merged.setdefault(place["title"], place)
+    return list(merged.values())
