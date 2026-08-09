@@ -23,6 +23,20 @@
 #             구조로 변경 — concurrent.futures.Future.result(timeout=...)로
 #             스레드 안에서 타임아웃을 처리하고, async 경계는
 #             loop.run_in_executor 한 번만 넘는다.
+# 2026-08-09, tests/eval/golden_step2.py의 budget_conscious_selection 케이스가
+#             GEval 0.50/0.7로 실패 — place_candidates에 가격 정보가 없어서
+#             모델이 예산 대비 카테고리 위험도를 스스로 추론해야 하는데,
+#             프롬프트가 budget_per_person을 "지켜라"고만 하고 판단 기준을
+#             안 줘서 파인다이닝 카테고리를 예산 무시하고 넣는 걸 실측으로 확인.
+#             "카테고리 이름이 명백히 고가면 제외해라"를 Task에 명시해서 재실측
+#             — 골든 4케이스 재통과(0.70~0.90).
+# 2026-08-09, 골든 데이터의 place_candidates가 3~4개뿐이라 관점 3개가 결국 같은
+#             장소들을 돌려써서 초안이 서로 비슷해지는 문제 확인 — 데이터 늘리는
+#             것과 별개로, PERSPECTIVES 자체가 "이 관점을 최우선으로 고려해라: "
+#             + 한 줄 라벨뿐이라 관점별로 뭘 다르게 해야 하는지가 모호했던 것도
+#             원인. PERSPECTIVES를 (라벨, 상세 지시문) 쌍으로 바꿔서 관점마다
+#             구체적 판단 기준(실내/실외 구분, 동선은 address 근접도로 판단, 취향
+#             태그 최대 반영 기준)을 따로 명시.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -35,10 +49,30 @@ from app.services.structured_llm import call_structured
 TIER = ModelTier.MID
 
 # 관점을 다르게 줘서 후보 간 실질적 차별성을 확보한다 (기술설계 §4 Step 2).
-PERSPECTIVES = (
-    "실내 중심, 가성비 우선",
-    "동선 최소화 우선",
-    "사용자 취향 태그 최대 반영",
+# (라벨, 상세 지시문) 쌍 — 라벨만 주면 관점별로 뭘 다르게 판단해야 하는지 모델이
+# 알아서 해석하게 되고, 그러면 place_candidates가 적을 때 세 관점이 결국 비슷한
+# 선택으로 수렴한다(실측 확인, 2026-08-09). 관점마다 구체적 판단 기준을 명시.
+PERSPECTIVES: tuple[tuple[str, str], ...] = (
+    (
+        "실내 중심, 가성비 우선",
+        "category로 실내 장소임을 판단할 수 있는 곳(카페, 음식점, 실내 체험/전시/"
+        "보드게임카페 등)을 우선 선택하고, 공원·산책로·야외 피크닉존처럼 명백히 "
+        "실외인 장소는 피해라. price_range_per_person의 하한이 낮은 장소를 우선 "
+        "배치해 budget_per_person 대비 여유를 최대한 남겨라.",
+    ),
+    (
+        "동선 최소화 우선",
+        "place_candidates의 address/roadAddress를 비교해서 서로 가장 가까운(같은 "
+        "동·인접 구역) 장소들로만 구성해라. 다른 동·지역에 있는 장소를 섞지 말고, "
+        "필요하면 활동 개수를 줄여서라도 이동 거리를 줄여라.",
+    ),
+    (
+        "사용자 취향 태그 최대 반영",
+        "liked_tags 중 verifiable=true인 태그와 category/title이 일치하는 장소를 "
+        "최대한 많이 포함해라(가능하면 하나도 빠짐없이). verifiable=false인 "
+        "liked_tags도 장소 유형(관광명소/한적한 동네 가게 등)으로 미루어 최대한 "
+        "반영하되 절대 보장한다고 말하지 마라.",
+    ),
 )
 
 # 개별 관점 호출 타임아웃(초). 각 호출이 실제로 얼마나 걸릴지 아직 실측 전이라
@@ -53,7 +87,9 @@ _ROLE_TASK = """\
 # Task
 - place_candidates 목록에 있는 장소만 사용해라. 목록에 없는 장소를 지어내지 마라.
 - headcount(인원 수), time_range(시작~종료 시각), budget_per_person(1인 예산) 조건을 \
-지켜라.
+지켜라. place_candidates에는 가격 정보가 없으니 category/title 이름만으로 판단해라 \
+— '파인다이닝', '오마카세'처럼 카테고리 이름 자체가 명백히 고가를 뜻하는 장소는 \
+budget_per_person이 낮으면(예: 2만원 이하) activities에서 제외해라.
 - disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 \
 판단해 반드시 배제해라.
 - liked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
@@ -61,12 +97,12 @@ _ROLE_TASK = """\
 - verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 취향이다 \
 — 참고만 하고 절대 보장한다고 말하지 마라. rationale에서도 "사람이 없습니다"처럼 \
 단정하지 말고 "비교적 한산한 편인 곳으로 골랐어요"처럼 hedge된 표현을 써라.
-- 이번 초안은 다음 관점을 최우선으로 고려해라: {perspective}
+- 이번 초안은 다음 관점을 최우선으로 고려해라: {label}. 구체적으로: {instruction}
 
 # Format
 title(일정 제목), activities(각 항목은 name/category/start_time/end_time(HH:MM)/\
 price_range_per_person(1인당 최소~최대 가격)), rationale(이 초안을 왜 이렇게 \
-짰는지, {perspective} 관점을 어떻게 반영했는지 설명)\
+짰는지, {label} 관점을 어떻게 반영했는지 설명)\
 """
 
 
@@ -88,8 +124,9 @@ def _format_place_candidates(place_candidates: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_system_prompt(perspective: str) -> str:
-    return _ROLE_TASK.format(perspective=perspective)
+def _build_system_prompt(perspective: tuple[str, str]) -> str:
+    label, instruction = perspective
+    return _ROLE_TASK.format(label=label, instruction=instruction)
 
 
 def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[dict]) -> str:

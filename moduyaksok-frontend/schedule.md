@@ -21,4 +21,4 @@
 | 피드백 연동 (`POST /schedules/{id}/feedback`) | ⬜ | | 🔴 | `FeedbackView` |
 | 확정·공유 연동 (`POST .../confirm`, `POST .../share`, `GET /share/{slug}`) | ⬜ | | 🟡 | `ShareView`, `PublicShareView` |
 | 이미지·PDF 다운로드 구현 | ⬜ | | 🟡 | `ShareView`에 버튼만 있고 미구현 |
-| 배포 설정 (Vercel) | ⬜ | | - | |
+| 배포 설정 (Vercel) | ✅ | 2026-08-09 | - | `moduyaksok.vercel.app`. SPA 새로고침 404 방지용 `vercel.json` rewrite 추가 |

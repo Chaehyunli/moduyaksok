@@ -89,16 +89,16 @@ async def test_generate_candidates_calls_each_perspective_exactly_once(monkeypat
     seen_perspectives: list[str] = []
 
     def fake_call_structured(**kwargs):
-        for p in PERSPECTIVES:
-            if p in kwargs["system"]:
-                seen_perspectives.append(p)
+        for label, _instruction in PERSPECTIVES:
+            if label in kwargs["system"]:
+                seen_perspectives.append(label)
         return _fake_draft(kwargs["system"])
 
     monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
 
     await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
 
-    assert sorted(seen_perspectives) == sorted(PERSPECTIVES)
+    assert sorted(seen_perspectives) == sorted(label for label, _instruction in PERSPECTIVES)
 
 
 async def test_generate_candidates_partial_failure_returns_remaining(monkeypatch):
@@ -166,6 +166,8 @@ def test_build_system_prompt_states_soft_signal_for_verifiable_false():
 
 
 def test_build_system_prompt_includes_perspective_text():
+    label, instruction = PERSPECTIVES[1]
     prompt = _build_system_prompt(PERSPECTIVES[1])
 
-    assert PERSPECTIVES[1] in prompt
+    assert label in prompt
+    assert instruction in prompt
