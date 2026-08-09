@@ -677,7 +677,37 @@ export interface Conditions {
 
 - [ ] **Step 2: `ConditionWizardView.vue` — 폼 상태를 지역 배열로 변경**
 
-`form` 객체에서 `regionProvince`/`regionArea` 두 필드를 제거하고, 별도 `ref`로 지역 행 배열을 관리한다. `const form = reactive({...})` 선언 바로 아래, `areaOptions`/`watch`/`region` computed를 아래 블록으로 통째로 교체:
+`const form = reactive({...})`에서:
+
+```typescript
+const form = reactive({
+  purpose: '',
+  headcount: 2,
+  startTime: '10:00',
+  endTime: '21:00',
+  regionProvince: '',
+  regionArea: '',
+  likedText: '',
+  dislikedText: '',
+  budgetPerPerson: 50000,
+})
+```
+
+를
+
+```typescript
+const form = reactive({
+  purpose: '',
+  headcount: 2,
+  startTime: '10:00',
+  endTime: '21:00',
+  likedText: '',
+  dislikedText: '',
+  budgetPerPerson: 50000,
+})
+```
+
+로 바꾼다(`regionProvince`/`regionArea` 두 필드 제거 — 아래에서 별도 `ref`로 지역 행 배열을 관리하게 대체됨). 그다음 기존 `areaOptions`/`watch`/`region` computed 블록(파일에서 `const areaOptions = computed(...)`부터 `const region = computed(...)`까지)을 아래 블록으로 통째로 교체:
 
 ```typescript
 interface RegionRow {
