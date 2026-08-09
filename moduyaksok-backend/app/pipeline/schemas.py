@@ -14,6 +14,12 @@
 #             로직은 안 바뀜. 개수 제한(최대 3, 시/도만 최대 1)·포함관계 중복 제거는
 #             validate_regions()가 생성 시점에 강제 — 프런트 검증과 같은 규칙을
 #             백엔드에서도 재검증(요청 직접 조작 대비).
+# 2026-08-09, PlaceSelectionDraft/CandidateSelectionDraft 추가 — Step2를 "장소
+#             선택"(LLM)과 "시간 배정"(결정론적 계산)으로 분리하는 실험. 하나의
+#             LLM 호출에 환각 방지·verifiable 하드/소프트·예산·반복방지·시간
+#             겹침 없음·관점 반영을 다 시키니 HIGH 티어로도 일부 케이스에서
+#             못 버티는 걸 실측 확인(generate_step2.py 변경 이력 참고) — 시간
+#             배정을 코드로 떼어내서 LLM 부담을 줄여본다.
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -89,6 +95,25 @@ class CandidateDraft(BaseModel):
     title: str
     activities: list[ActivityDraft]
     rationale: str  # Step 4에서 랭킹 근거로 사용
+
+
+# generate_step2._call_all_perspectives_sync()가 LLM에서 받는 "1단계" 출력 —
+# 장소 선택·예산·취향 판단만 LLM이 하고, 시간 배정(start_time/end_time)은
+# LLM 출력에 안 넣는다. 겹침 없는 시간 배정은 결정론적 계산 문제라 LLM이
+# "환각 방지 + verifiable 하드/소프트 + 예산 + 반복방지 + 시간 겹침 없음 +
+# 관점 반영"을 한 번에 다 하게 시키면 못 버틴다는 게 실측으로 확인됨(2026-08-09,
+# generate_step2.py 변경 이력 참고) — 시간 배정은 떼어내서
+# generate_step2._schedule_places()가 결정론적으로 채운다.
+class PlaceSelectionDraft(BaseModel):
+    name: str
+    category: str
+    price_range_per_person: tuple[int, int]
+
+
+class CandidateSelectionDraft(BaseModel):
+    title: str
+    places: list[PlaceSelectionDraft]
+    rationale: str
 
 
 # ── Step 3. 이동 동선 보강 (enrich_routes) 출력 ────────────────────────────

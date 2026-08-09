@@ -51,21 +51,37 @@
 #             (3) place_candidates가 적을 때 같은 장소를 반복 방문시켜 time_range를
 #             억지로 채우는 사례도 실측 — "같은 장소는 최대 1번만, 활동 개수 줄여도
 #             된다"고 명시.
+# 2026-08-09, MID -> HIGH 티어로도 예산 합산/반복방지/시간 겹침 없음을 한 번에
+#             다 못 지키는 사례가 남아있는 걸 실측 확인 — 한 LLM 호출에 너무 많은
+#             제약(환각 방지·verifiable 하드/소프트·예산·반복방지·시간 겹침 없음·
+#             관점 반영)을 동시에 시키는 게 근본 원인이라고 판단. "장소 선택"(LLM,
+#             CandidateSelectionDraft)과 "시간 배정"(결정론적 계산, _schedule_places)
+#             을 분리 — 시간 겹침 없음은 이제 계산 구조상 항상 보장되고, LLM은
+#             장소 선택·예산·취향 판단에만 집중한다. 골든 5케이스 재실측 결과
+#             5/5 통과(전부 0.80) — 분리 전엔 프롬프트/기준을 여러 번 고쳐도
+#             매번 2~3개가 실패했는데, 분리 직후 한 번에 전부 통과함. judge
+#             reason에서도 시간 겹침·time_range 위반 지적이 5케이스 전부 사라짐 —
+#             "LLM에게 한 번에 너무 많이 시키지 말고, 결정론적으로 계산 가능한
+#             부분은 코드로 떼어내라"는 게 이 프로젝트의 유효한 처방으로 확인됨.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 from app.pipeline.models import ModelTier, get_model
-from app.pipeline.schemas import CandidateDraft, NormalizedConditions, PreferenceTag
+from app.pipeline.schemas import (
+    ActivityDraft,
+    CandidateDraft,
+    CandidateSelectionDraft,
+    NormalizedConditions,
+    PlaceSelectionDraft,
+    PreferenceTag,
+)
 from app.services.structured_llm import call_structured
 
-# MID -> HIGH로 격상(2026-08-09). 예산 합산·중복 방문 금지 지시를 추가하자 MID
-# (solar-pro)가 하드 제약(환각 방지/verifiable=true/예산 합/중복 금지) + 소프트
-# 신호 + 관점 3개를 동시에 못 버티는 걸 실측 확인 — rationale엔 "활동을 줄여
-# 재설계한다"고 써놓고 실제 activities에는 반영을 안 하는 등 텍스트와 구조화
-# 출력이 어긋나는 패턴이 나옴. Step1이 스키마 복잡화 때 겪은 것과 같은 패턴
-# (PreferenceTag 2필드로 복잡해지자 LOW가 못 버텨서 MID로 올려 즉시 해결됨,
-# 2026-08-07) — 여기서도 같은 처방으로 HIGH까지 올려서 재검증.
+# MID -> HIGH로 격상(2026-08-09, 장소선택/시간배정 분리 이전). 예산 합산·중복
+# 방문 금지 지시를 추가하자 MID(solar-pro)가 하드 제약들을 동시에 못 버티는 걸
+# 실측 확인. 분리 이후에도 LLM이 여전히 예산·취향 등 여러 판단을 하므로 HIGH 유지.
 TIER = ModelTier.HIGH
 
 # 관점을 다르게 줘서 후보 간 실질적 차별성을 확보한다 (기술설계 §4 Step 2).
@@ -100,36 +116,43 @@ PERSPECTIVES: tuple[tuple[str, str], ...] = (
 # 처리"의 "예: 20초"는 참고 예시일 뿐, 이 프로젝트는 3분으로 결정).
 TIMEOUT_SECONDS = 180
 
+# _schedule_places()가 쓰는 시간 배정 상수. 활동 하나당 30~90분 사이로 잡고,
+# 활동 사이엔 이동 여유시간을 둔다 — Step3가 실제 이동시간을 채워넣기 전까지의
+# 자리 표시자 성격. 값 자체는 아직 실측 전이라 임의로 정함, 필요하면 조정할 것.
+_ACTIVITY_BUFFER_MINUTES = 30
+_MIN_ACTIVITY_MINUTES = 30
+_MAX_ACTIVITY_MINUTES = 90
+
 _ROLE_TASK = """\
 # Role
-너는 주어진 조건과 장소 후보 목록 안에서 만남 일정 초안을 만드는 전문 플래너다.
+너는 주어진 조건과 장소 후보 목록 안에서 만남 일정에 쓸 장소를 고르는 전문 플래너다.
 
 # Task
-- place_candidates 목록에 있는 장소만 사용해라. 목록에 없는 장소를 지어내지 마라.
-- headcount(인원 수), time_range(시작~종료 시각), budget_per_person(1인 예산) 조건을 \
-지켜라. place_candidates에는 가격 정보가 없으니 category/title 이름만으로 판단해라 \
-— '파인다이닝', '오마카세'처럼 카테고리 이름 자체가 명백히 고가를 뜻하는 장소는 \
-budget_per_person이 낮으면(예: 2만원 이하) activities에서 제외해라.
-- 활동을 다 고른 뒤, 각 activity의 price_range_per_person 하한을 모두 더해봐라. \
-그 합이 budget_per_person을 넘으면 활동을 빼거나 더 저렴한 후보로 바꿔서 합이 \
-budget_per_person 이내가 되게 다시 구성해라 — "넘을 수도 있다"고 rationale에 \
-적어두는 걸로 대신하지 마라.
-- 같은 장소는 한 초안 안에서 최대 1번만 써라. place_candidates가 적어서 \
-time_range를 다 못 채우더라도 괜찮다 — 활동 개수를 줄여라. 같은 곳을 여러 번 \
-반복 방문시켜서 시간을 억지로 채우지 마라.
-- disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 \
-판단해 반드시 배제해라.
+- place_candidates 목록에 있는 장소만 골라라. 목록에 없는 장소를 지어내지 마라.
+- 같은 장소를 두 번 이상 고르지 마라 — 각 장소는 이 초안에서 최대 1번만 쓴다.
+- headcount(인원 수), budget_per_person(1인 예산) 조건을 고려해라. place_candidates에는 \
+가격 정보가 없으니 category/title 이름만으로 판단해라 — '파인다이닝', '오마카세'처럼 \
+카테고리 이름 자체가 명백히 고가를 뜻하는 장소는 budget_per_person이 낮으면(예: 2만원 \
+이하) 고르지 마라.
+- 고른 장소들의 price_range_per_person 하한을 모두 더해봐라. 그 합이 budget_per_person을 \
+넘으면 장소를 빼거나 더 저렴한 후보로 바꿔서 합이 budget_per_person 이내가 되게 다시 \
+골라라.
+- disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
+반드시 배제해라.
 - liked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
 최대한 반영해라.
-- verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 취향이다 \
-— 참고만 하고 절대 보장한다고 말하지 마라. rationale에서도 "사람이 없습니다"처럼 \
-단정하지 말고 "비교적 한산한 편인 곳으로 골랐어요"처럼 hedge된 표현을 써라.
+- verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 취향이다 — \
+참고만 하고 절대 보장한다고 말하지 마라. rationale에서도 "사람이 없습니다"처럼 단정하지 \
+말고 "비교적 한산한 편인 곳으로 골랐어요"처럼 hedge된 표현을 써라.
+- time_range(시작~종료 시각) 안에서 자연스럽게 소화할 수 있을 만큼만 장소를 골라라 \
+(보통 2~5곳). 정확한 시작·종료 시각이나 장소 사이 이동시간은 신경 쓰지 마라 — places \
+목록을 방문할 순서대로만 나열하면, 시간 배정은 이 단계 이후에 별도로 계산된다.
 - 이번 초안은 다음 관점을 최우선으로 고려해라: {label}. 구체적으로: {instruction}
 
 # Format
-title(일정 제목), activities(각 항목은 name/category/start_time/end_time(HH:MM)/\
-price_range_per_person(1인당 최소~최대 가격)), rationale(이 초안을 왜 이렇게 \
-짰는지, {label} 관점을 어떻게 반영했는지 설명)\
+title(일정 제목), places(각 항목은 name/category/price_range_per_person(1인당 최소~최대 \
+가격) — 방문 순서대로 나열), rationale(이 초안을 왜 이렇게 짰는지, {label} 관점을 \
+어떻게 반영했는지 설명)\
 """
 
 
@@ -176,7 +199,7 @@ def _call_all_perspectives_sync(
     api_key: str,
     conditions: NormalizedConditions,
     place_candidates: list[dict],
-) -> list[CandidateDraft | BaseException]:
+) -> list[CandidateSelectionDraft | BaseException]:
     """스레드 하나 안에서 관점 3개를 병렬 제출하고, 각각 개별 timeout으로
     result()를 기다린다. asyncio.wait_for/asyncio.timeout을 쓰지 않아 이걸
     호출하는 async 쪽이 어떤 이벤트루프/nest_asyncio 상태에 있든 영향받지 않는다.
@@ -190,11 +213,11 @@ def _call_all_perspectives_sync(
                 model=get_model(provider, TIER),
                 system=_build_system_prompt(perspective),
                 user=_build_user_prompt(conditions, place_candidates),
-                schema=CandidateDraft,
+                schema=CandidateSelectionDraft,
             ): perspective
             for perspective in PERSPECTIVES
         }
-        results: list[CandidateDraft | BaseException] = []
+        results: list[CandidateSelectionDraft | BaseException] = []
         for future in future_to_perspective:
             try:
                 results.append(future.result(timeout=TIMEOUT_SECONDS))
@@ -203,8 +226,10 @@ def _call_all_perspectives_sync(
         return results
 
 
-def _correct_categories(draft: CandidateDraft, place_candidates: list[dict]) -> CandidateDraft:
-    """LLM이 돌려준 activity.category는 못 믿는다 — Solar가 서로 다른 두 활동의
+def _correct_categories(
+    selection: CandidateSelectionDraft, place_candidates: list[dict]
+) -> CandidateSelectionDraft:
+    """LLM이 돌려준 place.category는 못 믿는다 — Solar가 서로 다른 두 장소의
     name/category를 뒤섞어 반환하는 결함이 실측으로 확인됨(2026-08-09, golden_step2.py
     soft_signal_crowdedness_needs_hedge 등에서 재현). name이 place_candidates의
     title과 정확히 일치하면 category를 그 place_candidates 항목 것으로 덮어쓴다 —
@@ -212,13 +237,49 @@ def _correct_categories(draft: CandidateDraft, place_candidates: list[dict]) -> 
     일치하는 title이 없으면(환각 의심) 손대지 않는다 — 그건 GEval 채점의 몫이다.
     """
     category_by_title = {p.get("title", ""): p.get("category", "") for p in place_candidates}
-    corrected_activities = [
-        activity.model_copy(update={"category": category_by_title[activity.name]})
-        if activity.name in category_by_title
-        else activity
-        for activity in draft.activities
+    corrected_places = [
+        place.model_copy(update={"category": category_by_title[place.name]})
+        if place.name in category_by_title
+        else place
+        for place in selection.places
     ]
-    return draft.model_copy(update={"activities": corrected_activities})
+    return selection.model_copy(update={"places": corrected_places})
+
+
+def _schedule_places(
+    places: list[PlaceSelectionDraft], time_range: tuple[datetime, datetime]
+) -> list[ActivityDraft]:
+    """LLM이 고른 장소 목록(방문 순서대로)에 시간을 배정한다 — 결정론적 계산이라
+    LLM에게 시키지 않는다(2026-08-09 결정, 이 파일 변경 이력 참고). 활동 하나당
+    지속시간을 _MIN_ACTIVITY_MINUTES~_MAX_ACTIVITY_MINUTES 사이로 window 크기에
+    맞춰 정하고, 활동 사이엔 _ACTIVITY_BUFFER_MINUTES만큼 이동 여유시간을 둔다.
+    순서대로 이어붙이므로 활동끼리 겹치는 일이 계산 구조상 생기지 않는다 —
+    "시간 겹침 없음"을 LLM이 지켜야 할 규칙이 아니라 코드가 보장하는 성질로 만든다.
+    """
+    if not places:
+        return []
+    start, end = time_range
+    window_minutes = int((end - start).total_seconds() // 60)
+    n = len(places)
+    buffer_total = _ACTIVITY_BUFFER_MINUTES * (n - 1)
+    per_activity = (window_minutes - buffer_total) // n
+    per_activity = max(min(per_activity, _MAX_ACTIVITY_MINUTES), _MIN_ACTIVITY_MINUTES)
+
+    activities = []
+    cursor = start
+    for place in places:
+        activity_end = cursor + timedelta(minutes=per_activity)
+        activities.append(
+            ActivityDraft(
+                name=place.name,
+                category=place.category,
+                start_time=cursor.strftime("%H:%M"),
+                end_time=activity_end.strftime("%H:%M"),
+                price_range_per_person=place.price_range_per_person,
+            )
+        )
+        cursor = activity_end + timedelta(minutes=_ACTIVITY_BUFFER_MINUTES)
+    return activities
 
 
 async def generate_candidates(
@@ -242,14 +303,23 @@ async def generate_candidates(
     관점 3개 중 일부가 timeout(180초)이나 예외로 실패하면 해당 관점만 스킵하고
     나머지로 진행한다. 3개 다 실패하면 RuntimeError.
 
-    반환 직전 각 활동의 category를 place_candidates 기준으로 재보정한다
-    (_correct_categories) — LLM이 만든 category는 신뢰하지 않는다.
+    LLM은 장소 선택(CandidateSelectionDraft)까지만 하고, 시간 배정은
+    _schedule_places()가 결정론적으로 채운다(2026-08-09 결정) — category 재보정
+    (_correct_categories)도 그대로 유지.
     """
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(
         None, _call_all_perspectives_sync, provider, api_key, conditions, place_candidates
     )
-    drafts = [r for r in results if isinstance(r, CandidateDraft)]
-    if not drafts:
+    selections = [r for r in results if isinstance(r, CandidateSelectionDraft)]
+    if not selections:
         raise RuntimeError("Step2: 3개 관점 호출이 모두 실패했습니다.")
-    return [_correct_categories(draft, place_candidates) for draft in drafts]
+    corrected = [_correct_categories(selection, place_candidates) for selection in selections]
+    return [
+        CandidateDraft(
+            title=selection.title,
+            activities=_schedule_places(selection.places, conditions.time_range),
+            rationale=selection.rationale,
+        )
+        for selection in corrected
+    ]

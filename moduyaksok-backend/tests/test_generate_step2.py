@@ -7,6 +7,10 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-09, region: str -> regions: list[str] 변경 반영. 지역 2개를 넣어 프롬프트에
 #             둘 다 들어가는지 검증하는 assert 추가.
+# 2026-08-09, Step2를 "장소 선택"(LLM)과 "시간 배정"(결정론적 계산)으로 분리 —
+#             call_structured는 이제 CandidateSelectionDraft(시간 없음)를 반환하고,
+#             _schedule_places()가 시간을 채운다. _fake_draft를 CandidateSelectionDraft
+#             기준으로 바꾸고, _schedule_places() 전용 테스트 추가.
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -16,9 +20,16 @@ from app.pipeline.generate_step2 import (
     PERSPECTIVES,
     _build_system_prompt,
     _build_user_prompt,
+    _schedule_places,
     generate_candidates,
 )
-from app.pipeline.schemas import ActivityDraft, CandidateDraft, NormalizedConditions, PreferenceTag
+from app.pipeline.schemas import (
+    CandidateDraft,
+    CandidateSelectionDraft,
+    NormalizedConditions,
+    PlaceSelectionDraft,
+    PreferenceTag,
+)
 
 _CONDITIONS = NormalizedConditions(
     purpose="date",
@@ -39,15 +50,13 @@ _PLACE_CANDIDATES = [
 ]
 
 
-def _fake_draft(perspective: str) -> CandidateDraft:
-    return CandidateDraft(
+def _fake_draft(perspective: str) -> CandidateSelectionDraft:
+    return CandidateSelectionDraft(
         title=f"{perspective} 초안",
-        activities=[
-            ActivityDraft(
+        places=[
+            PlaceSelectionDraft(
                 name="잠실장어와 한우",
                 category="한식",
-                start_time="11:00",
-                end_time="12:30",
                 price_range_per_person=(20000, 30000),
             )
         ],
@@ -83,7 +92,7 @@ async def test_generate_candidates_passes_correct_provider_api_key_model(monkeyp
         assert call["provider"] == "upstage"
         assert call["api_key"] == "up-fake"
         assert call["model"]  # get_model()이 뭘 반환하든 빈 값만 아니면 됨
-        assert call["schema"] is CandidateDraft
+        assert call["schema"] is CandidateSelectionDraft
 
 
 async def test_generate_candidates_calls_each_perspective_exactly_once(monkeypatch):
@@ -130,20 +139,19 @@ async def test_generate_candidates_all_failures_raises_runtime_error(monkeypatch
 
 
 async def test_generate_candidates_corrects_category_mismatched_from_place_candidates(monkeypatch):
-    """Solar가 activity의 category를 다른 장소 것과 뒤섞어 반환하는 결함이 실측으로
+    """Solar가 place의 category를 다른 장소 것과 뒤섞어 반환하는 결함이 실측으로
     확인됨(golden_step2.py 여러 케이스에서 재현) — LLM이 되돌려준 category는 못 믿고,
     place_candidates의 title이 일치하는 항목에서 category를 다시 가져와 덮어쓴다.
     """
 
     def fake_call_structured(**kwargs):
-        return CandidateDraft(
+        return CandidateSelectionDraft(
             title="초안",
-            activities=[
-                ActivityDraft(
+            places=[
+                PlaceSelectionDraft(
+                    # place_candidates의 실제 category("한식")와 다른 값을 일부러 넣음
                     name="잠실장어와 한우",
-                    category="공원,자연>한강공원",  # place_candidates의 실제 category("한식")와 다름
-                    start_time="11:00",
-                    end_time="12:30",
+                    category="공원,자연>한강공원",
                     price_range_per_person=(20000, 30000),
                 )
             ],
@@ -166,14 +174,12 @@ async def test_generate_candidates_leaves_category_unchanged_when_name_not_in_pl
     category만 틀린" 경우만 고친다."""
 
     def fake_call_structured(**kwargs):
-        return CandidateDraft(
+        return CandidateSelectionDraft(
             title="초안",
-            activities=[
-                ActivityDraft(
+            places=[
+                PlaceSelectionDraft(
                     name="place_candidates에 없는 장소",
                     category="아무 카테고리",
-                    start_time="11:00",
-                    end_time="12:30",
                     price_range_per_person=(20000, 30000),
                 )
             ],
@@ -232,3 +238,80 @@ def test_build_system_prompt_includes_perspective_text():
 
     assert label in prompt
     assert instruction in prompt
+
+
+# ── _schedule_places() ──────────────────────────────────────────────────────
+
+_WINDOW_10_TO_21 = (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0))
+
+
+def _place(name: str) -> PlaceSelectionDraft:
+    return PlaceSelectionDraft(name=name, category="카테고리", price_range_per_person=(1000, 2000))
+
+
+def test_schedule_places_returns_empty_list_for_no_places():
+    assert _schedule_places([], _WINDOW_10_TO_21) == []
+
+
+def test_schedule_places_first_activity_starts_at_window_start():
+    activities = _schedule_places([_place("A")], _WINDOW_10_TO_21)
+
+    assert activities[0].start_time == "10:00"
+
+
+def test_schedule_places_preserves_name_category_and_price():
+    place = PlaceSelectionDraft(name="A", category="한식", price_range_per_person=(5000, 8000))
+
+    activities = _schedule_places([place], _WINDOW_10_TO_21)
+
+    assert activities[0].name == "A"
+    assert activities[0].category == "한식"
+    assert activities[0].price_range_per_person == (5000, 8000)
+
+
+def test_schedule_places_never_overlaps():
+    places = [_place("A"), _place("B"), _place("C"), _place("D")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21)
+
+    for earlier, later in zip(activities, activities[1:], strict=False):
+        earlier_end = datetime.strptime(earlier.end_time, "%H:%M")
+        later_start = datetime.strptime(later.start_time, "%H:%M")
+        assert earlier_end <= later_start
+
+
+def test_schedule_places_stays_within_window_for_reasonable_place_count():
+    places = [_place(f"장소{i}") for i in range(4)]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21)
+
+    window_end = datetime.strptime("21:00", "%H:%M")
+    assert datetime.strptime(activities[-1].end_time, "%H:%M") <= window_end
+
+
+def test_schedule_places_preserves_visit_order():
+    places = [_place("첫번째"), _place("두번째"), _place("세번째")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21)
+
+    assert [a.name for a in activities] == ["첫번째", "두번째", "세번째"]
+
+
+def test_schedule_places_caps_duration_for_few_places_in_wide_window():
+    # 11시간 창에 활동 1개 — 활동 하나가 11시간짜리가 되면 안 되고 상한(90분) 이내여야 함
+    activities = _schedule_places([_place("A")], _WINDOW_10_TO_21)
+
+    start = datetime.strptime(activities[0].start_time, "%H:%M")
+    end = datetime.strptime(activities[0].end_time, "%H:%M")
+    assert (end - start).total_seconds() / 60 <= 90
+
+
+def test_schedule_places_floors_duration_for_many_places_in_narrow_window():
+    narrow_window = (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 11, 0))
+    places = [_place(f"장소{i}") for i in range(10)]
+
+    activities = _schedule_places(places, narrow_window)
+
+    start = datetime.strptime(activities[0].start_time, "%H:%M")
+    end = datetime.strptime(activities[0].end_time, "%H:%M")
+    assert (end - start).total_seconds() / 60 >= 30
