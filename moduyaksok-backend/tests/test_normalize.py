@@ -16,7 +16,7 @@ _RAW_INPUT = {
     "purpose": "date",
     "headcount": 2,
     "time_range": [datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)],
-    "region": "서울 잠실",
+    "regions": ["서울 잠실"],
     "liked_text": "콩국수나 텐동, 와플 먹고 싶어",
     "disliked_text": "해산물은 못 먹어요",
     "budget_per_person": 50000,
@@ -40,7 +40,7 @@ def test_normalize_conditions_passes_through_already_structured_fields(monkeypat
 
     assert result.purpose == "date"
     assert result.headcount == 2
-    assert result.region == "서울 잠실"
+    assert result.regions == ["서울 잠실"]
     assert result.budget_per_person == 50000
     assert result.time_range == (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0))
 

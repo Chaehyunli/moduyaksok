@@ -8,11 +8,17 @@
 #             "해산물"처럼 장소 카테고리로 확인 가능한 태그와 "사람 많은 곳"처럼
 #             확인할 데이터가 없는 주관적 태그를 구분해서 Step2에 넘겨야, Step2가
 #             전자는 확실히 보장(필터)하고 후자는 참고만(소프트 신호) 하게 만들 수 있음.
+# 2026-08-09, region: str -> regions: list[str]. 사용자가 시/도만(예: "서울") 또는
+#             시/도+세부지역을 최대 3개까지 조합해서 넣을 수 있게 프런트가 바뀌는데
+#             맞춰 스키마도 리스트로 변경. Step1은 그대로 통과만 시키므로 값 조립
+#             로직은 안 바뀜. 개수 제한(최대 3, 시/도만 최대 1)·포함관계 중복 제거는
+#             validate_regions()가 생성 시점에 강제 — 프런트 검증과 같은 규칙을
+#             백엔드에서도 재검증(요청 직접 조작 대비).
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # ── Step 1. 조건 정규화 (normalize_conditions) 출력 ────────────────────────
 
@@ -30,7 +36,38 @@ class NormalizedConditions(BaseModel):
     purpose: Literal["date", "friends", "family", "party", "other"]
     headcount: int
     time_range: tuple[datetime, datetime]
-    region: str
+    # 총 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만 —
+    # validate_regions()가 강제. 여러 지역 각각에 대해 네이버 지역검색을 호출해
+    # 병합한다(app/services/naver_local_search.py의 search_places_for_regions()).
+    regions: list[str]
+
+    # 프런트(ConditionWizardView)에서 같은 규칙으로 먼저 걸러주지만, 요청을 직접
+    # 조작해 우회할 수 있으므로 여기서 다시 검증한다(app/routers/credential.py의
+    # API 키 형식 검증과 같은 패턴, 2026-08-09).
+    @field_validator("regions")
+    @classmethod
+    def validate_regions(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("regions는 최소 1개 이상이어야 합니다.")
+
+        def has_district(region: str) -> bool:
+            return len(region.split()) >= 2
+
+        # 포함관계 중복 제거: 같은 시/도를 세부지역 없이(전체) 넣은 게 있으면
+        # 그 시/도의 세부지역 항목은 포함관계상 중복이므로 제거한다.
+        broad_provinces = {r for r in v if not has_district(r)}
+        deduped = [r for r in v if not has_district(r) or r.split()[0] not in broad_provinces]
+
+        broad_count = sum(1 for r in deduped if not has_district(r))
+        if len(deduped) > 3:
+            raise ValueError(f"regions는 최대 3개까지만 가능합니다 (받은 개수: {len(deduped)}).")
+        if broad_count > 1:
+            raise ValueError(
+                f"세부지역 없이 시/도만 넣은 지역은 최대 1개까지만 가능합니다 "
+                f"(받은 개수: {broad_count})."
+            )
+        return deduped
+
     liked_tags: list[PreferenceTag]
     disliked_tags: list[PreferenceTag]
     budget_per_person: int

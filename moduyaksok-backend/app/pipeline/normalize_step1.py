@@ -102,7 +102,7 @@ def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> Normal
         purpose=raw_input["purpose"],
         headcount=raw_input["headcount"],
         time_range=tuple(raw_input["time_range"]),
-        region=raw_input["region"],
+        regions=raw_input["regions"],
         liked_tags=extracted.liked_tags,
         disliked_tags=extracted.disliked_tags,
         budget_per_person=raw_input["budget_per_person"],
