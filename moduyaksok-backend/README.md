@@ -105,12 +105,15 @@ alembic downgrade -1                          # 한 단계 롤백
 ## 개발 도구
 
 ```bash
-pip install -r requirements-dev.txt   # ruff, pytest, pre-commit
+pip install -r requirements-dev.txt   # ruff, pyright, pytest, pre-commit
 pre-commit install                     # 최초 1회 — 커밋 시 ruff 자동 실행
 
 ruff check . && ruff format .          # lint + format
+pyright                                # 정적 타입 체크 (설정: pyproject.toml [tool.pyright])
 pytest -q                              # 유닛 테스트 (DB 컨테이너 켜져 있어야 함)
 ```
+
+`pyright`는 아직 pre-commit/CI에 안 걸려 있음(2026-08-09 도입 시점 기준 기존 코드에 baseline 에러 50개 — 대부분 `tests/`의 deepeval 스텁 불일치·`**overrides` 패턴이고, `app/`에는 17개 — Anthropic SDK 응답 블록 유니온 타입 관련이 대부분, `structured_llm.py:72`의 `T | None` 반환 타입 불일치는 실제로 봐야 할 이슈). 새로 짜는 코드부터 깨끗하게 유지하고, baseline은 여유 있을 때 정리할 것.
 
 파일 헤더 주석, 네이밍 규칙은 [`../docs/코딩컨벤션_2026-08-06.md`](../docs/코딩컨벤션_2026-08-06.md) 참고.
 

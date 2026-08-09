@@ -1,5 +1,6 @@
 -r requirements.txt
 ruff
+pyright
 pytest
 pytest-asyncio
 pre-commit
