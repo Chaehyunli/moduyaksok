@@ -6,9 +6,30 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, PreferenceTag.verifiable 처리 방침 명시 — "사람 많은 곳"처럼 확인할
 #             데이터가 없는 주관적 태그를 어떻게 다룰지 설계
+# 2026-08-09, 실제 구현. call_structured가 동기 함수라 스레드풀로 감싸서
+#             병렬화. 개별 관점 timeout 180초(실측 전이라 널널하게),
+#             return_exceptions=True로 부분 실패 허용. 프롬프트는 RTF만 쓰고
+#             few-shot은 생략 — 생성 작업에 few-shot을 넣으면 3개 관점이 예시
+#             스타일로 수렴해 "실질적 차별성 확보"라는 이 Step의 목표를 해칠 수
+#             있다고 판단.
+# 2026-08-09, asyncio.wait_for(내부적으로 asyncio.timeout() 사용)가 DeepEval
+#             eval 테스트 안에서 "RuntimeError: Timeout should be used inside a
+#             task"로 3개 호출이 통째로 실패하는 문제를 실측으로 확인 — 원인은
+#             DeepEval의 GEval.measure()가 내부적으로 거는 nest_asyncio 패치가
+#             전역 상태라, 같은 프로세스 안에서 그 패치가 걸린 *이후*에 생성되는
+#             모든 새 이벤트루프/태스크의 asyncio.timeout() current-task 감지가
+#             깨짐(스크립트 단독 실행·같은 세션의 첫 eval 테스트는 정상, 두 번째
+#             테스트부터 재현). asyncio.wait_for/asyncio.timeout을 아예 안 쓰는
+#             구조로 변경 — concurrent.futures.Future.result(timeout=...)로
+#             스레드 안에서 타임아웃을 처리하고, async 경계는
+#             loop.run_in_executor 한 번만 넘는다.
 # ------------------------------------------------------------------
-from app.pipeline.models import ModelTier
-from app.pipeline.schemas import CandidateDraft, NormalizedConditions
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+from app.pipeline.models import ModelTier, get_model
+from app.pipeline.schemas import CandidateDraft, NormalizedConditions, PreferenceTag
+from app.services.structured_llm import call_structured
 
 # 후보마다 어느 정도 창의성이 필요하지만 3배로 병렬 호출되니 비용도 고려 — MID 티어.
 TIER = ModelTier.MID
@@ -20,6 +41,102 @@ PERSPECTIVES = (
     "사용자 취향 태그 최대 반영",
 )
 
+# 개별 관점 호출 타임아웃(초). 각 호출이 실제로 얼마나 걸릴지 아직 실측 전이라
+# 널널하게 잡음 — 실측 후 필요하면 좁힐 것 (기술설계 §4 "파이프라인 오류/타임아웃
+# 처리"의 "예: 20초"는 참고 예시일 뿐, 이 프로젝트는 3분으로 결정).
+TIMEOUT_SECONDS = 180
+
+_ROLE_TASK = """\
+# Role
+너는 주어진 조건과 장소 후보 목록 안에서 만남 일정 초안을 만드는 전문 플래너다.
+
+# Task
+- place_candidates 목록에 있는 장소만 사용해라. 목록에 없는 장소를 지어내지 마라.
+- headcount(인원 수), time_range(시작~종료 시각), budget_per_person(1인 예산) 조건을 \
+지켜라.
+- disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 \
+판단해 반드시 배제해라.
+- liked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
+최대한 반영해라.
+- verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 취향이다 \
+— 참고만 하고 절대 보장한다고 말하지 마라. rationale에서도 "사람이 없습니다"처럼 \
+단정하지 말고 "비교적 한산한 편인 곳으로 골랐어요"처럼 hedge된 표현을 써라.
+- 이번 초안은 다음 관점을 최우선으로 고려해라: {perspective}
+
+# Format
+title(일정 제목), activities(각 항목은 name/category/start_time/end_time(HH:MM)/\
+price_range_per_person(1인당 최소~최대 가격)), rationale(이 초안을 왜 이렇게 \
+짰는지, {perspective} 관점을 어떻게 반영했는지 설명)\
+"""
+
+
+def _format_tags(tags: list[PreferenceTag]) -> str:
+    if not tags:
+        return "(없음)"
+    return ", ".join(f"{t.tag}(verifiable={t.verifiable})" for t in tags)
+
+
+def _format_place_candidates(place_candidates: list[dict]) -> str:
+    if not place_candidates:
+        return "(없음 — 이 조건으로는 활동을 채울 장소가 없다는 뜻이니 최소한의 \
+초안만 만들어라)"
+    lines = [
+        f"- {p.get('title', '')} | {p.get('category', '')} | "
+        f"{p.get('roadAddress') or p.get('address', '')}"
+        for p in place_candidates
+    ]
+    return "\n".join(lines)
+
+
+def _build_system_prompt(perspective: str) -> str:
+    return _ROLE_TASK.format(perspective=perspective)
+
+
+def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[dict]) -> str:
+    start, end = conditions.time_range
+    return (
+        f"목적: {conditions.purpose}\n"
+        f"인원: {conditions.headcount}명\n"
+        f"시간: {start.isoformat()} ~ {end.isoformat()}\n"
+        f"지역: {conditions.region}\n"
+        f"1인 예산: {conditions.budget_per_person}원\n"
+        f"좋아하는 것: {_format_tags(conditions.liked_tags)}\n"
+        f"싫어하는 것: {_format_tags(conditions.disliked_tags)}\n\n"
+        f"장소 후보 목록(place_candidates):\n{_format_place_candidates(place_candidates)}"
+    )
+
+
+def _call_all_perspectives_sync(
+    provider: str,
+    api_key: str,
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+) -> list[CandidateDraft | BaseException]:
+    """스레드 하나 안에서 관점 3개를 병렬 제출하고, 각각 개별 timeout으로
+    result()를 기다린다. asyncio.wait_for/asyncio.timeout을 쓰지 않아 이걸
+    호출하는 async 쪽이 어떤 이벤트루프/nest_asyncio 상태에 있든 영향받지 않는다.
+    """
+    with ThreadPoolExecutor(max_workers=len(PERSPECTIVES)) as executor:
+        future_to_perspective = {
+            executor.submit(
+                call_structured,
+                provider=provider,
+                api_key=api_key,
+                model=get_model(provider, TIER),
+                system=_build_system_prompt(perspective),
+                user=_build_user_prompt(conditions, place_candidates),
+                schema=CandidateDraft,
+            ): perspective
+            for perspective in PERSPECTIVES
+        }
+        results: list[CandidateDraft | BaseException] = []
+        for future in future_to_perspective:
+            try:
+                results.append(future.result(timeout=TIMEOUT_SECONDS))
+            except Exception as exc:
+                results.append(exc)
+        return results
+
 
 async def generate_candidates(
     provider: str,
@@ -27,25 +144,26 @@ async def generate_candidates(
     conditions: NormalizedConditions,
     place_candidates: list[dict],
 ) -> list[CandidateDraft]:
-    """PERSPECTIVES 각각에 대해 asyncio.gather로 병렬 LLM 호출, CandidateDraft 3개 반환.
+    """PERSPECTIVES 각각에 대해 스레드풀로 병렬 LLM 호출, CandidateDraft 최대 3개 반환.
 
     place_candidates: 네이버 지역검색으로 사전 조회한 "지역 내 카테고리별 장소 후보
     목록" — LLM이 이 목록 안에서만 장소를 선택하도록 프롬프트에 주입해 환각을 막는다
-    (기술설계 §4 Step 2).
+    (기술설계 §4 Step 2). 이 함수 밖(장래 POST /schedules 라우터)에서 조회해서
+    넘겨야 한다 — Step2는 "조건+장소 후보 → LLM 호출"만 하는 순수 함수로 유지해
+    유닛 테스트가 네트워크 mock 없이 call_structured만 mock하면 되게 한다.
 
     conditions.liked_tags/disliked_tags는 PreferenceTag(tag, verifiable) 리스트다.
-    verifiable에 따라 프롬프트에서 요구 강도를 다르게 지시해야 한다 (2026-08-07 결정):
-    - verifiable=True (해산물, 파스타 등 장소 카테고리로 확인 가능) — place_candidates의
-      카테고리/이름으로 명확히 판단되면 하드 제약으로 취급. 예: disliked인데 해산물
-      전문점이면 후보에서 확실히 제외.
-    - verifiable=False (사람 많은 곳, 조용한 분위기 등 확인할 데이터가 없는 주관적
-      취향) — 검증할 방법이 없으므로 소프트 신호로만 취급. 장소 유형(관광명소 vs
-      동네 가게 등)으로 미루어 최대한 반영하되 보장하지 않는다고 프롬프트에 명시.
-      활동 설명(rationale)에도 "사람이 없습니다"처럼 단정하지 말고 "비교적 한산한
-      편인 곳으로 골랐어요"처럼 hedge된 표현을 쓰도록 지시 — 검증 못 한 걸 확신하는
-      것처럼 말하면 실제와 다를 때 사용자 신뢰를 잃는다.
+    verifiable=true는 하드 제약(반드시 반영/배제), verifiable=false는 소프트 신호
+    (참고만, rationale도 hedge된 표현)로 프롬프트에서 다르게 지시한다(2026-08-07 결정).
 
-    TODO: provider별 structured output 호출 구현, 개별 호출 실패 시 해당 관점만
-    스킵하고 나머지로 진행하는 예외 처리(기술설계 §4 "파이프라인 오류/타임아웃 처리").
+    관점 3개 중 일부가 timeout(180초)이나 예외로 실패하면 해당 관점만 스킵하고
+    나머지로 진행한다. 3개 다 실패하면 RuntimeError.
     """
-    raise NotImplementedError
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(
+        None, _call_all_perspectives_sync, provider, api_key, conditions, place_candidates
+    )
+    drafts = [r for r in results if isinstance(r, CandidateDraft)]
+    if not drafts:
+        raise RuntimeError("Step2: 3개 관점 호출이 모두 실패했습니다.")
+    return drafts
