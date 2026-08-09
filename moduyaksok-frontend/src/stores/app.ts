@@ -19,7 +19,7 @@ export interface Candidate {
 export interface Conditions {
   purpose: string
   headcount: number
-  region: string
+  regions: string[]
   budgetPerPerson: number
   // 태그 선택이 아니라 자유 텍스트 그대로 백엔드로 보낸다 — Step1 조건 정규화(LLM)가
   // 여기서 구조화 태그를 뽑아낸다 (docs/기술설계_2026-08-06.md §4 Step1).

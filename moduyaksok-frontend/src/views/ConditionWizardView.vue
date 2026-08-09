@@ -33,34 +33,67 @@ const form = reactive({
   headcount: 2,
   startTime: '10:00',
   endTime: '21:00',
-  regionProvince: '',
-  regionArea: '',
   likedText: '',
   dislikedText: '',
   budgetPerPerson: 50000,
 })
 
-const areaOptions = computed(
-  () => REGIONS[form.regionProvince]?.map((name) => ({ value: name, label: name })) ?? [],
+interface RegionRow {
+  province: string
+  area: string
+}
+
+// 최소 1행 유지 — 사용자가 첫 지역 하나는 항상 채워야 다음 단계로 못 감(canNext)
+const regions = ref<RegionRow[]>([{ province: '', area: '' }])
+
+function areaOptionsFor(province: string) {
+  return REGIONS[province]?.map((name) => ({ value: name, label: name })) ?? []
+}
+
+// 전체 개수는 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만.
+// "서울"처럼 넓은 지역을 여러 개 겹쳐 넣으면 백엔드가 네이버 API를 지역×카테고리로
+// 그만큼 더 호출해야 해서 비용/응답시간이 커지기 때문(2026-08-09 결정). 백엔드
+// NormalizedConditions.validate_regions()가 같은 규칙으로 다시 검증한다.
+const broadCount = computed(() => regions.value.filter((r) => r.province && !r.area).length)
+const tooManyBroadRegions = computed(() => broadCount.value > 1)
+const canAddRegion = computed(() => regions.value.length < 3)
+
+function addRegion() {
+  if (canAddRegion.value) regions.value.push({ province: '', area: '' })
+}
+function removeRegion(index: number) {
+  if (regions.value.length > 1) regions.value.splice(index, 1)
+}
+
+// 같은 시/도를 세부지역 없이(전체) 선택한 행이 있으면, 그 시/도의 세부지역 행은
+// 포함관계상 중복이니 자동으로 지운다 (예: "서울"과 "서울 잠실"을 같이 넣으면
+// "서울 잠실" 행 제거 — 요구사항: 포함되는 세부지역은 프런트에서 자동 정리).
+watch(
+  regions,
+  (rows) => {
+    const broadProvinces = new Set(rows.filter((r) => r.province && !r.area).map((r) => r.province))
+    if (broadProvinces.size === 0) return
+    const kept = rows.filter((r) => !(r.area && broadProvinces.has(r.province)))
+    if (kept.length !== rows.length) regions.value = kept
+  },
+  { deep: true },
 )
 
 // 시/도를 바꾸면 이전 세부지역이 새 시/도 목록에 없을 수 있으니 초기화한다.
-watch(
-  () => form.regionProvince,
-  () => {
-    form.regionArea = ''
-  },
-)
+function onProvinceChange(row: RegionRow) {
+  row.area = ''
+}
 
-// region: '' 이면 시/도 전체, 아니면 "서울 잠실"처럼 세부지역까지 합쳐서 검색한다.
-const region = computed(() =>
-  form.regionArea ? `${form.regionProvince} ${form.regionArea}` : form.regionProvince,
+const regionLabels = computed(() =>
+  regions.value
+    .filter((r) => r.province)
+    .map((r) => (r.area ? `${r.province} ${r.area}` : r.province)),
 )
 
 const canNext = computed(() => {
   if (step.value === 0) return !!form.purpose
   if (step.value === 1) return form.headcount > 0 && form.startTime < form.endTime
-  if (step.value === 2) return form.regionProvince.length > 0
+  if (step.value === 2) return regionLabels.value.length > 0 && !tooManyBroadRegions.value
   if (step.value === 4) return form.budgetPerPerson > 0
   return true
 })
@@ -78,7 +111,7 @@ function submit() {
   store.submitConditions({
     purpose: form.purpose,
     headcount: form.headcount,
-    region: region.value,
+    regions: regionLabels.value,
     budgetPerPerson: form.budgetPerPerson,
     likedText: form.likedText.trim(),
     dislikedText: form.dislikedText.trim(),
@@ -121,18 +154,41 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
       <!-- 2: 지역 -->
       <div v-else-if="step === 2" class="space-y-5">
         <h1 class="mb-4 font-hand text-2xl text-ink">어디서 만나나요?</h1>
-        <DoodleSelect
-          v-model="form.regionProvince"
-          :options="PROVINCES.map((p) => ({ value: p, label: p }))"
-          placeholder="시/도 선택"
-          label="시/도"
-        />
-        <DoodleSelect
-          v-model="form.regionArea"
-          :options="[{ value: '', label: '전체' }, ...areaOptions]"
-          :disabled="!form.regionProvince"
-          label="세부지역 (선택)"
-        />
+        <p class="font-hand text-sm text-ink/50">
+          최대 3곳까지 고를 수 있어요. 단, 세부지역 없이 시/도만 고른 곳은 1곳까지만요
+        </p>
+        <p v-if="tooManyBroadRegions" class="font-hand text-sm text-red">
+          시/도만 선택한 지역은 1개까지만 가능해요 — 세부지역을 골라주세요
+        </p>
+        <div v-for="(row, i) in regions" :key="i" class="space-y-2 border-b-2 border-ink/10 pb-4">
+          <div class="flex items-center justify-between">
+            <span class="font-hand text-sm text-ink/60">지역 {{ i + 1 }}</span>
+            <button
+              v-if="regions.length > 1"
+              type="button"
+              class="font-hand text-sm text-ink/50 hover:text-red"
+              @click="removeRegion(i)"
+            >
+              삭제
+            </button>
+          </div>
+          <DoodleSelect
+            v-model="row.province"
+            :options="PROVINCES.map((p) => ({ value: p, label: p }))"
+            placeholder="시/도 선택"
+            label="시/도"
+            @update:modelValue="onProvinceChange(row)"
+          />
+          <DoodleSelect
+            v-model="row.area"
+            :options="[{ value: '', label: '전체' }, ...areaOptionsFor(row.province)]"
+            :disabled="!row.province"
+            label="세부지역 (선택)"
+          />
+        </div>
+        <DoodleButton v-if="canAddRegion" variant="ghost" size="sm" @click="addRegion">
+          + 지역 추가
+        </DoodleButton>
       </div>
 
       <!-- 3: 선호/비선호 (선택 입력) -->
@@ -164,7 +220,7 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         <DoodleCard class="space-y-2 font-hand text-lg text-ink">
           <p>목적: {{ purposeLabel }}</p>
           <p>인원: {{ form.headcount }}명 · {{ form.startTime }} ~ {{ form.endTime }}</p>
-          <p>지역: {{ region }}</p>
+          <p>지역: {{ regionLabels.join(', ') }}</p>
           <p>1인 예산: {{ form.budgetPerPerson.toLocaleString() }}원</p>
           <p v-if="form.likedText">좋아하는 것: {{ form.likedText }}</p>
           <p v-if="form.dislikedText">싫어하는 것: {{ form.dislikedText }}</p>
