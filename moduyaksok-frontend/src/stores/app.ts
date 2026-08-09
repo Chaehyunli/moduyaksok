@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { api } from '../lib/api'
 
 export interface Activity {
   name: string
@@ -67,6 +68,9 @@ export const useAppStore = defineStore('app', {
       | 'upstage'
       | null,
     apiKeyMasked: localStorage.getItem('api_key_masked') ?? '',
+    // 로그인 세션당 한 번만 서버에 물어보고 캐시 — localStorage 상태가 이 브라우저에서
+    // 등록 안 했거나(다른 기기에서 등록) 지워진 경우 서버 진실과 동기화한다.
+    apiKeySynced: false,
     conditions: null as Conditions | null,
     candidates: [] as Candidate[],
     selectedCandidateId: null as string | null,
@@ -94,6 +98,23 @@ export const useAppStore = defineStore('app', {
       this.apiKeyRegistered = false
       this.apiKeyProvider = null
       this.apiKeyMasked = ''
+      this.apiKeySynced = false
+    },
+    async syncApiKey() {
+      if (this.apiKeySynced) return
+      this.apiKeySynced = true
+      try {
+        const { data } = await api.get('/me/llm-credential')
+        localStorage.setItem('api_key_masked', data.masked_key)
+        localStorage.setItem('api_key_provider', data.provider)
+        this.apiKeyRegistered = true
+        this.apiKeyProvider = data.provider
+        this.apiKeyMasked = data.masked_key
+      } catch (err: any) {
+        if (err.response?.status === 404) {
+          this.clearApiKey()
+        }
+      }
     },
     selectProvider(provider: 'anthropic' | 'openai' | 'upstage') {
       this.apiKeyProvider = provider

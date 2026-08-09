@@ -38,10 +38,16 @@ export const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const store = useAppStore()
   if (to.meta.requiresAuth && !store.loggedIn) {
     return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  // localStorage의 API 키 등록 상태는 이 브라우저에서 저장했을 때만 채워지므로,
+  // 세션당 한 번 서버(GET /me/llm-credential)와 동기화해 다른 기기에서 등록한
+  // 경우에도 실제 상태를 반영한다.
+  if (store.loggedIn && !store.apiKeySynced) {
+    await store.syncApiKey()
   }
   // 로그인은 됐지만 API 키가 없으면, 일정 생성 화면 대신 제공자 선택부터 태운다.
   if (to.meta.requiresApiKey && !store.apiKeyRegistered) {
