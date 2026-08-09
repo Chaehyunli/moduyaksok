@@ -18,6 +18,7 @@
 | Provider별 structured output 공용 인터페이스 (`services/structured_llm.py`) | ✅ | 2026-08-07 | 🔴 | Claude=tool use, GPT/Solar=`.parse()` 공용 (Solar가 이 방식 지원하는 것 실키로 확인) — 2갈래 분기 |
 | AI 파이프라인 Step1 — 조건 정규화 (`normalize_conditions`) | ✅ | 2026-08-07 | 🔴 | MID 티어(LOW에서 격상 — 스키마 복잡화 후 LOW가 할루시네이션 실측돼 변경). liked_tags/disliked_tags를 PreferenceTag(verifiable 포함)로 변경, RTF+few-shot 프롬프트, 실제 Solar 키로 end-to-end 확인 |
 | AI 파이프라인 Step2 — 후보 생성 Fan-out (`generate_candidates`) | ✅ | 2026-08-09 | 🔴 | MID 티어. 관점 3개(가성비/동선최소화/취향반영) 병렬 호출, `concurrent.futures`로 개별 타임아웃(180초)+부분실패 허용(`asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제, `AI파이프라인_Step별_설계` 참고). place_candidates 소싱용 `services/naver_local_search.py` 신규 구현(NAVER API HUB로 이관된 지역검색 API, `naverapihub.apigw.ntruss.com` + `X-NCP-APIGW-API-KEY-ID/KEY` 헤더 — 레거시 개발자센터 엔드포인트와 다름, 실측으로 확인) |
+| 여러 지역 검색 병합 (`search_places_for_regions`) | ✅ | 2026-08-09 | 🟡 | `naver_local_search.py`. regions(최대 3개, 프런트가 검증) × 카테고리(맛집/카페/액티비티/문화시설)로 팬아웃 호출 후 title 기준 중복 제거. 이걸 부르는 `POST /schedules` 라우터는 아직 없음 |
 | AI 파이프라인 Step3 — 이동 동선 보강 (`enrich_routes`) | ⬜ | | 🔴 | LLM 안 씀. 네이버 지도 Directions API 키 발급 + 연동 필요 |
 | AI 파이프라인 Step4 — 검증·병합 (`synthesize_and_validate`) | ⬜ | | 🔴 | HIGH 티어. MoA Aggregator, 후보 간 유사도 검사 포함, 최대 1회 재시도, 랭킹 없이 동등한 3개 확정 |
 | AI 파이프라인 성능평가 인프라 (DeepEval, `tests/eval/`) | ✅ | 2026-08-07 | 🟡 | `pytest -m eval`로 기본 실행과 분리. `DEEPEVAL_UPSTAGE→OPENAI→ANTHROPIC_API_KEY` 순 자동 폴백(`conftest.py`). Step1용 골든 9케이스 + GEval 채점 완료 — 이 인프라로 Step1 LOW→MID 티어 변경 필요성을 실측으로 발견함 |
