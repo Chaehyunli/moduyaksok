@@ -908,8 +908,13 @@ Expected: 에러 없이 빌드 성공(아직 이 composable을 쓰는 곳이 없
 
 - [ ] **Step 4: 커밋**
 
+`.env`는 `.gitignore`에 이미 걸려 있다(비밀값이 들어있는 로컬 전용 파일 — 절대
+커밋하지 말 것, `git add -f`로 강제 추가하지도 말 것). 아래 커밋에는 새로 만든
+composable 파일만 포함한다. `.env`의 변수명 변경은 각자 로컬 파일에만 반영되고
+저장소에는 안 들어간다.
+
 ```bash
-git add moduyaksok-frontend/.env moduyaksok-frontend/src/composables/useNaverMapScript.ts
+git add moduyaksok-frontend/src/composables/useNaverMapScript.ts
 git commit -m "feat: Naver Maps JS SDK 로더 composable 추가"
 ```
 
@@ -975,7 +980,7 @@ function render() {
         position,
         map,
         icon: {
-          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#1f2937;color:#fdf6e3;font-family:sans-serif;font-size:13px;">${props.markers[i].order}</div>`,
+          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--color-ink);color:var(--color-paper);font-family:sans-serif;font-size:13px;">${props.markers[i].order}</div>`,
           anchor: new naver.maps.Point(12, 12),
         },
       }),
@@ -992,6 +997,8 @@ function render() {
       new naver.maps.Polyline({
         map,
         path: segmentPath,
+        // strokeColor는 SDK가 직접 쓰는 값이라(DOM CSS가 아님) var(--color-ink)가
+        // 해석 안 될 위험이 있어 ink 토큰의 리터럴 값을 그대로 쓴다.
         strokeColor: '#1f2937',
         strokeWeight: 4,
       }),
@@ -1231,7 +1238,7 @@ git commit -m "feat: store에 좌표/경로 좌표/공유 조회 상태 추가"
 
 ```xml
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 140" fill="none">
-  <rect x="2" y="2" width="196" height="136" rx="2" fill="#fdf6e3" stroke="#1f2937" stroke-width="2.5"/>
+  <rect x="2" y="2" width="196" height="136" rx="2" fill="#fffef5" stroke="#1f2937" stroke-width="2.5"/>
   <circle cx="60" cy="55" r="18" fill="none" stroke="#1f2937" stroke-width="2.5"/>
   <path d="M20 115 L75 70 L110 95 L140 60 L180 115" stroke="#1f2937" stroke-width="2.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>
