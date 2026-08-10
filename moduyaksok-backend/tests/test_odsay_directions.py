@@ -9,6 +9,9 @@
 # 2026-08-10, get_transit_option(단수, paths[0]만) -> get_transit_options(복수)로
 #             바뀐 데 맞춰 전체 재작성 — 여러 경로가 왔을 때 전부 반환하는지,
 #             option_id/transfer_count/description이 올바른지 검증 추가.
+# 2026-08-10, 대중교통 경로 폴리라인 테스트 3개 추가. subPath[]에서 좌표 있는
+#             구간만 이어붙이는지, 좌표 없는 구간은 건너뛰는지, subPath 자체가
+#             없는 응답도 처리하는지 검증.
 # ------------------------------------------------------------------
 import httpx
 import pytest
@@ -197,3 +200,97 @@ async def test_get_transit_options_sends_referer_header_and_coordinates(monkeypa
     assert captured["params"]["apiKey"] == "fake-key"
     assert captured["params"]["SY"] == _GANGNAM[0]
     assert captured["params"]["SX"] == _GANGNAM[1]
+
+
+_PATH_WITH_SUBPATH = {
+    "result": {
+        "path": [
+            {
+                "pathType": 1,
+                "info": {
+                    "totalTime": 39,
+                    "payment": 1650,
+                    "busTransitCount": 0,
+                    "subwayTransitCount": 3,
+                    "firstStartStation": "강남",
+                    "lastEndStation": "시청",
+                },
+                # scripts/odsay_route_check.md 실측 응답 구조 그대로 — trafficType=3(도보)엔
+                # 좌표가 없고, 1(지하철)엔 startX/Y·endX/Y가 있다.
+                "subPath": [
+                    {"trafficType": 3, "distance": 1, "sectionTime": 1},
+                    {
+                        "trafficType": 1,
+                        "distance": 1200,
+                        "sectionTime": 2,
+                        "startX": 127.027618,
+                        "startY": 37.497949,
+                        "endX": 127.014394,
+                        "endY": 37.493902,
+                    },
+                    {"trafficType": 3, "distance": 0, "sectionTime": 2},
+                    {
+                        "trafficType": 1,
+                        "distance": 11200,
+                        "sectionTime": 19,
+                        "startX": 127.014394,
+                        "startY": 37.493902,
+                        "endX": 126.9765,
+                        "endY": 37.5648,
+                    },
+                ],
+            }
+        ]
+    }
+}
+
+
+async def test_get_transit_options_builds_path_from_non_walk_subpaths(monkeypatch):
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, _PATH_WITH_SUBPATH))
+
+    options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert options[0].path == [
+        (37.497949, 127.027618),
+        (37.493902, 127.014394),
+        (37.493902, 127.014394),
+        (37.5648, 126.9765),
+    ]
+
+
+async def test_get_transit_options_path_empty_when_subpath_missing(monkeypatch):
+    # _TWO_PATH_PAYLOAD(기존 픽스처)엔 subPath가 아예 없다 — 그런 응답도 있을 수
+    # 있으니 깨지지 않고 빈 리스트를 줘야 한다.
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, _TWO_PATH_PAYLOAD))
+
+    options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert options[0].path == []
+
+
+async def test_get_transit_options_skips_subpath_leg_missing_coords(monkeypatch):
+    payload = {
+        "result": {
+            "path": [
+                {
+                    "pathType": 2,
+                    "info": {
+                        "totalTime": 20,
+                        "payment": 1200,
+                        "busTransitCount": 1,
+                        "subwayTransitCount": 0,
+                        "firstStartStation": "A",
+                        "lastEndStation": "B",
+                    },
+                    "subPath": [
+                        {"trafficType": 2, "distance": 100, "sectionTime": 3},  # 좌표 없음
+                    ],
+                }
+            ]
+        }
+    }
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, payload))
+
+    options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert options[0].path == []
