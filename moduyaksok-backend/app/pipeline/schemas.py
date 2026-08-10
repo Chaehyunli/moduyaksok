@@ -38,6 +38,11 @@
 #             recommended_mode를 recommended_option_id + selected_option_id로
 #             분리 — 사용자가 고른 옵션을 별도로 저장해서 언제든 다시 바꿀 수
 #             있게 한다(초기값은 recommended와 동일).
+# 2026-08-10, Step3(synthesize_and_validate) 구현 시작하며 Activity에 map_url
+#             추가 — 영업시간 자동 확인을 포기하는 대신(operating_hours는 항상
+#             빈 문자열, info_needs_check=True) naver_map_url.build_naver_map_url()
+#             로 만든 링크를 얹어 사용자가 직접 확인하게 유도하는데, 그 링크를
+#             둘 필드가 기존엔 없었다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -149,10 +154,10 @@ class CandidateSelectionDraft(BaseModel):
 # candidate_id도 순위를 암시하는 숫자 대신 "A"/"B"/"C" 문자를 쓴다.
 #
 # 이 시점엔 아직 이동 경로가 없다(Step4가 사용자 선택 이후에 채운다) —
-# `Candidate.routes`는 그래서 빈 리스트가 기본값이다. TODO: synthesize_step3.py를
-# 실제로 구현할 때, 입력을 EnrichedCandidate(경로 포함, 예전 가정)가 아니라
-# CandidateDraft 리스트로 받고 여기서 ActivityDraft -> Activity 변환(order 부여,
-# operating_hours/phone 채우기 등)까지 하도록 시그니처를 맞출 것.
+# `Candidate.routes`는 그래서 빈 리스트가 기본값이다. synthesize_and_validate()가
+# CandidateDraft/ActivityDraft를 여기 Activity로 변환한다(order 부여, operating_hours
+# 는 항상 빈 문자열+info_needs_check=True, map_url은 naver_map_url.build_naver_map_url()
+# 로 생성 — 영업시간 자동 확인을 포기하는 대신 사용자가 클릭 한 번으로 확인하게 유도).
 
 
 class Activity(BaseModel):
@@ -166,6 +171,9 @@ class Activity(BaseModel):
     operating_hours: str
     phone: str | None = None
     info_needs_check: bool = False
+    # naver_map_url.build_naver_map_url()로 만든 링크 — 영업시간을 자동 확인 못 하는
+    # 대신(info_needs_check=True) 사용자가 클릭 한 번으로 직접 확인하게 유도.
+    map_url: str = ""
 
 
 class Candidate(BaseModel):

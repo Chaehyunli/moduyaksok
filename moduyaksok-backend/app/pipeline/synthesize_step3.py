@@ -15,57 +15,329 @@
 #             후보 1개에만 나중에 경로(ODsay)를 조회해 비용을 아낄 수 있다.
 #             입력 타입도 EnrichedCandidate(경로 포함, 옛 가정) -> CandidateDraft로
 #             변경.
+# 2026-08-10, 실제 구현. 설계 확정 사항:
+#             - 시그니처에 conditions: NormalizedConditions 추가 — 원래 스텁엔
+#               없었는데, 예산/시간 위반 재검증에 budget_per_person/time_range가
+#               필요해서 빠뜨릴 수 없었다.
+#             - "장소 환각" 판단은 별도 place_candidates 조회 없이
+#               ActivityDraft.lat이 None인지로 대신한다 — Step2가 place_candidates에
+#               없는 이름은 좌표를 못 붙이므로(generate_step2._coords_by_title
+#               참고) 이미 있는 신호를 재사용, 새 입력을 안 늘렸다.
+#             - 활동 간 시간 겹침은 Step2._schedule_places()가 순차 배정이라
+#               구조적으로 이미 불가능하지만, 방어적으로 다시 확인한다(하드 위반).
+#             - 관용 범위: 시간 초과 60분, 예산 초과 20% — 기술설계/AI파이프라인
+#               설계 문서에 "실측하며 확정"으로 남겨뒀던 값을 여기서 확정. 60분은
+#               travel_estimate.py의 재조정 임계값과 같은 수치라 이 프로젝트의
+#               "사소한 오차 허용선" 감각과 맞춤.
+#             - verifiable=true 태그 위반 판단과 why_recommended 생성은 LLM 1회
+#               호출로 처리 — category/name 문자열이 태그와 의미적으로 겹치는지는
+#               규칙만으로 못 잡는다(예: "해산물" 태그와 "이자카야" 카테고리).
+#             - ponytail: 하드 위반 후보의 "재생성 최대 1회"는 이번 구현에서
+#               뺐다 — 재생성하려면 place_candidates와 "이 후보가 어느 관점에서
+#               나왔는지"를 이 함수까지 새로 들고 와야 해서 Step2/Step3 사이
+#               결합이 커진다. 지금은 위반 후보를 드롭만 하고, "후보 개수는 3개를
+#               억지로 보장하지 않는다"(2026-08-09 결정)로 커버한다. 재생성은
+#               나중에 라우터 레벨에서 "Step3가 후보를 드롭했다"는 신호를 보고
+#               Step2를 그 관점만 다시 불러 붙이는 방향으로 추가할 것.
+#             - normalize_conditions(Step1)처럼 LLM 호출이 1회뿐이고 병렬화가
+#               필요 없어서 async가 아니라 일반 def로 둔다(기존 스텁은 async였음).
 # ------------------------------------------------------------------
-from app.pipeline.models import ModelTier
-from app.pipeline.schemas import CandidateDraft, InfeasibleResponse, ScheduleResponse
+from datetime import datetime
+
+from pydantic import BaseModel
+
+from app.pipeline.models import ModelTier, get_model
+from app.pipeline.schemas import (
+    Activity,
+    ActivityDraft,
+    Candidate,
+    CandidateDraft,
+    InfeasibleResponse,
+    NormalizedConditions,
+    PreferenceTag,
+    ScheduleResponse,
+)
+from app.services.naver_map_url import build_naver_map_url
+from app.services.structured_llm import call_structured
 
 # 파이프라인에서 정확한 판단력이 품질을 가장 크게 좌우하는 단계 (예산/시간 위반
 # 재검증, 후보 드롭·재생성 판단, 최종 요약 작성) — 호출은 1회뿐이라 비용 부담도 적어
 # 가장 강한 모델을 쓴다. HIGH 티어.
 TIER = ModelTier.HIGH
 
+# 관용 범위 — "무엇이 엄격/관대인가"(docs/AI파이프라인_Step별_설계 Step3 절) 확정값.
+_TIME_OVERRUN_TOLERANCE_MINUTES = 60
+_BUDGET_OVERRUN_TOLERANCE_RATIO = 0.2
+# 이 이상 자카드 유사도면 LLM 프롬프트에 "겹치는 후보" 컨텍스트로 얹는다.
+_SIMILARITY_CONTEXT_THRESHOLD = 0.5
+
+_CANDIDATE_IDS = ("A", "B", "C")
+
 
 def _similarity_score(a: CandidateDraft, b: CandidateDraft) -> float:
     """두 후보의 활동 이름 겹치는 비율(자카드 유사도). LLM 호출 전에 미리 계산해서
     겹침이 심한 쌍이 있으면 그 정보를 프롬프트 컨텍스트로 얹어 "겹치는 후보는
-    대체안으로 바꿔라"고 지시하는 데 쓴다. 새 재시도 경로를 따로 만들지 않고
-    synthesize_and_validate의 기존 재시도(최대 1회)에 태운다.
-
-    TODO: 임계값(예: 0.5 이상이면 경고) 결정, 실제 계산 구현.
+    차별점을 강조해라"고 지시하는 데 쓴다.
     """
-    raise NotImplementedError
+    names_a = {activity.name for activity in a.activities}
+    names_b = {activity.name for activity in b.activities}
+    if not names_a or not names_b:
+        return 0.0
+    return len(names_a & names_b) / len(names_a | names_b)
 
 
-async def synthesize_and_validate(
+def _has_hallucinated_activity(candidate: CandidateDraft) -> bool:
+    return any(a.lat is None or a.lng is None for a in candidate.activities)
+
+
+def _has_time_overlap(candidate: CandidateDraft) -> bool:
+    for prev, cur in zip(candidate.activities, candidate.activities[1:], strict=False):
+        if datetime.strptime(prev.end_time, "%H:%M") > datetime.strptime(cur.start_time, "%H:%M"):
+            return True
+    return False
+
+
+def _budget_overrun_ratio(candidate: CandidateDraft, budget_per_person: int) -> float:
+    total = sum(a.price_range_per_person[0] for a in candidate.activities)
+    if budget_per_person <= 0:
+        return 0.0
+    return max(0.0, total - budget_per_person) / budget_per_person
+
+
+def _time_overrun_minutes(candidate: CandidateDraft, time_range: tuple[datetime, datetime]) -> int:
+    if not candidate.activities:
+        return 0
+    _, window_end = time_range
+    last_end_time = datetime.strptime(candidate.activities[-1].end_time, "%H:%M").time()
+    last_end = datetime.combine(window_end.date(), last_end_time)
+    return max(0, int((last_end - window_end).total_seconds() // 60))
+
+
+def _rule_based_filter(
+    candidates: list[CandidateDraft], conditions: NormalizedConditions
+) -> tuple[list[CandidateDraft], list[str]]:
+    """LLM 호출 전에 결정론적으로 판단 가능한 하드 위반만 걸러낸다 — 장소 환각,
+    활동 간 시간 겹침(둘 다 예외 없이 드롭), 예산/시간 대폭 초과(관용 범위 초과분만
+    드롭). 관용 범위 이내의 예산/시간 초과는 드롭하지 않고 경고 문구를 만들어
+    survivors와 같은 순서로 돌려준다(경고 없으면 빈 문자열) — synthesize_and_validate가
+    LLM의 feasibility_note와 합쳐 최종 feasibility_warning을 만든다.
+    """
+    survivors: list[CandidateDraft] = []
+    warnings: list[str] = []
+    for candidate in candidates:
+        if _has_hallucinated_activity(candidate) or _has_time_overlap(candidate):
+            continue
+
+        budget_ratio = _budget_overrun_ratio(candidate, conditions.budget_per_person)
+        overrun_minutes = _time_overrun_minutes(candidate, conditions.time_range)
+        if (
+            budget_ratio > _BUDGET_OVERRUN_TOLERANCE_RATIO
+            or overrun_minutes > _TIME_OVERRUN_TOLERANCE_MINUTES
+        ):
+            continue
+
+        warning_parts = []
+        if budget_ratio > 0:
+            over_amount = int(conditions.budget_per_person * budget_ratio)
+            warning_parts.append(f"1인 예산보다 약 {over_amount}원 더 필요할 수 있어요")
+        if overrun_minutes > 0:
+            warning_parts.append(f"예정보다 약 {overrun_minutes}분 더 걸릴 수 있어요")
+
+        survivors.append(candidate)
+        warnings.append(", ".join(warning_parts))
+    return survivors, warnings
+
+
+def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
+    """ActivityDraft를 최종 Activity로 변환한다. 영업시간은 자동 확인을 포기하고
+    (operating_hours="", info_needs_check=True) 네이버 지도 링크로 사용자가 직접
+    확인하게 유도한다 — "검증 못 한 걸 확신하는 것처럼 말하지 않는다"는 이
+    프로젝트 기존 원칙.
+    """
+    activities = []
+    for i, draft in enumerate(drafts):
+        map_url = (
+            build_naver_map_url({"title": draft.name, "roadAddress": draft.address})
+            if draft.address
+            else ""
+        )
+        activities.append(
+            Activity(
+                order=i + 1,
+                name=draft.name,
+                category=draft.category,
+                address=draft.address,
+                start_time=draft.start_time,
+                end_time=draft.end_time,
+                price_range_per_person=draft.price_range_per_person,
+                operating_hours="",
+                phone=None,
+                info_needs_check=True,
+                map_url=map_url,
+            )
+        )
+    return activities
+
+
+def _infeasible_response() -> InfeasibleResponse:
+    return InfeasibleResponse(
+        detail="생성 가능한 일정이 없어요 ㅠㅠ 조건을 다시 설정해주세요.",
+        reason="예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
+        adjustable_conditions=["budget_per_person", "time_range", "regions"],
+    )
+
+
+def _format_tags(tags: list[PreferenceTag]) -> str:
+    if not tags:
+        return "(없음)"
+    return ", ".join(f"{t.tag}(verifiable={t.verifiable})" for t in tags)
+
+
+_ROLE_TASK = """\
+# Role
+너는 만남 일정 후보 여러 개를 검토해서 사용자 조건에 맞는지 최종 판단하는 \
+전문 심사자다.
+
+# Task
+- 각 후보(candidate_index로 구분)의 활동 목록이 disliked_tags 중 verifiable=true인 \
+태그와 category/name으로 명백히 겹치면(예: disliked_tags에 "해산물"이 있는데 \
+활동에 해산물 식당이 있음) keep=false로 드롭해라.
+- liked_tags 중 verifiable=true인 태그를 하나도 반영하지 못한 후보가 있고 다른 \
+후보는 반영했다면, 반영 못 한 후보도 검토해서 명백히 취향에서 벗어나면 \
+keep=false로 드롭해라. 애매하면 드롭하지 말고 keep=true로 살려라 — 확신 없는 \
+드롭은 하지 마라.
+- verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 \
+취향이니 드롭 근거로 쓰지 마라.
+- keep=true인 후보에는 why_recommended를 써라 — "다른 후보보다 나아서"가 아니라 \
+"이 후보만의 강점이 뭔지"를 한두 문장으로 설명해라(랭킹 아님, 참고할 rationale \
+필드가 있다).
+- similar_candidate_pairs로 겹침이 심하다고 표시된 후보 쌍이 있으면, 그 후보들의 \
+why_recommended에서 서로 다른 점을 강조해서 써라.
+- feasibility_note는 이 후보에 대해 사용자에게 추가로 알려줄 주의사항이 있으면 \
+한 문장으로 써라(없으면 빈 문자열). 확인 못 한 걸 확신하는 것처럼 쓰지 마라 — \
+"사람이 없습니다"가 아니라 "비교적 한산한 편일 수 있어요"처럼 hedge된 표현을 써라.
+
+# Format
+입력에 있는 candidate_index(0부터, 입력 순서 그대로)마다 keep/why_recommended/\
+feasibility_note를 하나씩 채워라. 판단 자체를 못 하겠는 후보도 keep=true로 \
+두고 why_recommended만 rationale 기반으로 채워라.\
+"""
+
+
+class _CandidateJudgment(BaseModel):
+    candidate_index: int
+    keep: bool
+    why_recommended: str
+    feasibility_note: str
+
+
+class _JudgmentBatch(BaseModel):
+    judgments: list[_CandidateJudgment]
+
+
+def _build_user_prompt(
+    conditions: NormalizedConditions,
+    candidates: list[CandidateDraft],
+    similar_pairs: list[tuple[int, int, float]],
+) -> str:
+    lines = [
+        f"1인 예산: {conditions.budget_per_person}원",
+        f"좋아하는 것: {_format_tags(conditions.liked_tags)}",
+        f"싫어하는 것: {_format_tags(conditions.disliked_tags)}",
+        "",
+        "후보 목록:",
+    ]
+    for i, candidate in enumerate(candidates):
+        lines.append(f"[candidate_index={i}] {candidate.title}")
+        lines.append(f"  관점 근거(rationale): {candidate.rationale}")
+        for activity in candidate.activities:
+            lines.append(f"  - {activity.name} ({activity.category})")
+
+    if similar_pairs:
+        pairs_text = ", ".join(f"{i}번-{j}번(유사도 {score:.2f})" for i, j, score in similar_pairs)
+        lines.append("")
+        lines.append(f"similar_candidate_pairs: {pairs_text}")
+
+    return "\n".join(lines)
+
+
+def synthesize_and_validate(
     provider: str,
     api_key: str,
     session_id: str,
+    conditions: NormalizedConditions,
     candidates: list[CandidateDraft],
 ) -> ScheduleResponse | InfeasibleResponse:
-    """Step2에서 나온 3개 초안(장소·순서·시간은 이미 확정됨, 이동 경로는 아직
-    없음 — Step4가 사용자 선택 이후에 채운다)을 한 번의 LLM 호출에 모두 전달해
-    판단만 한다 — 구조를 재배치하지 않는다:
-    1. 예산/시간/조건 위반 재검증 (규칙 기반 사전 필터링 + LLM 정성 판단 병행)
-    2. 후보 간 유사도 검사 (_similarity_score로 사전 계산, 겹침 심하면 프롬프트에 반영)
-    3. 위반(예산/시간/유사도 포함)이 심한 후보는 드롭, 필요시 해당 관점으로
-       재생성 1회 요청(최대 1회 재시도, 무한루프 방지)
-    4. 살아남은 (최대) 3개 각각에 why_recommended 생성, CandidateDraft/ActivityDraft를
-       최종 Candidate/Activity로 변환(order 부여, operating_hours/phone 채우기 등)
-    (기술설계 §4 Step 3)
+    """Step2에서 나온 (최대 3개) 초안(장소·순서·시간은 이미 확정됨, 이동 경로는
+    아직 없음 — Step4가 사용자 선택 이후에 채운다)을 검증해 최종 3개(또는 그
+    이하)로 확정한다. 구조(장소·순서·시간)는 재배치하지 않는다:
+    1. 규칙 기반 사전 필터링(_rule_based_filter) — 장소 환각·시간 겹침은 예외
+       없이 드롭, 예산/시간 초과는 관용 범위(20%/60분) 넘을 때만 드롭
+    2. 후보 간 유사도 검사(_similarity_score) — LLM 호출 전에 미리 계산해서
+       겹침이 심한 쌍이 있으면 프롬프트 컨텍스트로 얹음
+    3. 살아남은 후보 전부를 한 번의 LLM 호출에 넣어 verifiable=true 태그 위반
+       재검증(추가 드롭 가능) + why_recommended 생성 + feasibility_note 작성
+    4. 규칙 기반 경고(예산/시간 관용 범위 내 초과)와 LLM의 feasibility_note를
+       합쳐 최종 feasibility_warning으로 채움
 
-    왜 후보마다 따로(3번) 호출 안 하고 1번에 다 넣나: "후보끼리 비교"가 이 단계의
-    핵심 역할 중 하나라, 후보 하나씩 따로 호출하면 다른 후보를 볼 방법이 없다.
+    왜 후보마다 따로 호출하지 않고 1번에 다 넣는가: "후보끼리 비교"(유사도 기반
+    차별점 강조)가 이 단계의 핵심 역할 중 하나라, 후보를 하나씩 따로 호출하면
+    다른 후보를 볼 방법이 없다.
 
     랭킹을 매기지 않는다 — 3개는 서로 다른 관점(가성비/동선최소화/취향반영)으로
-    만들어진 것이라 "AI가 뽑은 1등"이 아니라 동등한 선택지 3개로 제시한다.
-    candidate_id도 숫자(1/2/3)가 아니라 A/B/C 문자를 쓴다. why_recommended는
-    "왜 1등인지"가 아니라 "이 후보의 강점이 뭔지"를 설명하는 문장.
+    만들어진 것이라 "AI가 뽑은 1등"이 아니라 동등한 선택지로 제시한다.
+    candidate_id도 숫자가 아니라 A/B/C 문자를 쓴다(개수만큼만 부여, 3개를
+    억지로 보장하지 않는다 — 2026-08-09 결정).
 
-    후보가 하나도 유효하지 않으면 InfeasibleResponse(사유 + 완화 가능 조건) 반환.
-
-    반환하는 Candidate.routes는 항상 빈 리스트다 — 이동 경로는 사용자가 이 3개 중
-    하나를 고른 뒤 Step4(enrich_routes)가 채운다.
-
-    TODO: provider별 structured output 호출, 재시도 로직 구현.
+    규칙 기반 필터링 이후 살아남은 후보가 하나도 없으면 LLM을 호출하지 않고
+    바로 InfeasibleResponse를 반환한다(비용 절약). LLM이 전부 keep=false로
+    드롭한 경우도 마찬가지.
     """
-    raise NotImplementedError
+    rule_survivors, rule_warnings = _rule_based_filter(candidates, conditions)
+    if not rule_survivors:
+        return _infeasible_response()
+
+    similar_pairs = [
+        (i, j, score)
+        for i in range(len(rule_survivors))
+        for j in range(i + 1, len(rule_survivors))
+        if (score := _similarity_score(rule_survivors[i], rule_survivors[j]))
+        >= _SIMILARITY_CONTEXT_THRESHOLD
+    ]
+
+    judgment = call_structured(
+        provider=provider,
+        api_key=api_key,
+        model=get_model(provider, TIER),
+        system=_ROLE_TASK,
+        user=_build_user_prompt(conditions, rule_survivors, similar_pairs),
+        schema=_JudgmentBatch,
+    )
+
+    kept: list[Candidate] = []
+    for entry in judgment.judgments:
+        if not entry.keep:
+            continue
+        if not (0 <= entry.candidate_index < len(rule_survivors)):
+            continue  # LLM이 범위 밖 index를 줄 경우에 대한 방어
+        if len(kept) >= len(_CANDIDATE_IDS):
+            break
+
+        draft = rule_survivors[entry.candidate_index]
+        rule_warning = rule_warnings[entry.candidate_index]
+        combined_warning = " ".join(p for p in (rule_warning, entry.feasibility_note) if p)
+        kept.append(
+            Candidate(
+                candidate_id=_CANDIDATE_IDS[len(kept)],
+                title=draft.title,
+                why_recommended=entry.why_recommended,
+                activities=_to_activities(draft.activities),
+                routes=[],
+                feasibility_warning=combined_warning or None,
+            )
+        )
+
+    if not kept:
+        return _infeasible_response()
+
+    return ScheduleResponse(session_id=session_id, candidates=kept)
