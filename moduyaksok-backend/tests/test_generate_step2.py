@@ -11,6 +11,10 @@
 #             call_structured는 이제 CandidateSelectionDraft(시간 없음)를 반환하고,
 #             _schedule_places()가 시간을 채운다. _fake_draft를 CandidateSelectionDraft
 #             기준으로 바꾸고, _schedule_places() 전용 테스트 추가.
+# 2026-08-10, _schedule_places()가 place_candidates 좌표로 활동 사이 버퍼를
+#             구간마다 다르게 잡도록 바뀌어서(travel_estimate.py), 좌표 부착·가변
+#             버퍼 테스트 추가. place_candidates 생략 시 기존 고정 버퍼로 폴백하는
+#             동작은 위 테스트들이 그대로 검증(하위호환).
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -315,3 +319,48 @@ def test_schedule_places_floors_duration_for_many_places_in_narrow_window():
     start = datetime.strptime(activities[0].start_time, "%H:%M")
     end = datetime.strptime(activities[0].end_time, "%H:%M")
     assert (end - start).total_seconds() / 60 >= 30
+
+
+# ── _schedule_places() 좌표 기반 버퍼 (2026-08-10) ──────────────────────────
+
+# 강남역/서울시청 실측 좌표(mapx/mapy 실측 검증에 썼던 것과 동일) — mapx=경도×1e7,
+# mapy=위도×1e7.
+_GANGNAM_CANDIDATE = {"title": "강남역", "mapx": "1270276210", "mapy": "374979420"}
+_NEARBY_CANDIDATE = {"title": "근처장소", "mapx": "1270280000", "mapy": "374985000"}
+_CITY_HALL_CANDIDATE = {"title": "서울시청", "mapx": "1269765000", "mapy": "375648000"}
+
+
+def test_schedule_places_attaches_coordinates_from_place_candidates():
+    places = [_place("강남역")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [_GANGNAM_CANDIDATE])
+
+    assert activities[0].address == ""  # 이 픽스처엔 address/roadAddress가 없음
+    assert activities[0].lat == pytest.approx(37.497942)
+    assert activities[0].lng == pytest.approx(127.027621)
+
+
+def test_schedule_places_leaves_coordinates_empty_when_not_in_place_candidates():
+    places = [_place("place_candidates에 없는 장소")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [_GANGNAM_CANDIDATE])
+
+    assert activities[0].lat is None
+    assert activities[0].lng is None
+
+
+def test_schedule_places_uses_smaller_buffer_for_closer_places():
+    close_places = [_place("강남역"), _place("근처장소")]
+    far_places = [_place("강남역"), _place("서울시청")]
+    candidates = [_GANGNAM_CANDIDATE, _NEARBY_CANDIDATE, _CITY_HALL_CANDIDATE]
+
+    close_activities = _schedule_places(close_places, _WINDOW_10_TO_21, candidates)
+    far_activities = _schedule_places(far_places, _WINDOW_10_TO_21, candidates)
+
+    close_gap = datetime.strptime(close_activities[1].start_time, "%H:%M") - datetime.strptime(
+        close_activities[0].end_time, "%H:%M"
+    )
+    far_gap = datetime.strptime(far_activities[1].start_time, "%H:%M") - datetime.strptime(
+        far_activities[0].end_time, "%H:%M"
+    )
+    assert close_gap < far_gap

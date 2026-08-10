@@ -20,7 +20,27 @@
 #             겹침 없음·관점 반영을 다 시키니 HIGH 티어로도 일부 케이스에서
 #             못 버티는 걸 실측 확인(generate_step2.py 변경 이력 참고) — 시간
 #             배정을 코드로 떼어내서 LLM 부담을 줄여본다.
+# 2026-08-10, 파이프라인 실행 순서를 Step1→2→3→4(3=검증·병합, 4=이동 동선 보강)로
+#             재설계하면서 이 파일의 섹션 순서·번호도 실행 순서에 맞게 재배치 —
+#             synthesize_and_validate 출력(Activity/Candidate/ScheduleResponse)이
+#             "Step 3"으로, enrich_routes 출력(RouteOption/RouteSegment/
+#             EnrichedCandidate)이 "Step 4"로 라벨이 바뀌었다(함수/파일명도 동일하게
+#             synthesize_step4.py -> synthesize_step3.py, enrich_step3.py ->
+#             enrich_step4.py로 변경). Candidate가 RouteSegment를 참조하는데 물리적
+#             선언 순서는 반대가 되어 `from __future__ import annotations`로 지연
+#             평가를 켜서 순서 문제를 없앴다. `Candidate.routes`는 이제 Step3 직후
+#             (아직 경로 없음)와 Step4 이후(경로 있음) 둘 다를 표현해야 해서
+#             `= []` 기본값을 추가했다.
+# 2026-08-10, RouteOption/RouteSegment 확장 — ODsay가 대중교통 안에서도 경로를
+#             여러 개(지하철만/버스만/환승조합) 한 응답에 같이 준다는 게 실측으로
+#             확인됐는데 그중 1개만 쓰고 있던 걸 바로잡음. RouteOption에
+#             option_id/transfer_count/description 추가, RouteSegment의
+#             recommended_mode를 recommended_option_id + selected_option_id로
+#             분리 — 사용자가 고른 옵션을 별도로 저장해서 언제든 다시 바꿀 수
+#             있게 한다(초기값은 recommended와 동일).
 # ------------------------------------------------------------------
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Literal
 
@@ -89,12 +109,20 @@ class ActivityDraft(BaseModel):
     start_time: str
     end_time: str
     price_range_per_person: tuple[int, int]
+    # place_candidates(네이버 지역검색 원본)에서 결정론적으로 부착 — LLM 출력이
+    # 아니다(place_candidates에 없는 환각 장소면 빈 값/None으로 남는다). Step2의
+    # 좌표 기반 버퍼 추정(travel_estimate.py)과 Step4의 ODsay 호출 둘 다 이 값을
+    # 쓴다. mapx/mapy는 WGS84 경도/위도 × 10^7이라 변환 없이 /1e7만 하면 된다
+    # (실측 확인, 2026-08-10).
+    address: str = ""
+    lat: float | None = None
+    lng: float | None = None
 
 
 class CandidateDraft(BaseModel):
     title: str
     activities: list[ActivityDraft]
-    rationale: str  # Step 4에서 랭킹 근거로 사용
+    rationale: str  # Step 3에서 랭킹 근거로 사용
 
 
 # generate_step2._call_all_perspectives_sync()가 LLM에서 받는 "1단계" 출력 —
@@ -116,41 +144,15 @@ class CandidateSelectionDraft(BaseModel):
     rationale: str
 
 
-# ── Step 3. 이동 동선 보강 (enrich_routes) 출력 ────────────────────────────
-#
-# 구간마다 교통수단 옵션을 여러 개 보여주고 사용자가 고르게 한다 (도보/버스/택시
-# 등 하나로 자동 선택하지 않음 — 사용자가 원치 않는 교통편이 자동으로 박히면
-# UX가 깨진다는 판단). recommended_mode는 기본 선택값(예: 최단 소요시간)일 뿐,
-# 최종 선택은 프런트에서 사용자가 바꿀 수 있다.
-#
-# 조회 시각은 각 구간 직전 활동의 end_time을 출발 시각으로 넣어야 한다 — "지금
-# 시각" 기준으로 조회하면 막차 끊긴 늦은 시간대 일정에서 엉뚱한 결과가 나온다.
-# 특정 시간대에 옵션이 아예 없으면(막차 없음 등) options가 비거나 줄어들 수 있고,
-# 그 경우 feasibility_warning으로 올린다.
-
-
-class RouteOption(BaseModel):
-    mode: Literal["walk", "transit", "car"]
-    duration_minutes: int
-    fare_krw: int
-
-
-class RouteSegment(BaseModel):
-    from_order: int
-    to_order: int
-    options: list[RouteOption]
-    recommended_mode: Literal["walk", "transit", "car"]
-
-
-class EnrichedCandidate(BaseModel):
-    draft: CandidateDraft
-    routes: list[RouteSegment]
-    feasibility_warning: str | None = None
-
-
-# ── Step 4. 검증·병합 (synthesize_and_validate) 출력 = 최종 응답 ──────────────
+# ── Step 3. 검증·병합 (synthesize_and_validate) 출력 ────────────────────────
 # 랭킹 없음 — 3개는 서로 다른 관점으로 만든 동등한 선택지라 rank 필드가 없다.
 # candidate_id도 순위를 암시하는 숫자 대신 "A"/"B"/"C" 문자를 쓴다.
+#
+# 이 시점엔 아직 이동 경로가 없다(Step4가 사용자 선택 이후에 채운다) —
+# `Candidate.routes`는 그래서 빈 리스트가 기본값이다. TODO: synthesize_step3.py를
+# 실제로 구현할 때, 입력을 EnrichedCandidate(경로 포함, 예전 가정)가 아니라
+# CandidateDraft 리스트로 받고 여기서 ActivityDraft -> Activity 변환(order 부여,
+# operating_hours/phone 채우기 등)까지 하도록 시그니처를 맞출 것.
 
 
 class Activity(BaseModel):
@@ -171,7 +173,7 @@ class Candidate(BaseModel):
     title: str
     why_recommended: str
     activities: list[Activity]
-    routes: list[RouteSegment]
+    routes: list[RouteSegment] = []
     feasibility_warning: str | None = None
 
 
@@ -184,3 +186,48 @@ class InfeasibleResponse(BaseModel):
     detail: str
     reason: str
     adjustable_conditions: list[str]
+
+
+# ── Step 4. 이동 동선 보강 (enrich_routes) 출력 ────────────────────────────
+#
+# 구간마다 조회된 이동 옵션을 하나로 추려서 반환하지 않고 전부 담아 사용자가
+# 고르게 한다 — 처음엔 도보/대중교통/차량 "모드" 단위로만 여러 개였는데, ODsay가
+# 대중교통 안에서도 여러 실제 경로(지하철만/버스만/환승조합)를 이미 한 응답에
+# 같이 준다는 게 실측으로 확인돼(2026-08-10) 그 경로들도 버리지 않고 다 담는다
+# — 그중 하나만 골라 쓰는 지금 방식이면 "네이버 지도처럼 여러 교통편 후보를
+# 보여주고 싶다"는 요구를 못 채움. `option_id`로 각 옵션을 구분한다
+# (예: "walk", "transit-0", "transit-1").
+#
+# `recommended_option_id`는 Step4가 처음 계산할 때의 기본값(예: 최단 소요시간)이고,
+# `selected_option_id`는 사용자가 실제로 확정한 값 — 초기값은 recommended와
+# 같지만 언제든 사용자가 다른 옵션으로 바꿀 수 있고, 그 변경이 이 필드에
+# 저장된다(프런트가 바뀐 값을 다시 보여줄 수 있게). 재조정(reconcile_schedule)에
+# 쓰는 소요시간도 selected_option_id 기준이어야 한다 — 사용자가 고른 옵션이
+# 아니라 recommended 기준으로 시간을 재조정하면 화면에 보여주는 시간과
+# 실제 선택이 어긋난다.
+#
+# 사용자가 Step3 결과(경로 없는 후보 3개) 중 하나를 고른 뒤에만 실행 — 나머지
+# 후보에는 호출하지 않아 ODsay Basic(일 1,000건) 호출을 아낀다.
+
+
+class RouteOption(BaseModel):
+    option_id: str
+    mode: Literal["walk", "transit", "car"]
+    duration_minutes: int
+    fare_krw: int
+    transfer_count: int = 0  # 환승 횟수. walk/car는 항상 0
+    description: str = ""  # 사람이 읽을 경로 요약(예: "강남 -> 교대 -> 시청, 2호선")
+
+
+class RouteSegment(BaseModel):
+    from_order: int
+    to_order: int
+    options: list[RouteOption]
+    recommended_option_id: str
+    selected_option_id: str
+
+
+class EnrichedCandidate(BaseModel):
+    draft: CandidateDraft
+    routes: list[RouteSegment]
+    feasibility_warning: str | None = None

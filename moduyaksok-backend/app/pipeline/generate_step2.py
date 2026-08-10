@@ -63,6 +63,15 @@
 #             reason에서도 시간 겹침·time_range 위반 지적이 5케이스 전부 사라짐 —
 #             "LLM에게 한 번에 너무 많이 시키지 말고, 결정론적으로 계산 가능한
 #             부분은 코드로 떼어내라"는 게 이 프로젝트의 유효한 처방으로 확인됨.
+# 2026-08-10, _schedule_places()의 활동 사이 버퍼를 고정 30분에서 place_candidates
+#             좌표 기반 추정(travel_estimate.estimate_buffer_minutes)으로 변경 —
+#             이동 동선 보강을 사용자가 고른 후보 1개에만 돌리기로 파이프라인
+#             순서를 바꾸면서(Step1→2→3→사용자 선택→4, docs/AI파이프라인_Step별_
+#             설계 "전체 흐름" 참고), Step2 시점에 아예 이동시간을 모르는 채로
+#             시간을 배정하던 문제가 더 커져서 개선. 좌표를 못 찾으면 기존
+#             고정값으로 폴백해 기존 유닛 테스트는 그대로 통과한다. ActivityDraft
+#             에도 address/lat/lng을 결정론적으로 부착 — Step4의 ODsay 호출과
+#             reconcile_schedule() 재조정이 이 값을 쓴다.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -77,6 +86,7 @@ from app.pipeline.schemas import (
     PlaceSelectionDraft,
     PreferenceTag,
 )
+from app.pipeline.travel_estimate import estimate_buffer_minutes
 from app.services.structured_llm import call_structured
 
 # MID -> HIGH로 격상(2026-08-09, 장소선택/시간배정 분리 이전). 예산 합산·중복
@@ -116,9 +126,13 @@ PERSPECTIVES: tuple[tuple[str, str], ...] = (
 # 처리"의 "예: 20초"는 참고 예시일 뿐, 이 프로젝트는 3분으로 결정).
 TIMEOUT_SECONDS = 180
 
-# _schedule_places()가 쓰는 시간 배정 상수. 활동 하나당 30~90분 사이로 잡고,
-# 활동 사이엔 이동 여유시간을 둔다 — Step3가 실제 이동시간을 채워넣기 전까지의
-# 자리 표시자 성격. 값 자체는 아직 실측 전이라 임의로 정함, 필요하면 조정할 것.
+# _schedule_places()가 쓰는 시간 배정 상수. 활동 하나당 30~90분 사이로 잡는다.
+# 활동 사이 이동 버퍼는 2026-08-10부터 place_candidates의 좌표로 구간마다
+# estimate_buffer_minutes()를 불러 다르게 잡는다(travel_estimate.py) — 좌표를
+# 못 찾을 때(환각 장소 등)만 이 고정값으로 폴백한다. Step4(사용자가 후보를 고른
+# 뒤에만 그 후보에 한해 실행 — docs/AI파이프라인_Step별_설계 Step4 절 참고)가
+# 실제 ODsay 이동시간을 알아내면 travel_estimate.reconcile_schedule()로 이 추정을
+# 실제값으로 교정한다.
 _ACTIVITY_BUFFER_MINUTES = 30
 _MIN_ACTIVITY_MINUTES = 30
 _MAX_ACTIVITY_MINUTES = 90
@@ -246,29 +260,66 @@ def _correct_categories(
     return selection.model_copy(update={"places": corrected_places})
 
 
+def _coords_by_title(place_candidates: list[dict]) -> dict[str, tuple[float, float, str]]:
+    """title -> (lat, lng, address). mapx/mapy가 없거나 파싱 안 되는 항목은 건너뛴다
+    — 이 경우 해당 장소는 좌표 기반 버퍼 추정 대상에서 빠지고 고정 버퍼로 폴백된다.
+    """
+    coords: dict[str, tuple[float, float, str]] = {}
+    for p in place_candidates:
+        title = p.get("title", "")
+        mapx, mapy = p.get("mapx"), p.get("mapy")
+        if not title or mapx is None or mapy is None:
+            continue
+        try:
+            lat, lng = float(mapy) / 1e7, float(mapx) / 1e7
+        except (TypeError, ValueError):
+            continue
+        coords[title] = (lat, lng, p.get("roadAddress") or p.get("address", ""))
+    return coords
+
+
 def _schedule_places(
-    places: list[PlaceSelectionDraft], time_range: tuple[datetime, datetime]
+    places: list[PlaceSelectionDraft],
+    time_range: tuple[datetime, datetime],
+    place_candidates: list[dict] | None = None,
 ) -> list[ActivityDraft]:
     """LLM이 고른 장소 목록(방문 순서대로)에 시간을 배정한다 — 결정론적 계산이라
     LLM에게 시키지 않는다(2026-08-09 결정, 이 파일 변경 이력 참고). 활동 하나당
     지속시간을 _MIN_ACTIVITY_MINUTES~_MAX_ACTIVITY_MINUTES 사이로 window 크기에
-    맞춰 정하고, 활동 사이엔 _ACTIVITY_BUFFER_MINUTES만큼 이동 여유시간을 둔다.
-    순서대로 이어붙이므로 활동끼리 겹치는 일이 계산 구조상 생기지 않는다 —
-    "시간 겹침 없음"을 LLM이 지켜야 할 규칙이 아니라 코드가 보장하는 성질로 만든다.
+    맞춰 정하고, 활동 사이 버퍼는 place_candidates 좌표가 있으면
+    estimate_buffer_minutes()로 구간마다 다르게, 없으면(place_candidates 생략 —
+    유닛 테스트 기본값, 또는 좌표를 못 찾은 환각 장소) _ACTIVITY_BUFFER_MINUTES로
+    고정 배정한다. 순서대로 이어붙이므로 활동끼리 겹치는 일이 계산 구조상 생기지
+    않는다 — "시간 겹침 없음"을 LLM이 지켜야 할 규칙이 아니라 코드가 보장하는
+    성질로 만든다.
     """
     if not places:
         return []
     start, end = time_range
     window_minutes = int((end - start).total_seconds() // 60)
     n = len(places)
-    buffer_total = _ACTIVITY_BUFFER_MINUTES * (n - 1)
-    per_activity = (window_minutes - buffer_total) // n
+    coords = _coords_by_title(place_candidates or [])
+
+    buffers = []
+    for prev, cur in zip(places, places[1:], strict=False):
+        prev_coord, cur_coord = coords.get(prev.name), coords.get(cur.name)
+        if prev_coord and cur_coord:
+            buffers.append(
+                estimate_buffer_minutes(prev_coord[0], prev_coord[1], cur_coord[0], cur_coord[1])
+            )
+        else:
+            buffers.append(_ACTIVITY_BUFFER_MINUTES)
+
+    per_activity = (window_minutes - sum(buffers)) // n
     per_activity = max(min(per_activity, _MAX_ACTIVITY_MINUTES), _MIN_ACTIVITY_MINUTES)
 
     activities = []
     cursor = start
-    for place in places:
+    for i, place in enumerate(places):
+        if i > 0:
+            cursor = cursor + timedelta(minutes=buffers[i - 1])
         activity_end = cursor + timedelta(minutes=per_activity)
+        lat, lng, address = coords.get(place.name, (None, None, ""))
         activities.append(
             ActivityDraft(
                 name=place.name,
@@ -276,9 +327,12 @@ def _schedule_places(
                 start_time=cursor.strftime("%H:%M"),
                 end_time=activity_end.strftime("%H:%M"),
                 price_range_per_person=place.price_range_per_person,
+                address=address,
+                lat=lat,
+                lng=lng,
             )
         )
-        cursor = activity_end + timedelta(minutes=_ACTIVITY_BUFFER_MINUTES)
+        cursor = activity_end
     return activities
 
 
@@ -318,7 +372,7 @@ async def generate_candidates(
     return [
         CandidateDraft(
             title=selection.title,
-            activities=_schedule_places(selection.places, conditions.time_range),
+            activities=_schedule_places(selection.places, conditions.time_range, place_candidates),
             rationale=selection.rationale,
         )
         for selection in corrected
