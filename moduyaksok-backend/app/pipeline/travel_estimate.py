@@ -13,7 +13,7 @@
 import math
 from datetime import datetime, timedelta
 
-from app.pipeline.schemas import ActivityDraft
+from app.pipeline.schemas import Activity, ActivityDraft
 
 _EARTH_RADIUS_M = 6_371_000
 
@@ -55,15 +55,17 @@ def estimate_buffer_minutes(lat1: float, lon1: float, lat2: float, lon2: float) 
 
 
 def reconcile_schedule(
-    activities: list[ActivityDraft],
+    activities: list[Activity] | list[ActivityDraft],
     segment_index: int,
     estimated_buffer_minutes: int,
     actual_minutes: int,
-) -> list[ActivityDraft]:
+) -> list[Activity] | list[ActivityDraft]:
     """activities[segment_index]와 activities[segment_index + 1] 사이의 실제
     이동시간(actual_minutes, Step4가 ODsay로 알아낸 값)이 Step2 추정
     (estimated_buffer_minutes)과 다를 때, 그 이후 활동들의 start_time/end_time을
-    당기거나 민다.
+    당기거나 민다. Activity(Step4가 실제로 쓰는 타입)/ActivityDraft(Step2가 쓰는
+    타입) 둘 다 받는다 — start_time/end_time/model_copy만 쓰는 순수 함수라
+    타입에 무관하게 동작한다.
 
     - 실제가 추정보다 길면(초과): 반드시 뒤로 민다 — 안 그러면 activities 사이에
       물리적으로 불가능한 시간 겹침이 생긴다.

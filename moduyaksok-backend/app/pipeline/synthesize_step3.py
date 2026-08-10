@@ -152,7 +152,8 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
     """ActivityDraft를 최종 Activity로 변환한다. 영업시간은 자동 확인을 포기하고
     (operating_hours="", info_needs_check=True) 네이버 지도 링크로 사용자가 직접
     확인하게 유도한다 — "검증 못 한 걸 확신하는 것처럼 말하지 않는다"는 이
-    프로젝트 기존 원칙.
+    프로젝트 기존 원칙. lat/lng도 그대로 넘긴다 — Step4(enrich_routes)가 이
+    Activity를 받아 구간별 이동 옵션을 조회하는 데 좌표가 필요하다(2026-08-10).
     """
     activities = []
     for i, draft in enumerate(drafts):
@@ -174,6 +175,8 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
                 phone=None,
                 info_needs_check=True,
                 map_url=map_url,
+                lat=draft.lat,
+                lng=draft.lng,
             )
         )
     return activities

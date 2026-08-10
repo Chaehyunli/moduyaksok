@@ -11,6 +11,13 @@
 #             ODSAY_REFERER_URL 추가 (네이버 지도 API 키 계획은 폐기 — 기술설계
 #             문서 Step4 절 참고). ODSAY_REFERER_URL은 lab.odsay.com에 등록한
 #             서비스 URI와 정확히 일치해야 호출이 통과되어 환경별로 값이 다르다.
+# 2026-08-10, NAVER_MAP_CLIENT_ID/SECRET 추가 — "네이버 지도 API 키 계획은 폐기"
+#             라고 위에 적어뒀던 것과 달리, NCP Maps(Directions 5, 자차 길찾기)가
+#             신규 이용 신청이 실제로는 열려 있는 걸 콘솔에서 직접 확인해 다시
+#             채택했다(대중교통은 여전히 ODsay). 이 값은 Directions 5 REST 호출용
+#             서버 키(Client ID+Secret 둘 다 헤더로 보냄)라 도메인 제한과 무관 —
+#             프런트가 Dynamic Map에 쓰는 Client ID(도메인 제한 걸림, VITE_ 접두사)
+#             와는 같은 값이지만 용도가 다르다.
 # ------------------------------------------------------------------
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,6 +50,13 @@ class Settings(BaseSettings):
     # 때문에 호출 시 Referer 헤더를 이 값과 맞춰줘야 한다.
     odsay_api_key: str = ""
     odsay_referer_url: str = "localhost:8000"
+
+    # Step4 자차 옵션용 (NCP Maps Directions 5, ncloud.com Application "moduyaksok"
+    # 에서 발급). Directions/Geocoding 등 서버 REST 호출은 이 Secret까지 헤더에
+    # 실어 보내는 것 자체가 인증이라 도메인 제한이 없다 — 개발/배포 환경 구분 없이
+    # 같은 값을 쓴다.
+    naver_map_client_id: str = ""
+    naver_map_client_secret: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

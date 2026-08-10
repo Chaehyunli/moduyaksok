@@ -1,0 +1,69 @@
+# ------------------------------------------------------------------
+# 작성자      : 임채현
+# 작성목적    : Step4가 쓸 자차 옵션 조회. NCP Maps Directions 5
+#              (naveropenapi.apigw.ntruss.com) 호출.
+# 작성일      : 2026-08-10
+# 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
+# 2026-08-10, 최초 작성. NCP Maps 콘솔에서 신규 이용 신청이 실제로 열려 있는 걸
+#             확인해 채택(문서상 공지로는 "신규 신청 차단"이었으나 콘솔 화면이
+#             1차 증거 — 실측 우선). option="trafast"(실시간 빠른길) 1개만
+#             조회한다 — 대중교통처럼 여러 대안을 보여줄 만큼 자차 경로 간
+#             차이가 크지 않다고 판단, ODsay처럼 여러 옵션을 다 담을 필요 없음.
+#             요청 헤더에 Client ID+Secret을 그대로 실어 보내는 것 자체가
+#             인증이라(ODsay와 달리 Referer 불필요) settings에서 바로 읽는다.
+# ------------------------------------------------------------------
+import httpx
+
+from app.config import settings
+from app.pipeline.schemas import RouteOption
+
+_DIRECTIONS_URL = "https://naveropenapi.apigw.ntruss.com/map-direction/v1/driving"
+
+# code=0이 성공. 그 외(출발/도착 동일, 도로 주변 아님, 직선거리 1500km 이상 등)는
+# "이 구간엔 자차 경로가 없다"는 정상 상황으로 취급한다(공식 API 레퍼런스 기준).
+_SUCCESS_CODE = 0
+
+
+class NaverDirectionsError(Exception):
+    """NCP Maps Directions 5 호출 자체가 실패(네트워크 오류, 인증 실패, 5xx 등).
+    "이 구간엔 자차 경로가 없음"(정상적인 빈 결과)과는 구분한다.
+    """
+
+
+async def get_car_option(lat1: float, lng1: float, lat2: float, lng2: float) -> RouteOption | None:
+    """자차 옵션을 NCP Maps Directions 5로 조회한다. 경로를 못 찾으면(code != 0)
+    None을 반환한다(호출부가 도보·대중교통만 보여줌). 네트워크·인증 실패 등
+    호출 자체의 문제는 NaverDirectionsError로 올린다.
+    """
+    params = {
+        "start": f"{lng1},{lat1}",
+        "goal": f"{lng2},{lat2}",
+        "option": "trafast",
+    }
+    headers = {
+        "x-ncp-apigw-api-key-id": settings.naver_map_client_id,
+        "x-ncp-apigw-api-key": settings.naver_map_client_secret,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(_DIRECTIONS_URL, params=params, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise NaverDirectionsError(f"NCP Maps 자차 경로 조회 실패: {exc}") from exc
+
+    body = response.json()
+    if body.get("code") != _SUCCESS_CODE:
+        return None
+
+    routes = body.get("route", {}).get("trafast", [])
+    if not routes:
+        return None
+
+    summary = routes[0]["summary"]
+    return RouteOption(
+        option_id="car",
+        mode="car",
+        duration_minutes=round(summary["duration"] / 1000 / 60),
+        fare_krw=summary.get("tollFare", 0) + summary.get("fuelPrice", 0),
+        description="자동차(실시간 빠른길)",
+    )

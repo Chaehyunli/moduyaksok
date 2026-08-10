@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------
 # 작성자      : 임채현
-# 작성목적    : Step 4 — 이동 동선 보강. ODsay(lab.odsay.com) 호출, LLM 안 씀.
+# 작성목적    : Step 4 — 이동 동선 보강. ODsay(lab.odsay.com)+NCP Maps 호출, LLM 안 씀.
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, 구간당 경로 1개 자동선택 → 여러 교통수단 옵션을 다 담아서
@@ -31,52 +31,76 @@
 #             recommended_option_id/selected_option_id로 교체 — 초기 selected는
 #             recommended와 같게 채우고, 시간 재조정(reconcile_schedule)도
 #             recommended(=최초 selected) 기준 소요시간을 쓴다.
+# 2026-08-10, 자차(car) 옵션 추가 — naver_directions.get_car_option()(NCP Maps
+#             Directions 5)을 도보/대중교통과 나란히 조회. 콘솔에서 신규 이용
+#             신청이 실제로 열려 있는 걸 확인해 "프로바이더 미정으로 보류"였던
+#             걸 해소(docs/AI파이프라인_Step별_설계 Step4 절 참고). 세 프로바이더가
+#             서로 독립적으로 실패할 수 있어 _fetch_segment_options()가 프로바이더별
+#             try/except로 분리 — 하나가 죽어도 나머지 옵션은 그대로 담긴다.
+# 2026-08-10, 라우터(app/routers/schedule.py) 구현하며 입출력 타입을
+#             CandidateDraft/EnrichedCandidate -> Candidate로 교체. 실제로 사용자가
+#             고르고 DB에 저장되는 건 Step3가 만든 Candidate라, 이 함수가 Draft를
+#             받으면 라우터가 Candidate -> Draft -> (다시 Candidate로 병합) 왕복
+#             변환을 떠안아야 했다. Candidate.routes/feasibility_warning은 원래
+#             이 함수가 채우라고 만들어둔 필드였으니(schemas.py 주석 참고) 그냥
+#             그 타입을 직접 쓰기로 함 — EnrichedCandidate는 삭제.
 # ------------------------------------------------------------------
 import asyncio
 from datetime import datetime
 
-from app.pipeline.schemas import (
-    ActivityDraft,
-    CandidateDraft,
-    EnrichedCandidate,
-    RouteOption,
-    RouteSegment,
-)
+from app.pipeline.schemas import Activity, Candidate, RouteOption, RouteSegment
 from app.pipeline.travel_estimate import reconcile_schedule
+from app.services.naver_directions import NaverDirectionsError, get_car_option
 from app.services.odsay_directions import OdsayError, get_transit_options, get_walk_option
 
 # 이 단계는 LLM을 쓰지 않는다(ODsay API 호출) — 모델 티어 해당 없음.
 
 
-async def _fetch_segment_options(
-    a: ActivityDraft, b: ActivityDraft
-) -> tuple[list[RouteOption], str | None]:
+async def _fetch_segment_options(a: Activity, b: Activity) -> tuple[list[RouteOption], str | None]:
     """구간 하나의 옵션을 조회한다. 좌표가 없으면(place_candidates에 없던 환각
-    장소 등) 빈 옵션 + 경고 문자열을 돌려준다. ODsay 호출이 실패해도(네트워크 등)
-    함수 전체가 죽지 않고 도보만 담아 진행한다 — 이 단계는 결정론적 API 호출이라
-    한 구간의 실패가 나머지 구간까지 막을 이유가 없다.
+    장소 등) 빈 옵션 + 경고 문자열을 돌려준다. ODsay/NCP Maps 호출이 실패해도
+    (네트워크 등) 함수 전체가 죽지 않고 나머지 옵션만 담아 진행한다 — 이 단계는
+    결정론적 API 호출이라 한 프로바이더의 실패가 다른 프로바이더까지 막을
+    이유가 없다.
     """
     if a.lat is None or a.lng is None or b.lat is None or b.lng is None:
         return [], f"{a.name} → {b.name} 구간은 좌표를 찾지 못해 이동 정보를 채우지 못했습니다."
 
-    walk = get_walk_option(a.lat, a.lng, b.lat, b.lng)
+    options: list[RouteOption] = [get_walk_option(a.lat, a.lng, b.lat, b.lng)]
+    warnings: list[str] = []
+
     try:
-        transit_options = await get_transit_options(a.lat, a.lng, b.lat, b.lng)
+        options += await get_transit_options(a.lat, a.lng, b.lat, b.lng)
     except OdsayError:
-        return [walk], f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다."
-    return [walk, *transit_options], None
+        warnings.append(f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다.")
+
+    try:
+        car = await get_car_option(a.lat, a.lng, b.lat, b.lng)
+        if car is not None:
+            options.append(car)
+    except NaverDirectionsError:
+        warnings.append(f"{a.name} → {b.name} 구간의 자동차 경로 정보를 가져오지 못했습니다.")
+
+    return options, " ".join(warnings) if warnings else None
 
 
-async def enrich_routes(
-    candidate: CandidateDraft, time_range: tuple[datetime, datetime]
-) -> EnrichedCandidate:
-    """활동 시퀀스 구간마다 도보(직선거리 추정)/대중교통(ODsay) 옵션을 조회해
-    RouteSegment.options에 채운다. 대중교통은 ODsay가 한 응답에 준 경로를 전부
-    담는다(지하철만/버스만/환승조합 등) — 하나만 골라서 나머지를 버리지 않는다.
-    사용자가 원치 않는 교통편이 자동 확정되면 UX가 깨진다는 판단(2026-08-07 논의).
+async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, datetime]) -> Candidate:
+    """활동 시퀀스 구간마다 도보(직선거리 추정)/대중교통(ODsay)/자차(NCP Maps
+    Directions 5) 옵션을 조회해 RouteSegment.options에 채운다. 대중교통은 ODsay가
+    한 응답에 준 경로를 전부 담는다(지하철만/버스만/환승조합 등) — 하나만 골라서
+    나머지를 버리지 않는다. 자차는 실시간 빠른길(trafast) 1개만 담는다(대중교통만큼
+    대안 간 차이가 크지 않다고 판단). 사용자가 원치 않는 교통편이 자동 확정되면
+    UX가 깨진다는 판단(2026-08-07 논의).
     `recommended_option_id`(최단 소요시간)는 프런트 기본 선택값이고,
     `selected_option_id`가 사용자가 실제로 확정한 값이다 — 초기값은
     recommended와 같게 채운다.
+
+    입력·반환 타입이 Candidate인 이유: 사용자가 실제로 고르고 DB에 저장되는 건
+    Step3(synthesize_and_validate)가 만든 Candidate지 Step2의 CandidateDraft가
+    아니다 — Candidate.routes/feasibility_warning은 애초에 이 함수가 나중에
+    채우라고 만들어둔 필드다(schemas.py 참고, 2026-08-10 정리). Step3에서 이미
+    있던 feasibility_warning(예산/시간 관용범위 경고)은 유지하고 이 함수가 새로
+    발견한 경고를 이어붙인다 — 지우지 않는다.
 
     Step2가 배정한 start_time/end_time은 좌표 기반 추정 버퍼를 쓴 값이라 실제와
     다를 수 있다 — 이 함수가 구간마다 recommended(=최초 selected) 옵션의 실제
@@ -89,8 +113,8 @@ async def enrich_routes(
     operating_hours와 같은 패턴으로, 이르거나 늦은 시간대 이동은 사용자가 직접
     확인하도록 프런트가 hedge된 안내를 보여준다(이 함수의 책임 밖).
     """
-    activities = list(candidate.activities)
-    warnings: list[str] = []
+    activities: list[Activity] = list(candidate.activities)
+    warnings: list[str] = [candidate.feasibility_warning] if candidate.feasibility_warning else []
 
     pairs = list(zip(activities, activities[1:], strict=False))
     fetched = await asyncio.gather(*(_fetch_segment_options(a, b) for a, b in pairs))
@@ -137,9 +161,10 @@ async def enrich_routes(
                 f"희망 시간({window_end.strftime('%H:%M')})을 넘길 수 있습니다."
             )
 
-    updated_draft = candidate.model_copy(update={"activities": activities})
-    return EnrichedCandidate(
-        draft=updated_draft,
-        routes=routes,
-        feasibility_warning=" ".join(warnings) if warnings else None,
+    return candidate.model_copy(
+        update={
+            "activities": activities,
+            "routes": routes,
+            "feasibility_warning": " ".join(warnings) if warnings else None,
+        }
     )

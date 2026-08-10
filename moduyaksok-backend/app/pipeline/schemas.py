@@ -43,6 +43,14 @@
 #             빈 문자열, info_needs_check=True) naver_map_url.build_naver_map_url()
 #             로 만든 링크를 얹어 사용자가 직접 확인하게 유도하는데, 그 링크를
 #             둘 필드가 기존엔 없었다.
+# 2026-08-10, 라우터(app/routers/schedule.py) 구현하며 발견: enrich_routes()가
+#             CandidateDraft를 받아 EnrichedCandidate(draft 감싼 별도 타입)를
+#             반환했는데, 실제로 사용자가 고르고 DB에 저장되는 건 Step3가 만든
+#             Candidate다 — Candidate.routes/feasibility_warning은 애초에 Step4가
+#             나중에 채우라고 만들어둔 필드였는데 정작 enrich_routes()가 그걸 안
+#             썼다. Activity에 lat/lng 추가(ActivityDraft에서 그대로 복사)하고
+#             enrich_routes()가 Candidate를 직접 받고 돌려주게 고쳐서 EnrichedCandidate
+#             삭제 — 중간에 다른 타입으로 갈아탈 이유가 없었다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -174,6 +182,12 @@ class Activity(BaseModel):
     # naver_map_url.build_naver_map_url()로 만든 링크 — 영업시간을 자동 확인 못 하는
     # 대신(info_needs_check=True) 사용자가 클릭 한 번으로 직접 확인하게 유도.
     map_url: str = ""
+    # ActivityDraft에서 그대로 복사(2026-08-10) — Step4(enrich_routes)가 구간별
+    # 이동 옵션을 조회하려면 좌표가 필요한데, 사용자가 실제로 고르는 건 이
+    # Activity(Candidate.activities)이지 ActivityDraft가 아니다. 여기서 빠지면
+    # Step4가 좌표를 못 구해 라우터에서 다시 장소를 찾아야 하는 낭비가 생긴다.
+    lat: float | None = None
+    lng: float | None = None
 
 
 class Candidate(BaseModel):
@@ -233,9 +247,3 @@ class RouteSegment(BaseModel):
     options: list[RouteOption]
     recommended_option_id: str
     selected_option_id: str
-
-
-class EnrichedCandidate(BaseModel):
-    draft: CandidateDraft
-    routes: list[RouteSegment]
-    feasibility_warning: str | None = None
