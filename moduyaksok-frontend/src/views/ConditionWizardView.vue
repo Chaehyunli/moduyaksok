@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import { PROVINCES, REGIONS } from '../lib/regions'
@@ -71,20 +71,26 @@ function removeRegion(index: number) {
 // 같은 시/도를 세부지역 없이(전체) 선택한 행이 있으면, 그 시/도의 세부지역 행은
 // 포함관계상 중복이니 자동으로 지운다 (예: "서울"과 "서울 잠실"을 같이 넣으면
 // "서울 잠실" 행 제거 — 요구사항: 포함되는 세부지역은 프런트에서 자동 정리).
-watch(
-  regions,
-  (rows) => {
-    const broadProvinces = new Set(rows.filter((r) => r.province && !r.area).map((r) => r.province))
-    if (broadProvinces.size === 0) return
-    const kept = rows.filter((r) => !(r.area && broadProvinces.has(r.province)))
-    if (kept.length !== rows.length) regions.value = kept
-  },
-  { deep: true },
-)
+// 세부지역을 실제로 "선택"했을 때만 실행한다 — 시/도만 바꿔서 area가 잠깐 ''로
+// 리셋되는 중간 상태(세부지역 아직 안 고른 상태)까지 "전체 선택"으로 오인해
+// 다른 행을 지우면 안 된다(예: 경기 수원 입력 후 새 행에서 경기를 고르는 순간
+// 수원 행이 사라지던 버그).
+function dedupeBroadRegions() {
+  const broadProvinces = new Set(
+    regions.value.filter((r) => r.province && !r.area).map((r) => r.province),
+  )
+  if (broadProvinces.size === 0) return
+  const kept = regions.value.filter((r) => !(r.area && broadProvinces.has(r.province)))
+  if (kept.length !== regions.value.length) regions.value = kept
+}
 
 // 시/도를 바꾸면 이전 세부지역이 새 시/도 목록에 없을 수 있으니 초기화한다.
 function onProvinceChange(row: RegionRow) {
   row.area = ''
+}
+
+function onAreaChange() {
+  dedupeBroadRegions()
 }
 
 const regionLabels = computed(() =>
@@ -193,6 +199,7 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
             :options="[{ value: '', label: '전체' }, ...areaOptionsFor(row.province)]"
             :disabled="!row.province"
             label="세부지역 (선택)"
+            @update:modelValue="onAreaChange"
           />
         </div>
         <DoodleButton v-if="canAddRegion" variant="ghost" size="sm" @click="addRegion">
