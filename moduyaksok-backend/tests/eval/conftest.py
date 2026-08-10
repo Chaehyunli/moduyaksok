@@ -10,6 +10,9 @@
 #             실측으로 확인(Step2 eval에서 재현). 채점 대상 파이프라인의 결함이
 #             아니라 judge 쪽 출력 형식 불안정이라 재시도로 완화 — Step1/Step2 eval
 #             테스트 둘 다 여기서 가져다 씀(conftest.py라 import 없이 바로 보임).
+# 2026-08-10, resolve_eval_credential()에 선택된 provider를 print하는 줄 추가 —
+#             폴백(upstage→openai→anthropic)이 실제로 어느 단계로 넘어갔는지 이전엔
+#             전혀 로그가 없어서 알 방법이 없었음. `pytest -m eval -s`로 봐야 보임.
 # ------------------------------------------------------------------
 import pytest
 from anthropic import Anthropic
@@ -52,6 +55,7 @@ def resolve_eval_credential() -> tuple[str, str]:
             ping_provider(provider, api_key)
         except Exception:
             continue
+        print(f"\n[eval] provider 선택: {provider} ({get_model(provider, ModelTier.HIGH)})")
         return provider, api_key
     pytest.skip(
         "DeepEval 테스트용 키가 하나도 유효하지 않습니다 — "
