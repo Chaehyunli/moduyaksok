@@ -64,6 +64,7 @@ tests/           pytest
 | `health.py` | `GET /health` | 서버 상태 확인 | - |
 | `auth.py` | `POST /auth/google`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>현재 로그인 사용자 조회 | `services/auth.py`, `models/user.py` |
 | `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
+| `schedule.py` | `POST /schedules`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3(`orchestrate.generate_schedule_candidates`) 실행해 경로 없는 후보(최대 3개) 생성, 성공 시에만 `ScheduleSession` 저장(실패 케이스는 롤백 코드 없이 애초에 안 만듦)<br>사용자가 고른 후보 1개에 Step4(`enrich_routes`) 실행해 이동 옵션 채움, 결과를 후보 목록에 반영해 재저장<br>저장된 세션 조회(본인 소유만)<br>후보 확정(`draft`→`confirmed`, 이미 확정된 세션 재확정 방지) | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
 
 ## 서비스 (`app/services/`)
 
@@ -75,6 +76,7 @@ tests/           pytest
 | `structured_llm.py` | `call_structured(provider, api_key, model, system, user, schema)` — Pydantic 스키마에 맞는 구조화 응답을 provider 상관없이 받는 공용 인터페이스. Claude는 tool use, GPT/Solar는 `client.beta.chat.completions.parse()`(Solar가 이 방식까지 지원하는 걸 실제 키로 확인함, 2026-08-07) — 그래서 분기는 anthropic 1개 / openai·upstage 공용 1개, 총 2갈래뿐 |
 | `naver_local_search.py` | `search_places(query, display)` — 네이버 지역검색(NAVER API HUB, `NAVER_SEARCH_CLIENT_ID/SECRET`)으로 place_candidates 사전 조회. 응답 title의 `<b>` 강조 태그 제거, display는 API 제약상 최대 5로 clamp. `search_places_for_regions(regions)` — 지역(최대 3개) × 카테고리로 팬아웃 호출해 title 기준 중복 제거 후 병합 |
 | `odsay_directions.py` | Step4용 이동 옵션 조회. `get_walk_option()` — 좌표 기반 직선거리 추정(API 호출 없음, `travel_estimate.estimate_buffer_minutes` 재사용). `get_transit_options()` — ODsay(`ODSAY_API_KEY`) `searchPubTransPathT` 호출, 700m 이내는 사전에 걸러 호출 자체를 생략, 호출해도 -98 등 "경로 없음"이면 빈 리스트(정상). ODsay가 한 응답에 주는 경로를 **전부**(실측 시 구간당 최대 20개 넘게 나옴) `RouteOption`으로 변환 — 대표 1개만 고르지 않는다(2026-08-10 정정, `scripts/verify_odsay_routes.py`로 실측). `Referer` 헤더를 `ODSAY_REFERER_URL`로 직접 세팅 — 서비스 플랫폼을 URI로 등록해서 브라우저가 아닌 서버 호출에도 인증되려면 필요 |
+| `naver_directions.py` | Step4용 자차 옵션 조회. `get_car_option()` — NCP Maps Directions 5(`NAVER_MAP_CLIENT_ID/SECRET`) 호출, 실시간 빠른길(`trafast`) 1개만 조회(대중교통만큼 대안 차이가 크지 않다고 판단). Client ID+Secret을 헤더에 그대로 실어 보내는 게 인증이라 ODsay와 달리 Referer 불필요. 경로를 못 찾으면(code≠0) None(정상, 호출부가 도보·대중교통만 보여줌) |
 
 ## AI 파이프라인 (`app/pipeline/`)
 
@@ -91,7 +93,7 @@ tests/           pytest
 | `travel_estimate.py` | - | - | ✅ `estimate_buffer_minutes()` — place_candidates 좌표(mapx/mapy÷1e7, WGS84 실측 확인)로 직선거리 기반 이동시간 추정(도로 왜곡 보정×안전마진 1.2). `reconcile_schedule()` — Step4가 실제 이동시간을 알아내면 이 추정과 비교해 이후 활동 시간을 보정(초과분은 무조건, 60분 넘는 여유만 당김) |
 | `synthesize_step3.py` | Step3 검증·병합 (Aggregator) | HIGH | ✅ 구현 완료. 규칙 기반 사전 필터(`_rule_based_filter` — 장소 환각·시간 겹침은 하드 드롭, 예산 20%/시간 60분 초과도 하드 드롭·그 이내는 경고) 후 살아남은 후보 전부를 1번의 LLM 호출에 넣어 verifiable=true 태그 위반 추가 검증 + why_recommended 생성. 유사도(`_similarity_score`) 0.5 이상 쌍은 프롬프트에 얹어 차별점 강조 지시. 규칙 필터로 다 드롭되면 LLM 호출 없이 바로 `InfeasibleResponse`. 하드 위반 후보의 관점별 재생성은 이 파일이 아니라 `orchestrate.py`가 맡음(아래) — Step3 자체는 순수하게 유지. 골든 4케이스 GEval 4/4 통과 |
 | `orchestrate.py` | - | - | ✅ `generate_schedule_candidates()` — Step1→2→3을 순서대로 실행하고, Step3가 드롭한 후보가 있으면 그 관점만 `generate_single_candidate()`로 재생성해 Step3를 한 번 더 돌림(관점별 최대 1회). 어느 관점이 빠졌는지는 `Candidate.title`을 원본 draft title과 대조해서 판단(스키마 필드 추가 없음). 사용자에게는 재시도가 안 보임 — `POST /schedules`(장래) 응답 나가기 전에 이 함수 안에서 다 끝남 |
-| `enrich_step4.py` | Step4 이동 동선 보강 | - | ✅ 구현 완료. LLM 안 씀. `odsay_directions.py`로 구간별 도보/대중교통 옵션을 병렬 조회(`asyncio.gather`) 후 `travel_estimate.reconcile_schedule()`로 Step2 추정과 실제값 차이를 보정. **사용자가 3개 후보 중 하나를 고른 뒤 그 후보에만 호출**(2026-08-10 파이프라인 순서 재설계 — 파일명도 enrich_step3.py에서 변경, 실행 순서와 번호를 맞춤) |
+| `enrich_step4.py` | Step4 이동 동선 보강 | - | ✅ 구현 완료. LLM 안 씀. `odsay_directions.py`(도보·대중교통)+`naver_directions.py`(자차)로 구간별 옵션을 병렬 조회(`asyncio.gather`, 프로바이더별 독립 실패 처리) 후 `travel_estimate.reconcile_schedule()`로 Step2 추정과 실제값 차이를 보정. **사용자가 3개 후보 중 하나를 고른 뒤 그 후보에만 호출**(2026-08-10 파이프라인 순서 재설계 — 파일명도 enrich_step3.py에서 변경, 실행 순서와 번호를 맞춤). `enrich_routes()`의 입출력 타입은 `CandidateDraft`가 아니라 Step3가 만든 `Candidate`(라우터 구현하며 정리, 2026-08-10) — `Candidate.routes`/`feasibility_warning`은 애초에 이 함수가 채우라고 만들어둔 필드였다. 그래서 별도였던 `EnrichedCandidate` 타입은 삭제 |
 
 ## 모델 (`app/models/`)
 
@@ -99,7 +101,7 @@ tests/           pytest
 |---|---|---|
 | `user.py` | `user` | Google 계정 기반 사용자 |
 | `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키(암호화 저장), `user_id` unique — 사용자당 1개 |
-| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크 (AI 파이프라인 함수는 Step1~4 구현 완료됐지만 라우터(`app/routers/schedule.py`)가 아직 없어서 이 모델들을 실제로 쓰는 코드는 없음) |
+| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크. `schedule_session`은 `app/routers/schedule.py`가 실제로 씀(2026-08-10) — `feedback_message`/`share_link`는 각각 피드백·공유 라우터가 아직 없어서 미사용 |
 
 라우터/서비스/모델 표는 새 엔드포인트나 파일을 추가할 때 같이 갱신할 것 — 프런트 [`../moduyaksok-frontend/README.md`](../moduyaksok-frontend/README.md)의 화면·컴포넌트 표와 같은 역할.
 
