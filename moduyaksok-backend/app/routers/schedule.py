@@ -23,7 +23,12 @@
 #               반환해 API명세서 예시와 정확히 같은 모양을 만든다.
 #             - Step4(enrich_routes)는 LLM을 안 써서 이 라우터의 /routes
 #               엔드포인트는 BYOK 크리덴셜을 조회하지 않는다.
+# 2026-08-10, 확정 시 공유 링크 생성. confirm_schedule()이 confirmed_candidate_id를
+#             기록하고 ShareLink row를 만들어 8자 base62 slug를 ConfirmResponse에
+#             실어 보낸다 — 다음 태스크(공개 조회 엔드포인트)가 이 slug로 세션을
+#             찾는다.
 # ------------------------------------------------------------------
+import secrets
 from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
@@ -35,7 +40,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
-from app.models.schedule import ScheduleSession
+from app.models.schedule import ScheduleSession, ShareLink
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
 from app.pipeline.orchestrate import generate_schedule_candidates
@@ -68,6 +73,17 @@ class ConfirmRequest(BaseModel):
 class ConfirmResponse(BaseModel):
     session_id: UUID
     status: str
+    share_slug: str
+
+
+# ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
+# 재시도 로직은 이 규모에서 과함. 실제로 충돌하면 DB unique 제약이 막고
+# IntegrityError로 500이 나는데, 그 정도로 자주 일어날 확률이 아니다.
+_SLUG_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _generate_slug(length: int = 8) -> str:
+    return "".join(secrets.choice(_SLUG_ALPHABET) for _ in range(length))
 
 
 def _get_user_credential(session: Session, user_id: UUID) -> LLMCredential:
@@ -197,8 +213,9 @@ def confirm_schedule(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """후보 하나를 최종 확정(status: confirmed). draft -> confirmed는 한 방향만
-    허용 — 이미 confirmed인 세션은 재확정을 막는다(models/schedule.py 주석 참고).
+    """후보 하나를 최종 확정(status: confirmed)하고 공유 링크를 만든다. draft ->
+    confirmed는 한 방향만 허용 — 이미 confirmed인 세션은 재확정을 막는다
+    (models/schedule.py 주석 참고).
     """
     schedule_session = _get_owned_session(session, session_id, current_user)
     _find_candidate(schedule_session, body.candidate_id)  # 존재하는 후보인지만 검증
@@ -207,7 +224,13 @@ def confirm_schedule(
         raise HTTPException(status.HTTP_409_CONFLICT, "이미 확정된 일정입니다.")
 
     schedule_session.status = "confirmed"
+    schedule_session.confirmed_candidate_id = body.candidate_id
     session.add(schedule_session)
+
+    share_link = ShareLink(session_id=schedule_session.id, slug=_generate_slug())
+    session.add(share_link)
     session.commit()
 
-    return ConfirmResponse(session_id=schedule_session.id, status=schedule_session.status)
+    return ConfirmResponse(
+        session_id=schedule_session.id, status=schedule_session.status, share_slug=share_link.slug
+    )

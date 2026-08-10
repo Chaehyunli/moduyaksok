@@ -9,6 +9,8 @@
 #              테스트됨).
 # 작성일      : 2026-08-10
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
+# 2026-08-10, 확정 시 공유 링크 생성 검증, confirm 응답의 share_slug 필드와
+#             ShareLink row 저장을 확인하는 테스트 2개 추가.
 # ------------------------------------------------------------------
 from uuid import UUID
 
@@ -265,6 +267,40 @@ def test_confirm_schedule_sets_status_confirmed(client, session, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "confirmed"
+
+
+def test_confirm_schedule_returns_share_slug(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.post(
+        f"/schedules/{session_id}/confirm", json={"candidate_id": "A"}, headers=headers
+    )
+
+    body = response.json()
+    assert body["share_slug"]
+    assert len(body["share_slug"]) == 8
+
+
+def test_confirm_schedule_persists_confirmed_candidate_id_and_share_link(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.post(
+        f"/schedules/{session_id}/confirm", json={"candidate_id": "A"}, headers=headers
+    )
+    slug = response.json()["share_slug"]
+
+    from app.models.schedule import ScheduleSession, ShareLink
+
+    stored = session.get(ScheduleSession, UUID(session_id))
+    assert stored.confirmed_candidate_id == "A"
+
+    from sqlmodel import select
+
+    share_link = session.exec(select(ShareLink).where(ShareLink.slug == slug)).first()
+    assert share_link is not None
+    assert share_link.session_id == UUID(session_id)
 
 
 def test_confirm_schedule_twice_returns_409(client, session, monkeypatch):
