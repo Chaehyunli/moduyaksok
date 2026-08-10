@@ -3,7 +3,8 @@
 # 작성목적    : schedule_session.status DB CHECK 제약 테스트
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-10, confirmed_candidate_id 컬럼 테스트 추가 — 기본값 None, 지정 값 저장
+#             둘 다 확인 (Task 3).
 # ------------------------------------------------------------------
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -33,3 +34,25 @@ def test_invalid_status_value_is_rejected_by_db(session):
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()  # 실패한 커밋 이후 세션을 다시 쓸 수 있는 상태로 되돌림
+
+
+def test_confirmed_candidate_id_defaults_to_none(session):
+    user = _make_user(session)
+    schedule_session = ScheduleSession(user_id=user.id, status="draft")
+    session.add(schedule_session)
+    session.commit()
+    session.refresh(schedule_session)
+
+    assert schedule_session.confirmed_candidate_id is None
+
+
+def test_confirmed_candidate_id_can_be_set(session):
+    user = _make_user(session)
+    schedule_session = ScheduleSession(
+        user_id=user.id, status="confirmed", confirmed_candidate_id="A"
+    )
+    session.add(schedule_session)
+    session.commit()
+    session.refresh(schedule_session)
+
+    assert schedule_session.confirmed_candidate_id == "A"

@@ -12,6 +12,9 @@
 #             쓰게 한다. draft→confirmed 전이는 한 방향만 허용 — POST
 #             /schedules/{id}/confirm 라우터 구현 시 이미 confirmed인 세션은
 #             재확정 못 하게 막을 것 (아직 라우터 자체가 없어 미구현).
+# 2026-08-10, confirmed_candidate_id 컬럼 추가 — GET /share/{slug}가 3개 후보 중
+#             확정된 하나를 찾으려면 어느 candidate_id가 확정됐는지 저장해야 함
+#             (기존엔 status만 confirmed로 바뀌고 어떤 후보인지는 저장 안 됐음).
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -32,6 +35,9 @@ class ScheduleSession(SQLModel, table=True):
     conditions: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     candidates: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     status: str = "draft"  # 허용값은 ScheduleStatus 참고, 실제 제약은 DB CHECK가 건다
+    # confirm된 후보의 candidate_id("A"/"B"/"C"). draft 상태에선 항상 None —
+    # GET /share/{slug}가 3개 후보 중 어느 걸 공개할지 이 값으로 찾는다.
+    confirmed_candidate_id: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
