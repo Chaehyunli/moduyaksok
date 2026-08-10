@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
@@ -12,6 +12,14 @@ const copied = ref(false)
 
 const candidate = computed(() => store.candidates.find((c) => c.id === route.params.id))
 const shareUrl = computed(() => (store.shareSlug ? `${window.location.origin}/share/${store.shareSlug}` : ''))
+
+// 확정 응답(share_slug)을 새로고침·네트워크 문제로 놓쳤어도, 세션이 아직 메모리에
+// 남아있으면(SPA 안에서 왔다갔다) 세션을 다시 조회해서 slug를 복구한다.
+onMounted(async () => {
+  if (!store.shareSlug && store.sessionId) {
+    await store.fetchSchedule(store.sessionId)
+  }
+})
 
 async function copyLink() {
   await navigator.clipboard.writeText(shareUrl.value)
