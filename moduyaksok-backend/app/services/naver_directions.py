@@ -17,6 +17,10 @@
 #             "AI·NAVER API" 게이트웨이 도메인이 아니라 이 도메인을 써야 한다는
 #             답변을 받음 — 여러 블로그·문서가 레거시 도메인만 보여줘서 실측 없이
 #             그대로 따라간 게 원인. 수정 후 실제 키로 200 확인.
+# 2026-08-10, get_car_option()에 경로 좌표(polyline) 파싱 추가. API가 [lng, lat]
+#             쌍으로 주는 좌표 배열을 (lat, lng) 튜플 리스트로 변환해서 반환 —
+#             프런트 Naver Maps JS SDK가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서
+#             미리 맞춰 보낸다. path가 없으면(도보 옵션 등) 빈 리스트 기본값.
 # ------------------------------------------------------------------
 import httpx
 
@@ -65,11 +69,16 @@ async def get_car_option(lat1: float, lng1: float, lat2: float, lng2: float) -> 
     if not routes:
         return None
 
-    summary = routes[0]["summary"]
+    route = routes[0]
+    summary = route["summary"]
+    # NCP가 주는 [경도, 위도] 쌍을 (위도, 경도)로 뒤집는다 — 프런트 지도 SDK(Naver
+    # Maps JS)가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서 미리 맞춰 보낸다.
+    path = [(lat, lng) for lng, lat in route.get("path", [])]
     return RouteOption(
         option_id="car",
         mode="car",
         duration_minutes=round(summary["duration"] / 1000 / 60),
         fare_krw=summary.get("tollFare", 0) + summary.get("fuelPrice", 0),
         description="자동차(실시간 빠른길)",
+        path=path,
     )

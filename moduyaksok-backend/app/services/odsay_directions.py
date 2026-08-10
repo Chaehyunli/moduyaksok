@@ -20,6 +20,10 @@
 #             한 응답에 지하철만/버스만/환승조합 등 여러 경로를 같이 주는데
 #             paths[0](추천 1순위)만 쓰고 나머지를 버리고 있었음 — "조회된 모든
 #             방법을 다 보여주고 사용자가 고른다"는 요구사항과 안 맞아서 정정.
+# 2026-08-10, 대중교통 경로에 구간별 좌표(polyline) 추가. subPath[]의 각 항목
+#             (trafficType 1=지하철, 2=버스, 3=도보)에서 trafficType=3인 구간은
+#             좌표가 없어 건너뛰고, 나머지의 startX/Y·endX/Y를 순서대로 이어붙여
+#             RouteOption.path(lat, lng 튜플 리스트)로 채운다.
 # ------------------------------------------------------------------
 import httpx
 
@@ -67,6 +71,25 @@ def _transfer_count(info: dict) -> int:
     # 값(총 대중교통 탑승 횟수)에서 1을 빼서 근사한다(탑승 횟수 - 1 = 환승 횟수).
     legs = info.get("busTransitCount", 0) + info.get("subwayTransitCount", 0)
     return max(0, legs - 1)
+
+
+def _path_from_subpaths(subpaths: list[dict]) -> list[tuple[float, float]]:
+    """trafficType=3(도보로 역까지 이동하는 짧은 구간)엔 좌표가 없어 건너뛴다.
+    나머지 구간(지하철·버스)의 시작/끝 좌표를 순서대로 이어붙인다 — 완전한 곡선은
+    아니지만 두 지점 직선보다 실제 경로에 가깝다(scripts/odsay_route_check.md
+    실측 응답 구조 기준).
+    """
+    points: list[tuple[float, float]] = []
+    for leg in subpaths:
+        if leg.get("trafficType") == 3:
+            continue
+        start_x, start_y = leg.get("startX"), leg.get("startY")
+        end_x, end_y = leg.get("endX"), leg.get("endY")
+        if start_x is None or start_y is None or end_x is None or end_y is None:
+            continue
+        points.append((float(start_y), float(start_x)))
+        points.append((float(end_y), float(end_x)))
+    return points
 
 
 async def get_transit_options(
@@ -118,6 +141,7 @@ async def get_transit_options(
                 fare_krw=int(info["payment"]),
                 transfer_count=_transfer_count(info),
                 description=_describe_path(path),
+                path=_path_from_subpaths(path.get("subPath", [])),
             )
         )
     return options

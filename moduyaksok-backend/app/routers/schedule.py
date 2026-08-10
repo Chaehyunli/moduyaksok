@@ -23,7 +23,20 @@
 #               반환해 API명세서 예시와 정확히 같은 모양을 만든다.
 #             - Step4(enrich_routes)는 LLM을 안 써서 이 라우터의 /routes
 #               엔드포인트는 BYOK 크리덴셜을 조회하지 않는다.
+# 2026-08-10, 확정 시 공유 링크 생성. confirm_schedule()이 confirmed_candidate_id를
+#             기록하고 ShareLink row를 만들어 8자 base62 slug를 ConfirmResponse에
+#             실어 보낸다 — 다음 태스크(공개 조회 엔드포인트)가 이 slug로 세션을
+#             찾는다.
+# 2026-08-10, 전체 브랜치 리뷰 반영(Finding 1, 3). get_schedule()이 ShareLink를
+#             조회해 ScheduleResponse.share_slug로 같이 돌려주게 함 — 새로고침 등
+#             으로 confirm 응답을 놓쳐도 세션을 다시 조회해 slug를 복구할 수 있게.
+#             ConfirmRequest에 selected_options(구간별 사용자가 고른 option_id)
+#             추가 — confirm 시점에 후보의 저장된 routes에 반영(_replace_candidate
+#             재사용)해서, 공유 화면이 recommended가 아니라 사용자가 실제로 고른
+#             교통편을 보여주게 한다. _find_candidate 호출부를 존재만 검증하던
+#             것에서 반환값을 쓰는 걸로 바꿈.
 # ------------------------------------------------------------------
+import secrets
 from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
@@ -35,7 +48,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
-from app.models.schedule import ScheduleSession
+from app.models.schedule import ScheduleSession, ShareLink
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
 from app.pipeline.orchestrate import generate_schedule_candidates
@@ -61,13 +74,32 @@ class RoutesRequest(BaseModel):
     candidate_id: str
 
 
+class SelectedOption(BaseModel):
+    from_order: int
+    option_id: str
+
+
 class ConfirmRequest(BaseModel):
     candidate_id: str
+    # 사용자가 후보 상세 화면에서 구간별로 고른 교통편. 비어있으면(예: 아직 경로를
+    # 안 골랐거나 예전 클라이언트) 기존 recommended 선택을 그대로 둔다.
+    selected_options: list[SelectedOption] = []
 
 
 class ConfirmResponse(BaseModel):
     session_id: UUID
     status: str
+    share_slug: str
+
+
+# ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
+# 재시도 로직은 이 규모에서 과함. 실제로 충돌하면 DB unique 제약이 막고
+# IntegrityError로 500이 나는데, 그 정도로 자주 일어날 확률이 아니다.
+_SLUG_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def _generate_slug(length: int = 8) -> str:
+    return "".join(secrets.choice(_SLUG_ALPHABET) for _ in range(length))
 
 
 def _get_user_credential(session: Session, user_id: UUID) -> LLMCredential:
@@ -181,13 +213,19 @@ def get_schedule(
     current_user: User = Depends(get_current_user),
 ):
     """저장된 일정 세션 조회 (본인 소유만). POST .../routes를 아직 안 불렀으면
-    해당 후보의 routes는 빈 배열이다.
+    해당 후보의 routes는 빈 배열이다. 확정 후 공유 링크가 만들어져 있으면
+    share_slug도 같이 돌려준다 — 공유 화면이 새로고침돼도 슬러그를 다시 찾을 수 있게.
     """
     schedule_session = _get_owned_session(session, session_id, current_user)
     candidates = [
         Candidate.model_validate(item) for item in schedule_session.candidates.get("candidates", [])
     ]
-    return ScheduleResponse(session_id=str(schedule_session.id), candidates=candidates)
+    share_link = session.exec(select(ShareLink).where(ShareLink.session_id == schedule_session.id)).first()
+    return ScheduleResponse(
+        session_id=str(schedule_session.id),
+        candidates=candidates,
+        share_slug=share_link.slug if share_link else None,
+    )
 
 
 @router.post("/schedules/{session_id}/confirm", response_model=ConfirmResponse)
@@ -197,17 +235,34 @@ def confirm_schedule(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """후보 하나를 최종 확정(status: confirmed). draft -> confirmed는 한 방향만
-    허용 — 이미 confirmed인 세션은 재확정을 막는다(models/schedule.py 주석 참고).
+    """후보 하나를 최종 확정(status: confirmed)하고 공유 링크를 만든다. draft ->
+    confirmed는 한 방향만 허용 — 이미 confirmed인 세션은 재확정을 막는다
+    (models/schedule.py 주석 참고). 사용자가 상세 화면에서 구간별로 고른 교통편
+    (selected_options)이 있으면 확정 전에 후보의 저장된 routes에 반영한다 —
+    공유 화면이 recommended가 아니라 사용자가 실제로 고른 걸 보여줘야 하므로
+    (전체 브랜치 리뷰 Finding 3).
     """
     schedule_session = _get_owned_session(session, session_id, current_user)
-    _find_candidate(schedule_session, body.candidate_id)  # 존재하는 후보인지만 검증
+    candidate = _find_candidate(schedule_session, body.candidate_id)
 
     if schedule_session.status == "confirmed":
         raise HTTPException(status.HTTP_409_CONFLICT, "이미 확정된 일정입니다.")
 
+    if body.selected_options:
+        selections = {opt.from_order: opt.option_id for opt in body.selected_options}
+        for route in candidate.routes:
+            if route.from_order in selections:
+                route.selected_option_id = selections[route.from_order]
+        _replace_candidate(schedule_session, candidate)
+
     schedule_session.status = "confirmed"
+    schedule_session.confirmed_candidate_id = body.candidate_id
     session.add(schedule_session)
+
+    share_link = ShareLink(session_id=schedule_session.id, slug=_generate_slug())
+    session.add(share_link)
     session.commit()
 
-    return ConfirmResponse(session_id=schedule_session.id, status=schedule_session.status)
+    return ConfirmResponse(
+        session_id=schedule_session.id, status=schedule_session.status, share_slug=share_link.slug
+    )

@@ -64,7 +64,8 @@ tests/           pytest
 | `health.py` | `GET /health` | 서버 상태 확인 | - |
 | `auth.py` | `POST /auth/google`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>현재 로그인 사용자 조회 | `services/auth.py`, `models/user.py` |
 | `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
-| `schedule.py` | `POST /schedules`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3(`orchestrate.generate_schedule_candidates`) 실행해 경로 없는 후보(최대 3개) 생성, 성공 시에만 `ScheduleSession` 저장(실패 케이스는 롤백 코드 없이 애초에 안 만듦)<br>사용자가 고른 후보 1개에 Step4(`enrich_routes`) 실행해 이동 옵션 채움, 결과를 후보 목록에 반영해 재저장<br>저장된 세션 조회(본인 소유만)<br>후보 확정(`draft`→`confirmed`, 이미 확정된 세션 재확정 방지) | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
+| `schedule.py` | `POST /schedules`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3(`orchestrate.generate_schedule_candidates`) 실행해 경로 없는 후보(최대 3개) 생성, 성공 시에만 `ScheduleSession` 저장(실패 케이스는 롤백 코드 없이 애초에 안 만듦)<br>사용자가 고른 후보 1개에 Step4(`enrich_routes`) 실행해 이동 옵션 채움, 결과를 후보 목록에 반영해 재저장<br>저장된 세션 조회(본인 소유만)<br>후보 확정(`draft`→`confirmed`, 이미 확정된 세션 재확정 방지) — 동시에 `confirmed_candidate_id`를 기록하고 `ShareLink`(8자 base62 slug)를 만들어 응답에 `share_slug`로 실어 보냄(별도 "링크 생성" 엔드포인트 없이 확정과 동시에 발급, 2026-08-10) | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
+| `share.py` | `GET /share/{slug}` | slug로 확정된 후보 하나만 공개 조회(로그인 불필요) — 다른 후보·조건·사용자 정보는 노출 안 함. `schedule._find_candidate()` 재사용, 응답은 기존 `Candidate` 스키마 그대로(새 응답 모델 안 만듦). confirm 이전엔 `ShareLink` 자체가 없어 자동 404 (2026-08-10) | `routers/schedule.py`(`_find_candidate`), `models/schedule.py` |
 
 ## 서비스 (`app/services/`)
 
@@ -101,7 +102,7 @@ tests/           pytest
 |---|---|---|
 | `user.py` | `user` | Google 계정 기반 사용자 |
 | `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키(암호화 저장), `user_id` unique — 사용자당 1개 |
-| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크. `schedule_session`은 `app/routers/schedule.py`가 실제로 씀(2026-08-10) — `feedback_message`/`share_link`는 각각 피드백·공유 라우터가 아직 없어서 미사용 |
+| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크. `schedule_session`/`share_link`는 `app/routers/schedule.py`가 실제로 씀(확정 시 `ShareLink` row 생성, 2026-08-10) — `feedback_message`는 피드백 라우터가 아직 없어서 미사용 |
 
 라우터/서비스/모델 표는 새 엔드포인트나 파일을 추가할 때 같이 갱신할 것 — 프런트 [`../moduyaksok-frontend/README.md`](../moduyaksok-frontend/README.md)의 화면·컴포넌트 표와 같은 역할.
 

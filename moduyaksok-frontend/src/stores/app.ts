@@ -11,6 +11,8 @@ export interface Activity {
   operatingHours: string
   infoNeedsCheck: boolean
   mapUrl: string
+  lat: number | null
+  lng: number | null
 }
 
 export interface RouteOption {
@@ -20,6 +22,7 @@ export interface RouteOption {
   fareKrw: number
   transferCount: number
   description: string
+  path: [number, number][]
 }
 
 export interface RouteSegment {
@@ -64,6 +67,8 @@ function mapApiActivity(raw: any): Activity {
     operatingHours: raw.operating_hours,
     infoNeedsCheck: raw.info_needs_check,
     mapUrl: raw.map_url,
+    lat: raw.lat ?? null,
+    lng: raw.lng ?? null,
   }
 }
 
@@ -76,6 +81,7 @@ function mapApiRouteOption(raw: any): RouteOption {
     fareKrw: raw.fare_krw,
     transferCount: raw.transfer_count,
     description: raw.description,
+    path: raw.path ?? [],
   }
 }
 
@@ -142,6 +148,7 @@ export const useAppStore = defineStore('app', {
     // CandidatesView가 그대로 보여준다.
     scheduleError: null as string | null,
     shareSlug: '',
+    sharedCandidate: null as Candidate | null,
   }),
   getters: {
     selectedCandidate(state): Candidate | undefined {
@@ -252,11 +259,33 @@ export const useAppStore = defineStore('app', {
     },
     async confirmSchedule(candidateId: string) {
       if (!this.sessionId) return
-      await api.post(`/schedules/${this.sessionId}/confirm`, { candidate_id: candidateId })
+      const candidate = this.candidates.find((c) => c.id === candidateId)
+      const selectedOptions = (candidate?.routes ?? []).map((r) => ({
+        from_order: r.fromOrder,
+        option_id: r.selectedOptionId,
+      }))
+      const { data } = await api.post(`/schedules/${this.sessionId}/confirm`, {
+        candidate_id: candidateId,
+        selected_options: selectedOptions,
+      })
+      this.shareSlug = data.share_slug
     },
-    createShareLink() {
-      this.shareSlug = Math.random().toString(36).slice(2, 10)
-      return this.shareSlug
+    // 새로고침·네트워크 문제로 confirm 응답(share_slug)을 놓쳤을 때, 세션이 아직
+    // 메모리에 남아있으면(store.sessionId) 세션을 다시 조회해서 slug를 복구한다
+    // (브라우저 하드 새로고침까지 막는 완전한 해결책은 아님 — sessionId 자체가
+    // 날아가면 이 방법도 못 씀. ponytail: 완전한 복구는 세션 id를 localStorage/URL에
+    // 영속화해야 하는데 이번 픽스 범위 밖).
+    async fetchSchedule(sessionId: string) {
+      const { data } = await api.get(`/schedules/${sessionId}`)
+      this.candidates = data.candidates.map(mapApiCandidate)
+      this.shareSlug = data.share_slug ?? ''
+    },
+    async fetchSharedSchedule(slug: string) {
+      // 이전 slug 조회 결과가 남아있으면, 새 slug가 실패했을 때 화면이 옛 데이터를
+      // 계속 보여주는 문제가 생긴다 — 조회 시작 시점에 먼저 비운다.
+      this.sharedCandidate = null
+      const { data } = await api.get(`/share/${slug}`)
+      this.sharedCandidate = mapApiCandidate(data)
     },
   },
 })

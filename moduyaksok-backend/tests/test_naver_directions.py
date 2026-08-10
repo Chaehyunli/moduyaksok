@@ -6,6 +6,9 @@
 #              레퍼런스 기준 픽스처).
 # 작성일      : 2026-08-10
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
+# 2026-08-10, _SUCCESS_PAYLOAD에 "path" 필드(NCP가 주는 [lng, lat] 좌표 배열)
+#             추가. 새 테스트 2개 추가: 경로 좌표가 (lat, lng) 튜플로 올바르게
+#             변환되는지, 경로가 없을 때 빈 리스트로 기본값이 되는지 검증.
 # ------------------------------------------------------------------
 import httpx
 import pytest
@@ -70,7 +73,9 @@ _SUCCESS_PAYLOAD = {
                     "duration": 900000,  # ms -> 15분
                     "tollFare": 0,
                     "fuelPrice": 1800,
-                }
+                },
+                # NCP Directions 5는 [경도, 위도] 순서로 좌표 배열을 준다.
+                "path": [[127.027621, 37.497942], [127.02, 37.52], [126.9765, 37.5648]],
             }
         ]
     },
@@ -133,3 +138,20 @@ async def test_get_car_option_sends_client_id_secret_headers_and_coordinates(mon
     assert captured["headers"]["x-ncp-apigw-api-key"] == "fake-secret"
     assert captured["params"]["start"] == f"{_GANGNAM[1]},{_GANGNAM[0]}"
     assert captured["params"]["goal"] == f"{_CITY_HALL[1]},{_CITY_HALL[0]}"
+
+
+async def test_get_car_option_converts_path_to_lat_lng_tuples(monkeypatch):
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, _SUCCESS_PAYLOAD))
+
+    option = await get_car_option(*_GANGNAM, *_CITY_HALL)
+
+    assert option.path == [(37.497942, 127.027621), (37.52, 127.02), (37.5648, 126.9765)]
+
+
+async def test_get_car_option_path_defaults_to_empty_list_when_missing(monkeypatch):
+    payload = {"code": 0, "route": {"trafast": [{"summary": _SUCCESS_PAYLOAD["route"]["trafast"][0]["summary"]}]}}
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, payload))
+
+    option = await get_car_option(*_GANGNAM, *_CITY_HALL)
+
+    assert option.path == []
