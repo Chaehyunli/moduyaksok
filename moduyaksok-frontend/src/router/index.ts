@@ -45,8 +45,12 @@ router.beforeEach(async (to) => {
   }
   // localStorage의 API 키 등록 상태는 이 브라우저에서 저장했을 때만 채워지므로,
   // 세션당 한 번 서버(GET /me/llm-credential)와 동기화해 다른 기기에서 등록한
-  // 경우에도 실제 상태를 반영한다.
-  if (store.loggedIn && !store.apiKeySynced) {
+  // 경우에도 실제 상태를 반영한다. requiresApiKey 라우트에서만 기다린다 — 모든
+  // 라우트에서 기다리게 하면(2026-08-09~08-10 재현) 로그인된 사용자가 "/" 같은
+  // API 키 무관 라우트에 진입할 때도 이 네트워크 호출이 끝날 때까지 RouterView가
+  // 통째로 비게 된다. 로컬은 백엔드가 항상 떠 있어 못 느끼지만, Render 무료
+  // 플랜은 콜드스타트에 수십 초가 걸려 배포 환경에서만 빈 화면으로 나타났다.
+  if (to.meta.requiresApiKey && store.loggedIn && !store.apiKeySynced) {
     await store.syncApiKey()
   }
   // 로그인은 됐지만 API 키가 없으면, 일정 생성 화면 대신 제공자 선택부터 태운다.

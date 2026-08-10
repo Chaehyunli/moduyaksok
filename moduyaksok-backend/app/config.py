@@ -7,6 +7,10 @@
 #             앱 런타임 로직은 안 씀)
 # 2026-08-09, Step2가 쓸 네이버 지역검색 API 키 추가 (네이버 지도 API와는
 #             다른 상품 — Step3가 쓸 NAVER_MAP_CLIENT_ID/SECRET과 구분)
+# 2026-08-10, Step3 길찾기 프로바이더가 ODsay로 확정되어 ODSAY_API_KEY/
+#             ODSAY_REFERER_URL 추가 (네이버 지도 API 키 계획은 폐기 — 기술설계
+#             문서 Step3 절 참고). ODSAY_REFERER_URL은 lab.odsay.com에 등록한
+#             서비스 URI와 정확히 일치해야 호출이 통과되어 환경별로 값이 다르다.
 # ------------------------------------------------------------------
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +38,11 @@ class Settings(BaseSettings):
     # Step2 place_candidates 조회용 (NAVER Developers 포털 발급, 지도 API와 별개).
     naver_search_client_id: str = ""
     naver_search_client_secret: str = ""
+
+    # Step3 enrich_routes용 (lab.odsay.com 발급). 서비스 플랫폼을 URI로 등록했기
+    # 때문에 호출 시 Referer 헤더를 이 값과 맞춰줘야 한다.
+    odsay_api_key: str = ""
+    odsay_referer_url: str = "localhost:8000"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

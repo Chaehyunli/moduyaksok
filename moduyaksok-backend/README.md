@@ -25,6 +25,16 @@ uvicorn app.main:app --reload
 | `GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (`id_token` 검증 시 audience로 사용) |
 | `CREDENTIAL_ENCRYPTION_KEY` | BYOK 키 암호화용 Fernet 키. 생성: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `ANTHROPIC_API_KEY` | 개발자 본인 키 (개발 편의용 폴백, `ENV=development`에서만 사용) |
+| `NAVER_SEARCH_CLIENT_ID`/`SECRET` | Step2 `place_candidates` 조회용 (NAVER API HUB, 지도 API와 별개 상품) |
+| `ODSAY_API_KEY` | Step3 길찾기(lab.odsay.com, Basic 등급) |
+| `ODSAY_REFERER_URL` | lab.odsay.com에 등록한 서비스 URI와 정확히 일치해야 함(프로토콜 제외). 로컬은 `localhost:8000`, Render 배포본은 `moduyaksok.onrender.com` |
+
+> **로컬 dev / 배포(운영) 값 분리**: 앱은 항상 `.env` 하나만 읽는다(`config.py`의
+> `env_file=".env"`) — 로컬은 이 `.env`에 dev 값을 넣어서 쓴다. 배포 값은 저장소에
+> 올라가지 않는 로컬 참고용 `.env.production`(gitignore됨)에 적어두고, 값이 바뀔 때마다
+> 그 내용을 Render 대시보드 "Environment" 탭에 붙여넣기해서 반영한다(Render가 `.env`
+> 형식 텍스트 붙여넣기를 지원). Render 자체는 이 `.env.production` 파일을 읽지 않는다 —
+> 실제 배포 프로세스는 Render가 주입하는 환경변수를 그대로 OS 환경변수로 읽는다.
 
 > **알아둘 점**: `CREDENTIAL_ENCRYPTION_KEY`를 가진 사람(지금은 이 `.env`에 접근 가능한
 > 사람)은 DB에 저장된 어떤 사용자의 BYOK 키든 복호화할 수 있다. 이 구조적 한계와

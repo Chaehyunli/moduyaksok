@@ -10,7 +10,10 @@ npm run dev       # http://localhost:5173
 npm run build      # 타입체크 + 프로덕션 빌드
 ```
 
-`.env`에 `VITE_API_BASE_URL`로 백엔드 주소 지정 (`.env.example` 참고).
+Vite 모드별 env 파일을 씀 — `npm run dev`는 `.env.development`, `npm run build`는
+`.env.production`을 자동으로 읽는다(`VITE_API_BASE_URL`로 백엔드 주소 지정). 둘 다
+민감정보가 없어(공개 클라이언트 ID·공개 API URL) 저장소에 커밋되어 있다 — 새 변수
+추가할 땐 `.env.example`도 같이 갱신할 것.
 
 ## 디자인 시스템 — 손그림 낙서 노트
 
