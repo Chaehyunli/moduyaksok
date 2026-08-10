@@ -26,7 +26,7 @@ uvicorn app.main:app --reload
 | `CREDENTIAL_ENCRYPTION_KEY` | BYOK 키 암호화용 Fernet 키. 생성: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `ANTHROPIC_API_KEY` | 개발자 본인 키 (개발 편의용 폴백, `ENV=development`에서만 사용) |
 | `NAVER_SEARCH_CLIENT_ID`/`SECRET` | Step2 `place_candidates` 조회용 (NAVER API HUB, 지도 API와 별개 상품) |
-| `ODSAY_API_KEY` | Step3 길찾기(lab.odsay.com, Basic 등급) |
+| `ODSAY_API_KEY` | Step4 길찾기(lab.odsay.com, Basic 등급) |
 | `ODSAY_REFERER_URL` | lab.odsay.com에 등록한 서비스 URI와 정확히 일치해야 함(프로토콜 제외). 로컬은 `localhost:8000`, Render 배포본은 `moduyaksok.onrender.com` |
 
 > **로컬 dev / 배포(운영) 값 분리**: 앱은 항상 `.env` 하나만 읽는다(`config.py`의
@@ -74,6 +74,7 @@ tests/           pytest
 | `llm_ping.py` | provider(Claude/GPT/Solar)별 SDK로 짧은 메시지를 보내 키가 실제로 동작하는지 확인(`ping_provider`). Solar는 openai SDK에 Upstage `base_url`만 바꿔서 사용 |
 | `structured_llm.py` | `call_structured(provider, api_key, model, system, user, schema)` — Pydantic 스키마에 맞는 구조화 응답을 provider 상관없이 받는 공용 인터페이스. Claude는 tool use, GPT/Solar는 `client.beta.chat.completions.parse()`(Solar가 이 방식까지 지원하는 걸 실제 키로 확인함, 2026-08-07) — 그래서 분기는 anthropic 1개 / openai·upstage 공용 1개, 총 2갈래뿐 |
 | `naver_local_search.py` | `search_places(query, display)` — 네이버 지역검색(NAVER API HUB, `NAVER_SEARCH_CLIENT_ID/SECRET`)으로 place_candidates 사전 조회. 응답 title의 `<b>` 강조 태그 제거, display는 API 제약상 최대 5로 clamp. `search_places_for_regions(regions)` — 지역(최대 3개) × 카테고리로 팬아웃 호출해 title 기준 중복 제거 후 병합 |
+| `odsay_directions.py` | Step4용 이동 옵션 조회. `get_walk_option()` — 좌표 기반 직선거리 추정(API 호출 없음, `travel_estimate.estimate_buffer_minutes` 재사용). `get_transit_options()` — ODsay(`ODSAY_API_KEY`) `searchPubTransPathT` 호출, 700m 이내는 사전에 걸러 호출 자체를 생략, 호출해도 -98 등 "경로 없음"이면 빈 리스트(정상). ODsay가 한 응답에 주는 경로를 **전부**(실측 시 구간당 최대 20개 넘게 나옴) `RouteOption`으로 변환 — 대표 1개만 고르지 않는다(2026-08-10 정정, `scripts/verify_odsay_routes.py`로 실측). `Referer` 헤더를 `ODSAY_REFERER_URL`로 직접 세팅 — 서비스 플랫폼을 URI로 등록해서 브라우저가 아닌 서버 호출에도 인증되려면 필요 |
 
 ## AI 파이프라인 (`app/pipeline/`)
 
@@ -86,9 +87,10 @@ tests/           pytest
 | `models.py` | - | - | ✅ provider(`anthropic`/`openai`/`upstage`) × `ModelTier`(LOW/MID/HIGH) → 모델 ID 매핑, `get_model()` |
 | `schemas.py` | - | - | ✅ 단계 간 입출력 Pydantic 모델 (`NormalizedConditions`, `CandidateDraft`, `ScheduleResponse` 등) |
 | `normalize_step1.py` | Step1 조건 정규화 | MID | ✅ 구현 완료. `structured_llm.call_structured`로 liked_text/disliked_text만 태그(PreferenceTag) 추출, 나머지 필드는 그대로 조립. RTF+few-shot 프롬프트. 처음엔 LOW로 시작했으나 verifiable 필드 추가로 스키마가 복잡해지자 LOW(solar-mini)가 빈 입력에서 few-shot 예시를 베끼는 문제가 DeepEval로 실측돼 MID(solar-pro)로 격상, 골든셋 9/9 통과 |
-| `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ✅ 구현 완료. 관점 3개(가성비/동선최소화/취향반영)를 `concurrent.futures`로 병렬 호출(개별 타임아웃 180초, 부분 실패 허용 — `asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제). RTF 프롬프트(few-shot 생략 — 관점 간 차별성 확보 목적), verifiable=true 하드 제약/false 소프트 신호+hedge 지시. `naver_local_search.py`로 조회한 place_candidates 안에서만 장소 선택하게 해 환각 방지. 골든 4케이스 GEval 4/4 통과 |
-| `enrich_step3.py` | Step3 이동 동선 보강 | - | ⬜ 미구현. LLM 안 씀 (ODsay 대중교통 길찾기 API) |
-| `synthesize_step4.py` | Step4 검증·병합 (Aggregator) | HIGH | ⬜ 미구현. 후보 간 비교(유사도 검사 포함)가 필요해 1번 호출에 3개를 같이 넣음. 랭킹 없이 동등한 3개 확정, why_recommended만 생성 |
+| `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ✅ 구현 완료. 관점 3개(가성비/동선최소화/취향반영)를 `concurrent.futures`로 병렬 호출(개별 타임아웃 180초, 부분 실패 허용 — `asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제). RTF 프롬프트(few-shot 생략 — 관점 간 차별성 확보 목적), verifiable=true 하드 제약/false 소프트 신호+hedge 지시. `naver_local_search.py`로 조회한 place_candidates 안에서만 장소 선택하게 해 환각 방지. 골든 4케이스 GEval 4/4 통과. `_schedule_places()`의 활동 간 버퍼는 `travel_estimate.py`의 좌표 기반 추정을 씀(2026-08-10) |
+| `travel_estimate.py` | - | - | ✅ `estimate_buffer_minutes()` — place_candidates 좌표(mapx/mapy÷1e7, WGS84 실측 확인)로 직선거리 기반 이동시간 추정(도로 왜곡 보정×안전마진 1.2). `reconcile_schedule()` — Step4가 실제 이동시간을 알아내면 이 추정과 비교해 이후 활동 시간을 보정(초과분은 무조건, 60분 넘는 여유만 당김) |
+| `synthesize_step3.py` | Step3 검증·병합 (Aggregator) | HIGH | ⬜ 미구현. 후보 간 비교(유사도 검사 포함)가 필요해 1번 호출에 3개를 같이 넣음. 랭킹 없이 동등한 3개 확정, why_recommended만 생성. **Step2 직후, 이동 동선 보강보다 먼저 실행**(2026-08-10 파이프라인 순서 재설계) — 경로 데이터 없이 장소/시간만으로 검증 가능하도록 설계. 입력은 `CandidateDraft`(경로 없음), 출력 `Candidate.routes`는 항상 빈 리스트 |
+| `enrich_step4.py` | Step4 이동 동선 보강 | - | ✅ 구현 완료. LLM 안 씀. `odsay_directions.py`로 구간별 도보/대중교통 옵션을 병렬 조회(`asyncio.gather`) 후 `travel_estimate.reconcile_schedule()`로 Step2 추정과 실제값 차이를 보정. **사용자가 3개 후보 중 하나를 고른 뒤 그 후보에만 호출**(2026-08-10 파이프라인 순서 재설계 — 파일명도 enrich_step3.py에서 변경, 실행 순서와 번호를 맞춤) |
 
 ## 모델 (`app/models/`)
 
