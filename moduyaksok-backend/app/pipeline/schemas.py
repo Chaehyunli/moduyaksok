@@ -239,6 +239,10 @@ class RouteOption(BaseModel):
     fare_krw: int
     transfer_count: int = 0  # 환승 횟수. walk/car는 항상 0
     description: str = ""  # 사람이 읽을 경로 요약(예: "강남 -> 교대 -> 시청, 2호선")
+    # 지도에 그릴 실제 경로 좌표(lat, lng 순서). 없으면 빈 리스트 — 호출부(프런트)가
+    # 두 지점을 직선으로 잇는 폴백을 그린다. 도보는 API 호출이 없어(직선거리
+    # 추정만) 항상 빈 리스트.
+    path: list[tuple[float, float]] = []
 
 
 class RouteSegment(BaseModel):

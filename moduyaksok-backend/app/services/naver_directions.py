@@ -65,11 +65,16 @@ async def get_car_option(lat1: float, lng1: float, lat2: float, lng2: float) -> 
     if not routes:
         return None
 
-    summary = routes[0]["summary"]
+    route = routes[0]
+    summary = route["summary"]
+    # NCP가 주는 [경도, 위도] 쌍을 (위도, 경도)로 뒤집는다 — 프런트 지도 SDK(Naver
+    # Maps JS)가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서 미리 맞춰 보낸다.
+    path = [(lat, lng) for lng, lat in route.get("path", [])]
     return RouteOption(
         option_id="car",
         mode="car",
         duration_minutes=round(summary["duration"] / 1000 / 60),
         fare_krw=summary.get("tollFare", 0) + summary.get("fuelPrice", 0),
         description="자동차(실시간 빠른길)",
+        path=path,
     )
