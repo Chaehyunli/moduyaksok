@@ -6,12 +6,15 @@
 # 2026-08-06, on_event(deprecated) 대신 lifespan으로 DB 초기화 전환
 # 2026-08-06, Alembic 도입으로 앱 기동 시 자동 create_all 제거 (alembic upgrade head로 대체)
 # 2026-08-07, Swagger 태그/설명 정리
+# 2026-08-10, schedule 라우터 등록(POST /schedules, POST .../routes,
+#             POST .../confirm, GET /schedules/{id}) — AI 파이프라인 함수는
+#             Step1~4 전부 구현돼 있었는데 이걸 HTTP로 잇는 라우터가 없었다.
 # ------------------------------------------------------------------
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.models  # noqa: F401 — SQLModel 메타데이터에 테이블 등록
-from app.routers import auth, credential, health
+from app.routers import auth, credential, health, schedule
 
 app = FastAPI(
     title="모두약속 API",
@@ -32,3 +35,4 @@ app.add_middleware(
 app.include_router(health.router, tags=["헬스체크"])
 app.include_router(auth.router, tags=["인증"])
 app.include_router(credential.router, tags=["API 키"])
+app.include_router(schedule.router, tags=["일정"])
