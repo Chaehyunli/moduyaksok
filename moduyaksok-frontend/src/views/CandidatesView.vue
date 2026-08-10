@@ -24,7 +24,7 @@ function openCandidate(id: string) {
       </h1>
 
       <DoodleAlert v-if="store.candidates.length === 0" title="이 조건으로는 일정을 만들 수 없어요">
-        예산이 너무 적어서 조건을 만족하는 장소가 없어요. 예산을 늘리거나 지역을 넓혀보세요.
+        {{ store.scheduleError ?? '예산이 너무 적어서 조건을 만족하는 장소가 없어요. 예산을 늘리거나 지역을 넓혀보세요.' }}
         <template #actions>
           <DoodleButton size="sm" @click="router.push('/new')">조건 완화하기</DoodleButton>
         </template>

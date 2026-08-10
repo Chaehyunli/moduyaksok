@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
+import type { RouteSegment } from '../stores/app'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleDivider from '../components/doodle/DoodleDivider.vue'
+import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,8 +14,46 @@ const store = useAppStore()
 
 const candidate = computed(() => store.candidates.find((c) => c.id === route.params.id))
 
-// 이동 구간 정보: 네이버 지도 경로 API 붙기 전까지는 활동 사이마다 그럴듯한 값으로 채운다.
-const travelLegs = ['도보 6분', '대중교통 12분 · 1,400원']
+const loadingRoutes = ref(false)
+const routesError = ref('')
+const confirming = ref(false)
+
+const MODE_LABELS: Record<string, string> = { walk: '도보', transit: '대중교통', car: '자차' }
+
+async function loadRoutes() {
+  if (!candidate.value || candidate.value.routes.length > 0) return
+  loadingRoutes.value = true
+  routesError.value = ''
+  try {
+    await store.fetchRoutes(candidate.value.id)
+  } catch {
+    routesError.value = '이동 경로 정보를 가져오지 못했어요. 잠시 후 다시 시도해주세요.'
+  } finally {
+    loadingRoutes.value = false
+  }
+}
+
+onMounted(loadRoutes)
+
+function segmentBetween(fromOrder: number, toOrder: number): RouteSegment | undefined {
+  return candidate.value?.routes.find((r) => r.fromOrder === fromOrder && r.toOrder === toOrder)
+}
+
+function selectOption(fromOrder: number, optionId: string) {
+  if (!candidate.value) return
+  store.selectRouteOption(candidate.value.id, fromOrder, optionId)
+}
+
+async function confirmSchedule() {
+  if (!candidate.value) return
+  confirming.value = true
+  try {
+    await store.confirmSchedule(candidate.value.id)
+    router.push(`/schedules/${candidate.value.id}/share`)
+  } finally {
+    confirming.value = false
+  }
+}
 </script>
 
 <template>
@@ -24,16 +64,56 @@ const travelLegs = ['도보 6분', '대중교통 12분 · 1,400원']
       <h1 class="mb-1 font-hand text-2xl text-ink">{{ candidate.title }}</h1>
       <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>
 
+      <DoodleAlert v-if="candidate.feasibilityWarning" title="확인해주세요" class="mb-6">
+        {{ candidate.feasibilityWarning }}
+      </DoodleAlert>
+      <DoodleAlert v-if="routesError" title="이동 경로를 못 가져왔어요" class="mb-6">
+        {{ routesError }}
+      </DoodleAlert>
+
       <div class="space-y-3">
-        <template v-for="(a, i) in candidate.activities" :key="a.name">
+        <template v-for="(a, i) in candidate.activities" :key="a.order">
           <DoodleCard>
             <p class="font-hand text-lg text-ink">{{ a.name }}</p>
             <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
             <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
+            <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
+              영업시간은 자동으로 확인이 안 돼요 —
+              <a :href="a.mapUrl" target="_blank" rel="noopener" class="text-red underline">지도에서 직접 확인</a>
+            </p>
           </DoodleCard>
-          <p v-if="i < candidate.activities.length - 1" class="pl-2 font-hand text-sm text-red">
-            ↓ {{ travelLegs[i % travelLegs.length] }}
-          </p>
+
+          <div v-if="i < candidate.activities.length - 1" class="pl-2">
+            <p v-if="loadingRoutes" class="font-hand text-sm text-ink/50">이동 경로를 찾는 중...</p>
+            <template v-else-if="segmentBetween(a.order, candidate.activities[i + 1].order)">
+              <div
+                v-for="opt in segmentBetween(a.order, candidate.activities[i + 1].order)!.options"
+                :key="opt.optionId"
+                class="mb-1 flex cursor-pointer items-center gap-2 font-hand text-sm"
+                :class="
+                  segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                  opt.optionId
+                    ? 'text-red'
+                    : 'text-ink/60 hover:text-ink'
+                "
+                @click="selectOption(a.order, opt.optionId)"
+              >
+                <span>{{
+                  segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                  opt.optionId
+                    ? '● '
+                    : '○ '
+                }}</span>
+                <span>
+                  {{ MODE_LABELS[opt.mode] ?? opt.mode }} {{ opt.durationMinutes }}분
+                  <template v-if="opt.fareKrw > 0"> · {{ opt.fareKrw.toLocaleString() }}원</template>
+                  <template v-if="opt.transferCount > 0"> · 환승 {{ opt.transferCount }}회</template>
+                  <template v-if="opt.description"> · {{ opt.description }}</template>
+                </span>
+              </div>
+            </template>
+            <p v-else class="font-hand text-sm text-ink/40">이동 경로 정보 없음</p>
+          </div>
         </template>
       </div>
 
@@ -41,7 +121,9 @@ const travelLegs = ['도보 6분', '대중교통 12분 · 1,400원']
 
       <div class="flex flex-wrap gap-3">
         <DoodleButton @click="router.push(`/schedules/${candidate.id}/feedback`)">피드백으로 수정하기</DoodleButton>
-        <DoodleButton variant="ghost" @click="router.push(`/schedules/${candidate.id}/share`)">이 일정 확정하기</DoodleButton>
+        <DoodleButton variant="ghost" :disabled="confirming" @click="confirmSchedule">
+          {{ confirming ? '확정하는 중...' : '이 일정 확정하기' }}
+        </DoodleButton>
       </div>
     </div>
   </div>

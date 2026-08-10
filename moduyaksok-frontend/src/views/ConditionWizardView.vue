@@ -108,17 +108,23 @@ function back() {
   if (step.value > 0) step.value--
 }
 
-function submit() {
+const submitting = ref(false)
+
+async function submit() {
   // 이 화면에 들어왔다는 건 라우터 가드(requiresApiKey)를 이미 통과했다는 뜻 —
   // API 키 등록 여부는 여기서 다시 확인하지 않는다.
-  store.submitConditions({
+  submitting.value = true
+  await store.submitConditions({
     purpose: form.purpose,
     headcount: form.headcount,
+    startTime: form.startTime,
+    endTime: form.endTime,
     regions: regionLabels.value,
     budgetPerPerson: form.budgetPerPerson,
     likedText: form.likedText.trim(),
     dislikedText: form.dislikedText.trim(),
   })
+  submitting.value = false
   router.push('/schedules')
 }
 
@@ -231,10 +237,12 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
       </div>
 
       <div class="mt-10 flex justify-between">
-        <DoodleButton v-if="step > 0" variant="ghost" @click="back">이전</DoodleButton>
+        <DoodleButton v-if="step > 0" variant="ghost" :disabled="submitting" @click="back">이전</DoodleButton>
         <span v-else />
         <DoodleButton v-if="step < totalSteps - 1" :disabled="!canNext" @click="next">다음</DoodleButton>
-        <DoodleButton v-else @click="submit">일정 추천 요청</DoodleButton>
+        <DoodleButton v-else :disabled="submitting" @click="submit">
+          {{ submitting ? '일정을 만드는 중이에요...' : '일정 추천 요청' }}
+        </DoodleButton>
       </div>
     </div>
   </div>

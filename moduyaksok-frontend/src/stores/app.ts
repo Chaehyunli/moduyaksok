@@ -2,10 +2,32 @@ import { defineStore } from 'pinia'
 import { api } from '../lib/api'
 
 export interface Activity {
+  order: number
   name: string
   category: string
+  address: string
   time: string
   priceRange: string
+  operatingHours: string
+  infoNeedsCheck: boolean
+  mapUrl: string
+}
+
+export interface RouteOption {
+  optionId: string
+  mode: 'walk' | 'transit' | 'car'
+  durationMinutes: number
+  fareKrw: number
+  transferCount: number
+  description: string
+}
+
+export interface RouteSegment {
+  fromOrder: number
+  toOrder: number
+  options: RouteOption[]
+  recommendedOptionId: string
+  selectedOptionId: string
 }
 
 export interface Candidate {
@@ -13,12 +35,15 @@ export interface Candidate {
   title: string
   whyRecommended: string
   activities: Activity[]
-  feasible: boolean
+  routes: RouteSegment[]
+  feasibilityWarning: string | null
 }
 
 export interface Conditions {
   purpose: string
   headcount: number
+  startTime: string
+  endTime: string
   regions: string[]
   budgetPerPerson: number
   // 태그 선택이 아니라 자유 텍스트 그대로 백엔드로 보낸다 — Step1 조건 정규화(LLM)가
@@ -27,28 +52,66 @@ export interface Conditions {
   dislikedText: string
 }
 
-// 백엔드에 일정 생성 API가 아직 없어서, 조건에 따라 그럴듯한 후보 3개를 그 자리에서 만든다.
-// 실제 파이프라인 붙이면 이 함수를 POST /schedules 호출로 교체.
-function buildMockCandidates(conditions: Conditions): Candidate[] {
-  if (conditions.budgetPerPerson > 0 && conditions.budgetPerPerson < 10000) {
-    return []
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiActivity(raw: any): Activity {
+  return {
+    order: raw.order,
+    name: raw.name,
+    category: raw.category,
+    address: raw.address,
+    time: `${raw.start_time}-${raw.end_time}`,
+    priceRange: `${raw.price_range_per_person[0].toLocaleString()}~${raw.price_range_per_person[1].toLocaleString()}원`,
+    operatingHours: raw.operating_hours,
+    infoNeedsCheck: raw.info_needs_check,
+    mapUrl: raw.map_url,
   }
-  const bases = [
-    { title: '실내 위주 알뜰 코스', why: '예산 안에서 실내 활동 위주로 짰어요' },
-    { title: '동선 최소화 코스', why: '이동 시간을 가장 짧게 잡았어요' },
-    { title: '취향 최대 반영 코스', why: '적어주신 선호를 가장 많이 담았어요' },
-  ]
-  return bases.map((base, i) => ({
-    id: `c${i + 1}`,
-    title: base.title,
-    whyRecommended: base.why,
-    feasible: true,
-    activities: [
-      { name: '카페 무드', category: '카페', time: '14:00-15:30', priceRange: '8,000~12,000원' },
-      { name: '보드게임 카페', category: '체험', time: '15:45-17:15', priceRange: '15,000~20,000원' },
-      { name: '동네 파스타집', category: '식당', time: '17:30-19:00', priceRange: '18,000~25,000원' },
-    ],
-  }))
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiRouteOption(raw: any): RouteOption {
+  return {
+    optionId: raw.option_id,
+    mode: raw.mode,
+    durationMinutes: raw.duration_minutes,
+    fareKrw: raw.fare_krw,
+    transferCount: raw.transfer_count,
+    description: raw.description,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiRouteSegment(raw: any): RouteSegment {
+  return {
+    fromOrder: raw.from_order,
+    toOrder: raw.to_order,
+    options: raw.options.map(mapApiRouteOption),
+    recommendedOptionId: raw.recommended_option_id,
+    selectedOptionId: raw.selected_option_id,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiCandidate(raw: any): Candidate {
+  return {
+    id: raw.candidate_id,
+    title: raw.title,
+    whyRecommended: raw.why_recommended,
+    activities: raw.activities.map(mapApiActivity),
+    routes: (raw.routes ?? []).map(mapApiRouteSegment),
+    feasibilityWarning: raw.feasibility_warning ?? null,
+  }
+}
+
+// 위저드(ConditionWizardView)엔 아직 날짜 선택 UI가 없고 시:분만 받는다 — 오늘 날짜와
+// 합쳐서 ISO datetime을 만들되, 이미 지난 시각이면 내일 날짜로 굴린다. 날짜 선택
+// UI는 나중에 추가할 것(ponytail: 지금 범위 밖).
+function buildTimeRange(startTime: string, endTime: string): [string, string] {
+  const now = new Date()
+  const todayStr = now.toISOString().slice(0, 10)
+  const startToday = new Date(`${todayStr}T${startTime}:00`)
+  const date = startToday < now ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : startToday
+  const dateStr = date.toISOString().slice(0, 10)
+  return [`${dateStr}T${startTime}:00`, `${dateStr}T${endTime}:00`]
 }
 
 export interface AuthUser {
@@ -72,8 +135,12 @@ export const useAppStore = defineStore('app', {
     // 등록 안 했거나(다른 기기에서 등록) 지워진 경우 서버 진실과 동기화한다.
     apiKeySynced: false,
     conditions: null as Conditions | null,
+    sessionId: null as string | null,
     candidates: [] as Candidate[],
     selectedCandidateId: null as string | null,
+    // 409(조건 불만족) 사유든 그 외 네트워크/서버 오류든, 후보를 못 만든 이유를
+    // CandidatesView가 그대로 보여준다.
+    scheduleError: null as string | null,
     shareSlug: '',
   }),
   getters: {
@@ -132,13 +199,60 @@ export const useAppStore = defineStore('app', {
       this.apiKeyProvider = null
       this.apiKeyMasked = ''
     },
-    submitConditions(conditions: Conditions) {
+    async submitConditions(conditions: Conditions) {
       this.conditions = conditions
-      this.candidates = buildMockCandidates(conditions)
       this.selectedCandidateId = null
+      this.scheduleError = null
+      this.sessionId = null
+      this.candidates = []
+
+      const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
+      try {
+        const { data } = await api.post('/schedules', {
+          purpose: conditions.purpose,
+          headcount: conditions.headcount,
+          time_range: [startIso, endIso],
+          regions: conditions.regions,
+          liked_text: conditions.likedText,
+          disliked_text: conditions.dislikedText,
+          budget_per_person: conditions.budgetPerPerson,
+        })
+        this.sessionId = data.session_id
+        this.candidates = data.candidates.map(mapApiCandidate)
+      } catch (err: any) {
+        if (err.response?.status === 409) {
+          this.scheduleError =
+            err.response.data?.reason ?? '이 조건으로는 일정을 만들 수 없어요.'
+        } else {
+          this.scheduleError = '일정을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
+        }
+      }
     },
     selectCandidate(id: string) {
       this.selectedCandidateId = id
+    },
+    // 후보 하나를 골랐을 때 그 후보에 한해서만 경로(도보/대중교통/자차)를 조회한다 —
+    // 나머지 후보에는 ODsay를 안 불러 호출량을 아낀다(백엔드와 같은 이유).
+    async fetchRoutes(candidateId: string) {
+      if (!this.sessionId) return
+      const { data } = await api.post(`/schedules/${this.sessionId}/routes`, {
+        candidate_id: candidateId,
+      })
+      const updated = mapApiCandidate(data)
+      const index = this.candidates.findIndex((c) => c.id === candidateId)
+      if (index !== -1) this.candidates[index] = updated
+    },
+    // 사용자가 구간별로 어떤 교통편을 쓸지 고르는 건 서버에 저장할 필요가 없다 —
+    // POST .../confirm은 candidate_id만 받고, 확정된 뒤엔 이 선택을 다시 바꿀 방법도
+    // 없으니(API명세서 기준) 프런트 로컬 상태로만 들고 있는다.
+    selectRouteOption(candidateId: string, fromOrder: number, optionId: string) {
+      const candidate = this.candidates.find((c) => c.id === candidateId)
+      const segment = candidate?.routes.find((r) => r.fromOrder === fromOrder)
+      if (segment) segment.selectedOptionId = optionId
+    },
+    async confirmSchedule(candidateId: string) {
+      if (!this.sessionId) return
+      await api.post(`/schedules/${this.sessionId}/confirm`, { candidate_id: candidateId })
     },
     createShareLink() {
       this.shareSlug = Math.random().toString(36).slice(2, 10)
