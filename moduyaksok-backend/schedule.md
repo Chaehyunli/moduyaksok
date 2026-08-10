@@ -39,6 +39,6 @@
 | `schedule_session.status` DB CHECK 제약 (`draft`/`confirmed`만 허용) | ✅ | 2026-08-07 | 🟡 | 마이그레이션 `f4f8459f626b`. "이미 confirmed면 재확정 불가" 같은 전이 규칙은 라우터 로직 몫 — 아래 항목에서 구현 |
 | 일정 확정 (`POST /schedules/{id}/confirm`) | ✅ | 2026-08-10 | 🟡 | status draft→confirmed 갱신, `confirmed_candidate_id` 기록. 이미 confirmed인 세션 재확정 시 409 |
 | 공유 링크 생성 (confirm과 통합) | ✅ | 2026-08-10 | 🟡 | 별도 `POST /share` 엔드포인트 없이 confirm 응답에 `share_slug`(8자 base62)를 바로 실어 보냄 — Task 12(프런트 ShareView)가 추가 호출 없이 그대로 씀 |
-| 공유 링크 공개 조회 (`GET /share/{slug}`) | ⬜ | | 🟡 | 인증 불필요, slug로 확정된 일정 조회 |
+| 공유 링크 공개 조회 (`GET /share/{slug}`) | ✅ | 2026-08-10 | 🟡 | 인증 불필요, slug로 확정된 일정 조회. `schedule._find_candidate()` 재사용, 응답은 기존 `Candidate` 스키마 그대로(새 응답 모델 안 만듦) |
 | Export 엔드포인트 (`GET /schedules/{id}/export`) | ⬜ | | - | API 명세서에 없음 — 백엔드 PDF 생성 vs 프론트 클라이언트 캡처, 방식 결정 필요 |
 | 배포 설정 (Render) | ⬜ | | - | |

@@ -9,12 +9,14 @@
 # 2026-08-10, schedule 라우터 등록(POST /schedules, POST .../routes,
 #             POST .../confirm, GET /schedules/{id}) — AI 파이프라인 함수는
 #             Step1~4 전부 구현돼 있었는데 이걸 HTTP로 잇는 라우터가 없었다.
+# 2026-08-10, share 라우터 등록(GET /share/{slug}) — 확정된 일정을 로그인 없이
+#             공개 조회하는 엔드포인트.
 # ------------------------------------------------------------------
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.models  # noqa: F401 — SQLModel 메타데이터에 테이블 등록
-from app.routers import auth, credential, health, schedule
+from app.routers import auth, credential, health, schedule, share
 
 app = FastAPI(
     title="모두약속 API",
@@ -36,3 +38,4 @@ app.include_router(health.router, tags=["헬스체크"])
 app.include_router(auth.router, tags=["인증"])
 app.include_router(credential.router, tags=["API 키"])
 app.include_router(schedule.router, tags=["일정"])
+app.include_router(share.router, tags=["공유"])
