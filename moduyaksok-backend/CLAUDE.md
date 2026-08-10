@@ -47,10 +47,10 @@
   추상적인 걸 만들지 말고 **실제 관측된 실패 사례를 그대로 예시로 박아넣는 게**
   가장 효과적이었음 (빈 입력 할루시네이션 버그를 예시 3번으로 직접 겨냥,
   `normalize_step1.py`의 `_SYSTEM_PROMPT` 참고).
-- **설득력 있는 문장을 써야 하는 생성 단계(Step4의 `why_recommended` 등)**: 아직
+- **설득력 있는 문장을 써야 하는 생성 단계(Step3의 `why_recommended` 등)**: 아직
   미구현이지만 CO-STAR(Context/Objective/Style/Tone/Audience/Response format)가
   더 맞을 가능성이 큼 — 톤·스타일이 중요한 콘텐츠 생성에 맞는 프레임워크라서.
-  Step4 구현할 때 판단할 것.
+  Step3 구현할 때 판단할 것.
 - CARE/CREATE 같은 마케팅 카피용 프레임워크는 이 프로젝트 태스크들과는 안 맞음 —
   프레임워크를 먼저 고르지 말고 태스크 성격(추출 vs 생성 vs 판단)부터 파악할 것.
 - few-shot 예시가 많거나 구체적일수록, 특히 작은 모델은 예시 내용을 실제 입력과

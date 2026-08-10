@@ -1,0 +1,123 @@
+# ------------------------------------------------------------------
+# 작성자      : 임채현
+# 작성목적    : Step4가 쓸 이동 옵션 조회. 도보는 좌표 기반 직선거리 추정(API 호출
+#              없음), 대중교통은 ODsay(lab.odsay.com) searchPubTransPathT 호출.
+# 작성일      : 2026-08-10
+# 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
+# 2026-08-10, 최초 작성. 실측(스크립트로 직접 호출, docs/AI파이프라인_Step별_설계
+#             Step4 절 참고) 결과:
+#             - mapx/mapy는 WGS84 경도/위도 × 10^7이라 변환 불필요.
+#             - searchPubTransPathT는 출발 시각 파라미터가 없다(정적 그래프 탐색) —
+#               막차/첫차 여부는 이 API로 확인 불가, 시스템이 확인 안 하기로 함.
+#             - 출발/도착이 700m 이내면 error.code="-98"을 반환 — 이 경우 대중교통
+#               옵션 없이 도보만 제공한다(ODsay 정책이자 상식적으로도 그 거리는
+#               대중교통보다 도보가 합리적).
+#             - 서비스 플랫폼을 URI로 등록해서, 호출 시 Referer 헤더를 등록한 값과
+#               맞춰야 인증이 통과된다(브라우저가 아니라 서버 대 서버 호출이라
+#               자동으로 안 붙는다 — settings.odsay_referer_url을 직접 세팅).
+# 2026-08-10, get_transit_option()(단수, paths[0]만 사용) -> get_transit_options()
+#             (복수)로 변경. scripts/verify_odsay_routes.py로 실측해보니 ODsay가
+#             한 응답에 지하철만/버스만/환승조합 등 여러 경로를 같이 주는데
+#             paths[0](추천 1순위)만 쓰고 나머지를 버리고 있었음 — "조회된 모든
+#             방법을 다 보여주고 사용자가 고른다"는 요구사항과 안 맞아서 정정.
+# ------------------------------------------------------------------
+import httpx
+
+from app.config import settings
+from app.pipeline.schemas import RouteOption
+from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
+
+_SEARCH_URL = "https://api.odsay.com/v1/api/searchPubTransPathT"
+
+# 700m 이내면 ODsay가 대중교통 검색 자체를 거부한다(error.code="-98", 실측 확인).
+_TOO_CLOSE_ERROR_CODE = "-98"
+
+# ODsay의 pathType 값 — 공식 문서 기준 1=지하철, 2=버스, 3=지하철+버스 조합.
+_PATH_TYPE_LABELS = {1: "지하철", 2: "버스", 3: "버스+지하철"}
+
+
+class OdsayError(Exception):
+    """ODsay 호출 자체가 실패(네트워크 오류, 인증 실패, 5xx 등). "이 구간엔 대중교통
+    경로가 없음"(정상적인 빈 결과)과는 구분한다 — 후자는 예외를 던지지 않는다.
+    """
+
+
+def get_walk_option(lat1: float, lng1: float, lat2: float, lng2: float) -> RouteOption:
+    """도보 옵션은 API 호출 없이 항상 계산 가능 — Step2가 버퍼 추정에 쓰는 것과
+    같은 직선거리 기반 추정(travel_estimate.py)을 그대로 재사용한다. 요금은 0원.
+    """
+    return RouteOption(
+        option_id="walk",
+        mode="walk",
+        duration_minutes=estimate_buffer_minutes(lat1, lng1, lat2, lng2),
+        fare_krw=0,
+    )
+
+
+def _describe_path(path: dict) -> str:
+    info = path.get("info", {})
+    label = _PATH_TYPE_LABELS.get(path.get("pathType"), "대중교통")
+    start = info.get("firstStartStation", "")
+    end = info.get("lastEndStation", "")
+    return f"{label} {start} → {end}" if start and end else label
+
+
+def _transfer_count(info: dict) -> int:
+    # ODsay 응답엔 "환승 횟수" 필드가 따로 없어서, 버스+지하철 구간 수를 다 더한
+    # 값(총 대중교통 탑승 횟수)에서 1을 빼서 근사한다(탑승 횟수 - 1 = 환승 횟수).
+    legs = info.get("busTransitCount", 0) + info.get("subwayTransitCount", 0)
+    return max(0, legs - 1)
+
+
+async def get_transit_options(
+    lat1: float, lng1: float, lat2: float, lng2: float
+) -> list[RouteOption]:
+    """대중교통 옵션을 ODsay로 조회한다. ODsay가 한 응답에 여러 경로(지하철만/
+    버스만/환승조합)를 같이 주므로, 하나만 고르지 않고 전부 RouteOption으로 변환해
+    돌려준다. 700m 이내(-98)거나 경로가 없으면 빈 리스트를 반환한다(정상 상황 —
+    호출부가 이 경우 도보만 options에 담는다). 네트워크·인증 실패 등 호출 자체의
+    문제는 OdsayError로 올린다.
+    """
+    if haversine_distance_m(lat1, lng1, lat2, lng2) < 700:
+        return []
+
+    params = {
+        "apiKey": settings.odsay_api_key,
+        "SX": lng1,
+        "SY": lat1,
+        "EX": lng2,
+        "EY": lat2,
+        "OPT": 0,
+        "output": "json",
+    }
+    headers = {"Referer": settings.odsay_referer_url}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(_SEARCH_URL, params=params, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise OdsayError(f"ODsay 대중교통 경로 조회 실패: {exc}") from exc
+
+    body = response.json()
+    if body.get("error") is not None:
+        # 700m 이내(-98)든 다른 사유(경로 없음 등)든 "이 구간엔 대중교통이 없다"는
+        # 정상 결과로 취급한다 — ODsay 쪽 일시적 오류와 진짜 무경로를 API 응답만으로
+        # 구분할 수 없어서, 페일세이프하게 "옵션 없음"으로 처리(호출부가
+        # feasibility_warning으로 알린다).
+        return []
+
+    paths = body.get("result", {}).get("path", [])
+    options = []
+    for i, path in enumerate(paths):
+        info = path.get("info", {})
+        options.append(
+            RouteOption(
+                option_id=f"transit-{i}",
+                mode="transit",
+                duration_minutes=int(info["totalTime"]),
+                fare_krw=int(info["payment"]),
+                transfer_count=_transfer_count(info),
+                description=_describe_path(path),
+            )
+        )
+    return options

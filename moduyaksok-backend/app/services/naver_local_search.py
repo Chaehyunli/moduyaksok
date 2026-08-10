@@ -44,9 +44,8 @@ async def search_places(query: str, display: int = _MAX_DISPLAY) -> list[dict]:
 
     결과가 없는 건 에러가 아니다 — 그 카테고리에 후보가 없다는 뜻이라 빈 리스트를
     그대로 반환한다. 호출 자체가 실패한 경우(인증 오류, 타임아웃, 5xx)만
-    NaverSearchError로 감싸서 올린다. 이 API는 네이버 지도 API(Step3가 쓸
-    NAVER_MAP_CLIENT_ID/SECRET)와 다른 상품이라 별도 키(NAVER_SEARCH_CLIENT_ID/
-    SECRET)를 쓴다.
+    NaverSearchError로 감싸서 올린다. 이 API는 Step4가 쓰는 ODsay 대중교통 길찾기
+    API와 다른 상품이라 별도 키(NAVER_SEARCH_CLIENT_ID/SECRET)를 쓴다.
     """
     headers = {
         "X-NCP-APIGW-API-KEY-ID": settings.naver_search_client_id,

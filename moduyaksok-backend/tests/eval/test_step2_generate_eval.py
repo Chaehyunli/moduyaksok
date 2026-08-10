@@ -26,12 +26,13 @@
 #             정의를 더 명시적으로 재작성). criteria (8) 동일 장소 반복 방문 감점,
 #             (9) 예산 합산 초과 감점 추가. judge(Solar)의 JSON 파싱 실패로 채점
 #             자체가 깨지는 문제는 conftest.py의 measure_with_retry()로 완화.
-# 2026-08-09, Step4 설계에서 "활동 간 겹침은 엄격, time_range 경계 초과·예산
-#             초과는 관대(제한된 관용 범위 안이면 통과)"로 정책이 정해짐에 따라
-#             criteria도 맞춤 — (6)을 겹침(6a, 항상 감점)과 time_range 경계
-#             초과(6b, 1시간 이내는 정상)로 분리, (9)를 budget_per_person의
-#             120% 이내는 정상으로 완화. Step2가 실제로 예산/시간을 딱 맞추길
-#             기대하지 않는다 — 그건 Step4가 관용 범위로 최종 판단할 몫.
+# 2026-08-09, 검증·병합 단계(현재 Step3, 당시 파일명 synthesize_step4.py) 설계에서
+#             "활동 간 겹침은 엄격, time_range 경계 초과·예산 초과는 관대(제한된
+#             관용 범위 안이면 통과)"로 정책이 정해짐에 따라 criteria도 맞춤 —
+#             (6)을 겹침(6a, 항상 감점)과 time_range 경계 초과(6b, 1시간 이내는
+#             정상)로 분리, (9)를 budget_per_person의 120% 이내는 정상으로 완화.
+#             Step2가 실제로 예산/시간을 딱 맞추길 기대하지 않는다 — 그건 검증·
+#             병합 단계가 관용 범위로 최종 판단할 몫.
 # ------------------------------------------------------------------
 import asyncio
 
@@ -152,8 +153,10 @@ def _print_report(case, drafts: list[CandidateDraft], metric: GEval) -> None:
     """
     c = case.conditions
     print(f"\n{_SEP}")
-    print(f"[{case.name}]  score={metric.score:.2f} (threshold {metric.threshold})  "
-          f"{'PASS' if metric.score >= metric.threshold else 'FAIL'}")
+    print(
+        f"[{case.name}]  score={metric.score:.2f} (threshold {metric.threshold})  "
+        f"{'PASS' if metric.score >= metric.threshold else 'FAIL'}"
+    )
     print(f"{_SEP}")
     print(f"notes: {case.notes}\n")
 
