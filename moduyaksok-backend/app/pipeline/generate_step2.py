@@ -72,6 +72,14 @@
 #             고정값으로 폴백해 기존 유닛 테스트는 그대로 통과한다. ActivityDraft
 #             에도 address/lat/lng을 결정론적으로 부착 — Step4의 ODsay 호출과
 #             reconcile_schedule() 재조정이 이 값을 쓴다.
+# 2026-08-10, generate_candidates_with_perspectives()/generate_single_candidate()
+#             추가 — Step3가 하드 위반으로 후보를 드롭했을 때 "그 후보를 만든
+#             관점만" 다시 생성하는 재시도(app/pipeline/orchestrate.py)를 위해
+#             필요. 기존 generate_candidates()는 어떤 CandidateDraft가 어느
+#             관점에서 나왔는지 버리고 있었음 — _call_all_perspectives_sync의
+#             future_to_perspective 제출 순서가 PERSPECTIVES 순서와 같다는 점을
+#             이용해 라벨을 붙였다. generate_candidates()는 이 새 함수의 얇은
+#             래퍼로 바꿔서 기존 시그니처·테스트는 그대로 유지.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -336,6 +344,56 @@ def _schedule_places(
     return activities
 
 
+def _find_perspective(label: str) -> tuple[str, str]:
+    for perspective in PERSPECTIVES:
+        if perspective[0] == label:
+            return perspective
+    raise ValueError(f"알 수 없는 관점: {label}")
+
+
+def _draft_from_selection(
+    selection: CandidateSelectionDraft,
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+) -> CandidateDraft:
+    corrected = _correct_categories(selection, place_candidates)
+    return CandidateDraft(
+        title=corrected.title,
+        activities=_schedule_places(corrected.places, conditions.time_range, place_candidates),
+        rationale=corrected.rationale,
+    )
+
+
+async def generate_candidates_with_perspectives(
+    provider: str,
+    api_key: str,
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+) -> list[tuple[str, CandidateDraft]]:
+    """generate_candidates()와 로직은 같지만, 각 CandidateDraft가 어느 관점
+    (PERSPECTIVES의 label)에서 나왔는지도 같이 반환한다 — Step3가 후보를 드롭
+    했을 때 "그 관점만" 다시 생성하는 재시도(orchestrate.py)가 이 매핑을 알아야
+    한다. results가 PERSPECTIVES와 같은 순서로 나온다는 점
+    (_call_all_perspectives_sync의 future_to_perspective가 제출 순서를 보존)을
+    이용해 zip으로 라벨을 붙인다.
+    """
+    loop = asyncio.get_running_loop()
+    results = await loop.run_in_executor(
+        None, _call_all_perspectives_sync, provider, api_key, conditions, place_candidates
+    )
+    labeled_selections = [
+        (perspective[0], r)
+        for perspective, r in zip(PERSPECTIVES, results, strict=True)
+        if isinstance(r, CandidateSelectionDraft)
+    ]
+    if not labeled_selections:
+        raise RuntimeError("Step2: 3개 관점 호출이 모두 실패했습니다.")
+    return [
+        (label, _draft_from_selection(selection, conditions, place_candidates))
+        for label, selection in labeled_selections
+    ]
+
+
 async def generate_candidates(
     provider: str,
     api_key: str,
@@ -360,20 +418,36 @@ async def generate_candidates(
     LLM은 장소 선택(CandidateSelectionDraft)까지만 하고, 시간 배정은
     _schedule_places()가 결정론적으로 채운다(2026-08-09 결정) — category 재보정
     (_correct_categories)도 그대로 유지.
+
+    관점 라벨이 필요하면 generate_candidates_with_perspectives()를 대신 쓸 것 —
+    이 함수는 그 얇은 래퍼다.
     """
-    loop = asyncio.get_running_loop()
-    results = await loop.run_in_executor(
-        None, _call_all_perspectives_sync, provider, api_key, conditions, place_candidates
+    labeled = await generate_candidates_with_perspectives(
+        provider, api_key, conditions, place_candidates
     )
-    selections = [r for r in results if isinstance(r, CandidateSelectionDraft)]
-    if not selections:
-        raise RuntimeError("Step2: 3개 관점 호출이 모두 실패했습니다.")
-    corrected = [_correct_categories(selection, place_candidates) for selection in selections]
-    return [
-        CandidateDraft(
-            title=selection.title,
-            activities=_schedule_places(selection.places, conditions.time_range, place_candidates),
-            rationale=selection.rationale,
-        )
-        for selection in corrected
-    ]
+    return [draft for _, draft in labeled]
+
+
+def generate_single_candidate(
+    provider: str,
+    api_key: str,
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+    perspective_label: str,
+) -> CandidateDraft:
+    """관점 하나만 다시 생성한다 — Step3가 특정 관점의 후보를 하드 위반으로
+    드롭했을 때 그 관점만 재시도하는 데 쓴다(orchestrate.py). 새 로직이 아니라
+    _call_all_perspectives_sync가 관점 3개에 각각 하던 걸 관점 1개로 좁혀 그대로
+    재사용한 것 — 스레드풀 없이 동기 호출 1번(단일 호출이라 병렬화할 대상이
+    없음, normalize_conditions와 같은 이유로 sync def).
+    """
+    perspective = _find_perspective(perspective_label)
+    selection = call_structured(
+        provider=provider,
+        api_key=api_key,
+        model=get_model(provider, TIER),
+        system=_build_system_prompt(perspective),
+        user=_build_user_prompt(conditions, place_candidates),
+        schema=CandidateSelectionDraft,
+    )
+    return _draft_from_selection(selection, conditions, place_candidates)

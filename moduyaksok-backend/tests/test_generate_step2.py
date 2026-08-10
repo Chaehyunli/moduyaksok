@@ -15,6 +15,9 @@
 #             구간마다 다르게 잡도록 바뀌어서(travel_estimate.py), 좌표 부착·가변
 #             버퍼 테스트 추가. place_candidates 생략 시 기존 고정 버퍼로 폴백하는
 #             동작은 위 테스트들이 그대로 검증(하위호환).
+# 2026-08-10, generate_candidates_with_perspectives()/generate_single_candidate()
+#             테스트 추가 — Step3 재시도 오케스트레이터(orchestrate.py)가 쓸
+#             "관점 라벨 유지"·"관점 하나만 재생성" 기능 검증.
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -26,6 +29,8 @@ from app.pipeline.generate_step2 import (
     _build_user_prompt,
     _schedule_places,
     generate_candidates,
+    generate_candidates_with_perspectives,
+    generate_single_candidate,
 )
 from app.pipeline.schemas import (
     CandidateDraft,
@@ -364,3 +369,80 @@ def test_schedule_places_uses_smaller_buffer_for_closer_places():
         far_activities[0].end_time, "%H:%M"
     )
     assert close_gap < far_gap
+
+
+# ── generate_candidates_with_perspectives() / generate_single_candidate() ──
+
+
+async def test_generate_candidates_with_perspectives_labels_match_perspectives(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.generate_step2.call_structured",
+        lambda **kwargs: _fake_draft(kwargs["system"]),
+    )
+
+    labeled = await generate_candidates_with_perspectives(
+        "anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES
+    )
+
+    assert len(labeled) == 3
+    assert sorted(label for label, _ in labeled) == sorted(label for label, _ in PERSPECTIVES)
+    assert all(isinstance(draft, CandidateDraft) for _, draft in labeled)
+
+
+async def test_generate_candidates_with_perspectives_drops_label_of_failed_perspective(
+    monkeypatch,
+):
+    call_count = 0
+
+    def fake_call_structured(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("이 관점 호출 실패")
+        return _fake_draft(kwargs["system"])
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    labeled = await generate_candidates_with_perspectives(
+        "anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES
+    )
+
+    assert len(labeled) == 2
+
+
+async def test_generate_candidates_wrapper_still_returns_plain_drafts(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.generate_step2.call_structured",
+        lambda **kwargs: _fake_draft(kwargs["system"]),
+    )
+
+    drafts = await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
+
+    assert len(drafts) == 3
+    assert all(isinstance(d, CandidateDraft) for d in drafts)
+
+
+def test_generate_single_candidate_uses_matching_perspective_prompt(monkeypatch):
+    captured = {}
+
+    def fake_call_structured(**kwargs):
+        captured["system"] = kwargs["system"]
+        return _fake_draft(kwargs["system"])
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    label, instruction = PERSPECTIVES[1]
+    draft = generate_single_candidate(
+        "anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES, label
+    )
+
+    assert isinstance(draft, CandidateDraft)
+    assert label in captured["system"]
+    assert instruction in captured["system"]
+
+
+def test_generate_single_candidate_raises_for_unknown_perspective_label():
+    with pytest.raises(ValueError):
+        generate_single_candidate(
+            "anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES, "존재하지 않는 관점"
+        )
