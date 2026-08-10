@@ -66,3 +66,28 @@ def test_handles_completely_empty_place_without_crashing():
     url = build_naver_map_url({})
 
     assert url == "https://map.naver.com/p/search/"
+
+
+def test_strips_floor_and_unit_from_road_address():
+    from urllib.parse import unquote
+
+    place = {
+        "title": "노티드 여의도IFC몰",
+        "roadAddress": "서울특별시 영등포구 국제금융로 10 L2층 234호",
+    }
+
+    url = build_naver_map_url(place)
+
+    decoded = unquote(url.removeprefix("https://map.naver.com/p/search/"))
+    assert decoded == "노티드 여의도IFC몰 서울특별시 영등포구 국제금융로 10"
+
+
+def test_strips_basement_floor_only_no_unit():
+    from urllib.parse import unquote
+
+    place = {"title": "지하 카페", "roadAddress": "서울 강남구 테헤란로 1 지하1층"}
+
+    url = build_naver_map_url(place)
+
+    decoded = unquote(url.removeprefix("https://map.naver.com/p/search/"))
+    assert decoded == "지하 카페 서울 강남구 테헤란로 1"
