@@ -5,9 +5,11 @@ import { useAppStore } from '../stores/app'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import placeholderImg from '../assets/place-placeholder.svg'
+import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
 const store = useAppStore()
+const loading = ref(true)
 const notFound = ref(false)
 
 const candidate = computed(() => store.sharedCandidate)
@@ -17,25 +19,12 @@ onMounted(async () => {
     await store.fetchSharedSchedule(route.params.slug as string)
   } catch {
     notFound.value = true
+  } finally {
+    loading.value = false
   }
 })
 
-const mapMarkers = computed(
-  () =>
-    candidate.value?.activities
-      .filter((a) => a.lat !== null && a.lng !== null)
-      .map((a) => ({ lat: a.lat as number, lng: a.lng as number, order: a.order })) ?? [],
-)
-
-const mapSegments = computed(
-  () =>
-    candidate.value?.activities.slice(0, -1).map((a, i) => {
-      const next = candidate.value!.activities[i + 1]
-      const segment = candidate.value!.routes.find((r) => r.fromOrder === a.order && r.toOrder === next.order)
-      const selected = segment?.options.find((o) => o.optionId === segment.selectedOptionId)
-      return { path: selected?.path ?? [], mode: selected?.mode ?? 'walk' }
-    }) ?? [],
-)
+const { mapMarkers, mapSegments } = useCandidateMapData(candidate)
 </script>
 
 <template>
@@ -53,6 +42,7 @@ const mapSegments = computed(
           </DoodleCard>
         </div>
       </template>
+      <p v-else-if="loading" class="font-hand text-ink/60">불러오는 중...</p>
       <p v-else-if="notFound" class="font-hand text-ink/60">이 링크를 찾을 수 없어요.</p>
     </div>
   </div>

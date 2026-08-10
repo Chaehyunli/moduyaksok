@@ -10,6 +10,7 @@ import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import placeholderImg from '../assets/place-placeholder.svg'
+import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
 const router = useRouter()
@@ -56,22 +57,7 @@ function selectedOptionSummary(segment: RouteSegment): string {
   return `${MODE_LABELS[opt.mode] ?? opt.mode} ${opt.durationMinutes}분`
 }
 
-const mapMarkers = computed(
-  () =>
-    candidate.value?.activities
-      .filter((a) => a.lat !== null && a.lng !== null)
-      .map((a) => ({ lat: a.lat as number, lng: a.lng as number, order: a.order })) ?? [],
-)
-
-const mapSegments = computed(
-  () =>
-    candidate.value?.activities.slice(0, -1).map((a, i) => {
-      const next = candidate.value!.activities[i + 1]
-      const segment = segmentBetween(a.order, next.order)
-      const selected = segment?.options.find((o) => o.optionId === segment.selectedOptionId)
-      return { path: selected?.path ?? [], mode: selected?.mode ?? 'walk' }
-    }) ?? [],
-)
+const { mapMarkers, mapSegments } = useCandidateMapData(candidate)
 
 async function confirmSchedule() {
   if (!candidate.value) return
