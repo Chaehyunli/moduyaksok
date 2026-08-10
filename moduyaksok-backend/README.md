@@ -87,9 +87,10 @@ tests/           pytest
 | `models.py` | - | - | ✅ provider(`anthropic`/`openai`/`upstage`) × `ModelTier`(LOW/MID/HIGH) → 모델 ID 매핑, `get_model()` |
 | `schemas.py` | - | - | ✅ 단계 간 입출력 Pydantic 모델 (`NormalizedConditions`, `CandidateDraft`, `ScheduleResponse` 등) |
 | `normalize_step1.py` | Step1 조건 정규화 | MID | ✅ 구현 완료. `structured_llm.call_structured`로 liked_text/disliked_text만 태그(PreferenceTag) 추출, 나머지 필드는 그대로 조립. RTF+few-shot 프롬프트. 처음엔 LOW로 시작했으나 verifiable 필드 추가로 스키마가 복잡해지자 LOW(solar-mini)가 빈 입력에서 few-shot 예시를 베끼는 문제가 DeepEval로 실측돼 MID(solar-pro)로 격상, 골든셋 9/9 통과 |
-| `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ✅ 구현 완료. 관점 3개(가성비/동선최소화/취향반영)를 `concurrent.futures`로 병렬 호출(개별 타임아웃 180초, 부분 실패 허용 — `asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제). RTF 프롬프트(few-shot 생략 — 관점 간 차별성 확보 목적), verifiable=true 하드 제약/false 소프트 신호+hedge 지시. `naver_local_search.py`로 조회한 place_candidates 안에서만 장소 선택하게 해 환각 방지. 골든 4케이스 GEval 4/4 통과. `_schedule_places()`의 활동 간 버퍼는 `travel_estimate.py`의 좌표 기반 추정을 씀(2026-08-10) |
+| `generate_step2.py` | Step2 후보 생성 (Fan-out N=3) | MID | ✅ 구현 완료. 관점 3개(가성비/동선최소화/취향반영)를 `concurrent.futures`로 병렬 호출(개별 타임아웃 180초, 부분 실패 허용 — `asyncio.wait_for`는 DeepEval eval 테스트의 nest_asyncio 패치와 충돌해 배제). RTF 프롬프트(few-shot 생략 — 관점 간 차별성 확보 목적), verifiable=true 하드 제약/false 소프트 신호+hedge 지시. `naver_local_search.py`로 조회한 place_candidates 안에서만 장소 선택하게 해 환각 방지. 골든 4케이스 GEval 4/4 통과. `_schedule_places()`의 활동 간 버퍼는 `travel_estimate.py`의 좌표 기반 추정을 씀(2026-08-10). `generate_candidates_with_perspectives()` — 각 CandidateDraft가 어느 관점에서 나왔는지도 같이 반환(재시도 오케스트레이터용, 2026-08-10 추가), `generate_candidates()`는 이걸 감싼 얇은 래퍼로 하위호환 유지. `generate_single_candidate()` — 관점 하나만 동기 호출로 재생성 |
 | `travel_estimate.py` | - | - | ✅ `estimate_buffer_minutes()` — place_candidates 좌표(mapx/mapy÷1e7, WGS84 실측 확인)로 직선거리 기반 이동시간 추정(도로 왜곡 보정×안전마진 1.2). `reconcile_schedule()` — Step4가 실제 이동시간을 알아내면 이 추정과 비교해 이후 활동 시간을 보정(초과분은 무조건, 60분 넘는 여유만 당김) |
-| `synthesize_step3.py` | Step3 검증·병합 (Aggregator) | HIGH | ✅ 구현 완료. 규칙 기반 사전 필터(`_rule_based_filter` — 장소 환각·시간 겹침은 하드 드롭, 예산 20%/시간 60분 초과도 하드 드롭·그 이내는 경고) 후 살아남은 후보 전부를 1번의 LLM 호출에 넣어 verifiable=true 태그 위반 추가 검증 + why_recommended 생성. 유사도(`_similarity_score`) 0.5 이상 쌍은 프롬프트에 얹어 차별점 강조 지시. 규칙 필터로 다 드롭되면 LLM 호출 없이 바로 `InfeasibleResponse`. 후보 개수는 3개를 억지로 안 채움 — 하드 위반 후보의 관점별 재생성은 이번 스코프에서 뺌(Step2와의 결합도 문제로 라우터 레벨에서 나중에 추가) |
+| `synthesize_step3.py` | Step3 검증·병합 (Aggregator) | HIGH | ✅ 구현 완료. 규칙 기반 사전 필터(`_rule_based_filter` — 장소 환각·시간 겹침은 하드 드롭, 예산 20%/시간 60분 초과도 하드 드롭·그 이내는 경고) 후 살아남은 후보 전부를 1번의 LLM 호출에 넣어 verifiable=true 태그 위반 추가 검증 + why_recommended 생성. 유사도(`_similarity_score`) 0.5 이상 쌍은 프롬프트에 얹어 차별점 강조 지시. 규칙 필터로 다 드롭되면 LLM 호출 없이 바로 `InfeasibleResponse`. 하드 위반 후보의 관점별 재생성은 이 파일이 아니라 `orchestrate.py`가 맡음(아래) — Step3 자체는 순수하게 유지. 골든 4케이스 GEval 4/4 통과 |
+| `orchestrate.py` | - | - | ✅ `generate_schedule_candidates()` — Step1→2→3을 순서대로 실행하고, Step3가 드롭한 후보가 있으면 그 관점만 `generate_single_candidate()`로 재생성해 Step3를 한 번 더 돌림(관점별 최대 1회). 어느 관점이 빠졌는지는 `Candidate.title`을 원본 draft title과 대조해서 판단(스키마 필드 추가 없음). 사용자에게는 재시도가 안 보임 — `POST /schedules`(장래) 응답 나가기 전에 이 함수 안에서 다 끝남 |
 | `enrich_step4.py` | Step4 이동 동선 보강 | - | ✅ 구현 완료. LLM 안 씀. `odsay_directions.py`로 구간별 도보/대중교통 옵션을 병렬 조회(`asyncio.gather`) 후 `travel_estimate.reconcile_schedule()`로 Step2 추정과 실제값 차이를 보정. **사용자가 3개 후보 중 하나를 고른 뒤 그 후보에만 호출**(2026-08-10 파이프라인 순서 재설계 — 파일명도 enrich_step3.py에서 변경, 실행 순서와 번호를 맞춤) |
 
 ## 모델 (`app/models/`)
@@ -98,7 +99,7 @@ tests/           pytest
 |---|---|---|
 | `user.py` | `user` | Google 계정 기반 사용자 |
 | `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키(암호화 저장), `user_id` unique — 사용자당 1개 |
-| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크 (AI 파이프라인 미구현으로 아직 라우터 없음) |
+| `schedule.py` | `schedule_session`, `feedback_message`, `share_link` | 일정 세션, 피드백 기록, 공유 링크 (AI 파이프라인 함수는 Step1~4 구현 완료됐지만 라우터(`app/routers/schedule.py`)가 아직 없어서 이 모델들을 실제로 쓰는 코드는 없음) |
 
 라우터/서비스/모델 표는 새 엔드포인트나 파일을 추가할 때 같이 갱신할 것 — 프런트 [`../moduyaksok-frontend/README.md`](../moduyaksok-frontend/README.md)의 화면·컴포넌트 표와 같은 역할.
 
