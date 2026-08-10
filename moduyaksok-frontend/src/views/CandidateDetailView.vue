@@ -7,6 +7,9 @@ import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleDivider from '../components/doodle/DoodleDivider.vue'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
+import DoodleMap from '../components/doodle/DoodleMap.vue'
+import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
+import placeholderImg from '../assets/place-placeholder.svg'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,6 +20,8 @@ const candidate = computed(() => store.candidates.find((c) => c.id === route.par
 const loadingRoutes = ref(false)
 const routesError = ref('')
 const confirming = ref(false)
+// 아코디언은 한 번에 하나만 펼쳐진다 — 열려있는 구간의 fromOrder, 없으면 null.
+const expandedSegment = ref<number | null>(null)
 
 const MODE_LABELS: Record<string, string> = { walk: '도보', transit: '대중교통', car: '자차' }
 
@@ -42,7 +47,31 @@ function segmentBetween(fromOrder: number, toOrder: number): RouteSegment | unde
 function selectOption(fromOrder: number, optionId: string) {
   if (!candidate.value) return
   store.selectRouteOption(candidate.value.id, fromOrder, optionId)
+  expandedSegment.value = null
 }
+
+function selectedOptionSummary(segment: RouteSegment): string {
+  const opt = segment.options.find((o) => o.optionId === segment.selectedOptionId)
+  if (!opt) return '교통편 선택'
+  return `${MODE_LABELS[opt.mode] ?? opt.mode} ${opt.durationMinutes}분`
+}
+
+const mapMarkers = computed(
+  () =>
+    candidate.value?.activities
+      .filter((a) => a.lat !== null && a.lng !== null)
+      .map((a) => ({ lat: a.lat as number, lng: a.lng as number, order: a.order })) ?? [],
+)
+
+const mapSegments = computed(
+  () =>
+    candidate.value?.activities.slice(0, -1).map((a, i) => {
+      const next = candidate.value!.activities[i + 1]
+      const segment = segmentBetween(a.order, next.order)
+      const selected = segment?.options.find((o) => o.optionId === segment.selectedOptionId)
+      return { path: selected?.path ?? [], mode: selected?.mode ?? 'walk' }
+    }) ?? [],
+)
 
 async function confirmSchedule() {
   if (!candidate.value) return
@@ -71,10 +100,13 @@ async function confirmSchedule() {
         {{ routesError }}
       </DoodleAlert>
 
+      <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
+
       <div class="space-y-3">
         <template v-for="(a, i) in candidate.activities" :key="a.order">
           <DoodleCard>
-            <p class="font-hand text-lg text-ink">{{ a.name }}</p>
+            <img :src="placeholderImg" alt="" class="mb-3 h-24 w-full rounded-[2px] object-cover" />
+            <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
             <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
             <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
             <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
@@ -86,31 +118,39 @@ async function confirmSchedule() {
           <div v-if="i < candidate.activities.length - 1" class="pl-2">
             <p v-if="loadingRoutes" class="font-hand text-sm text-ink/50">이동 경로를 찾는 중...</p>
             <template v-else-if="segmentBetween(a.order, candidate.activities[i + 1].order)">
-              <div
-                v-for="opt in segmentBetween(a.order, candidate.activities[i + 1].order)!.options"
-                :key="opt.optionId"
-                class="mb-1 flex cursor-pointer items-center gap-2 font-hand text-sm"
-                :class="
-                  segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
-                  opt.optionId
-                    ? 'text-red'
-                    : 'text-ink/60 hover:text-ink'
-                "
-                @click="selectOption(a.order, opt.optionId)"
+              <DoodleAccordion
+                :expanded="expandedSegment === a.order"
+                @update:expanded="expandedSegment = expandedSegment === a.order ? null : a.order"
               >
-                <span>{{
-                  segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
-                  opt.optionId
-                    ? '● '
-                    : '○ '
-                }}</span>
-                <span>
-                  {{ MODE_LABELS[opt.mode] ?? opt.mode }} {{ opt.durationMinutes }}분
-                  <template v-if="opt.fareKrw > 0"> · {{ opt.fareKrw.toLocaleString() }}원</template>
-                  <template v-if="opt.transferCount > 0"> · 환승 {{ opt.transferCount }}회</template>
-                  <template v-if="opt.description"> · {{ opt.description }}</template>
-                </span>
-              </div>
+                <template #header>
+                  🚌 {{ selectedOptionSummary(segmentBetween(a.order, candidate.activities[i + 1].order)!) }}
+                </template>
+                <div
+                  v-for="opt in segmentBetween(a.order, candidate.activities[i + 1].order)!.options"
+                  :key="opt.optionId"
+                  class="mb-1 flex cursor-pointer items-center gap-2 font-hand text-sm"
+                  :class="
+                    segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                    opt.optionId
+                      ? 'text-red'
+                      : 'text-ink/60 hover:text-ink'
+                  "
+                  @click="selectOption(a.order, opt.optionId)"
+                >
+                  <span>{{
+                    segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                    opt.optionId
+                      ? '● '
+                      : '○ '
+                  }}</span>
+                  <span>
+                    {{ MODE_LABELS[opt.mode] ?? opt.mode }} {{ opt.durationMinutes }}분
+                    <template v-if="opt.fareKrw > 0"> · {{ opt.fareKrw.toLocaleString() }}원</template>
+                    <template v-if="opt.transferCount > 0"> · 환승 {{ opt.transferCount }}회</template>
+                    <template v-if="opt.description"> · {{ opt.description }}</template>
+                  </span>
+                </div>
+              </DoodleAccordion>
             </template>
             <p v-else class="font-hand text-sm text-ink/40">이동 경로 정보 없음</p>
           </div>
