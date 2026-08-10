@@ -51,6 +51,11 @@
 #             썼다. Activity에 lat/lng 추가(ActivityDraft에서 그대로 복사)하고
 #             enrich_routes()가 Candidate를 직접 받고 돌려주게 고쳐서 EnrichedCandidate
 #             삭제 — 중간에 다른 타입으로 갈아탈 이유가 없었다.
+# 2026-08-10, RouteOption에 path 필드 추가(list[tuple[float, float]], 기본값 빈
+#             리스트). NCP Maps Directions 5 API가 반환하는 [lng, lat] 쌍을 (lat,
+#             lng) 튜플로 변환해서 프런트(Naver Maps JS SDK) 지도에 직접 그릴 수
+#             있게 한다 — 지도가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서 미리
+#             순서를 맞춰 보낸다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
