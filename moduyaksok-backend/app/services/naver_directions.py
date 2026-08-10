@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------
 # 작성자      : 임채현
 # 작성목적    : Step4가 쓸 자차 옵션 조회. NCP Maps Directions 5
-#              (naveropenapi.apigw.ntruss.com) 호출.
+#              (maps.apigw.ntruss.com) 호출.
 # 작성일      : 2026-08-10
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-10, 최초 작성. NCP Maps 콘솔에서 신규 이용 신청이 실제로 열려 있는 걸
@@ -11,13 +11,19 @@
 #             차이가 크지 않다고 판단, ODsay처럼 여러 옵션을 다 담을 필요 없음.
 #             요청 헤더에 Client ID+Secret을 그대로 실어 보내는 것 자체가
 #             인증이라(ODsay와 달리 Referer 불필요) settings에서 바로 읽는다.
+# 2026-08-10, 도메인을 naveropenapi.apigw.ntruss.com -> maps.apigw.ntruss.com으로
+#             수정. 실제 호출에서 errorCode 210 "구독 필요"가 계속 나서 NCP
+#             공식 문의로 접수했더니, 콘솔의 "Maps"(VPC) Application은 레거시
+#             "AI·NAVER API" 게이트웨이 도메인이 아니라 이 도메인을 써야 한다는
+#             답변을 받음 — 여러 블로그·문서가 레거시 도메인만 보여줘서 실측 없이
+#             그대로 따라간 게 원인. 수정 후 실제 키로 200 확인.
 # ------------------------------------------------------------------
 import httpx
 
 from app.config import settings
 from app.pipeline.schemas import RouteOption
 
-_DIRECTIONS_URL = "https://naveropenapi.apigw.ntruss.com/map-direction/v1/driving"
+_DIRECTIONS_URL = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
 
 # code=0이 성공. 그 외(출발/도착 동일, 도로 주변 아님, 직선거리 1500km 이상 등)는
 # "이 구간엔 자차 경로가 없다"는 정상 상황으로 취급한다(공식 API 레퍼런스 기준).

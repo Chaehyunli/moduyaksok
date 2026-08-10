@@ -23,7 +23,7 @@ class _FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            request = httpx.Request("GET", "https://naveropenapi.apigw.ntruss.com")
+            request = httpx.Request("GET", "https://maps.apigw.ntruss.com")
             response = httpx.Response(self.status_code, request=request)
             raise httpx.HTTPStatusError("error", request=request, response=response)
 
