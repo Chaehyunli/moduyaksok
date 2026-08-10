@@ -39,7 +39,7 @@ function render() {
         position,
         map,
         icon: {
-          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#1f2937;color:#fdf6e3;font-family:sans-serif;font-size:13px;">${props.markers[i].order}</div>`,
+          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--color-ink);color:var(--color-paper);font-family:sans-serif;font-size:13px;">${props.markers[i].order}</div>`,
           anchor: new naver.maps.Point(12, 12),
         },
       }),
@@ -56,7 +56,7 @@ function render() {
       new naver.maps.Polyline({
         map,
         path: segmentPath,
-        strokeColor: '#1f2937',
+        strokeColor: 'var(--color-ink)',
         strokeWeight: 4,
       }),
     )
