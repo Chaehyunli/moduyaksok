@@ -71,10 +71,10 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `LoginView.vue` | `/login` | [02_로그인_화면](../docs/와이어프레임/02_로그인_화면.png) | ✗ | `DoodleButton`, `DoodleUnderline` |
 | `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton` |
 | `CandidatesView.vue` | `/schedules` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton` |
-| `CandidateDetailView.vue` | `/schedules/:id` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert` |
+| `CandidateDetailView.vue` | `/schedules/:id` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert`, `DoodleMap`, `DoodleAccordion` |
 | `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |
 | `ShareView.vue` | `/schedules/:id/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |
-| `PublicShareView.vue` | `/share/:slug` | [23_공유_일정_열람](../docs/와이어프레임/23_공유_일정_열람.png) | ✗ (공개) | `DoodleCard`, `DoodleUnderline` |
+| `PublicShareView.vue` | `/share/:slug` | [23_공유_일정_열람](../docs/와이어프레임/23_공유_일정_열람.png) | ✗ (공개) | `DoodleCard`, `DoodleUnderline`, `DoodleMap` |
 | `SettingsView.vue` | `/settings` | [25_설정_화면](../docs/와이어프레임/25_설정_화면.png) | ✓ | `DoodleCard`, `DoodleBadge` |
 | `settings/ApiKeyView.vue` | `/settings/api-key` | [26_AI_API_키_관리](../docs/와이어프레임/26_AI_API_키_관리.png) | ✓ | `DoodleCard`, `DoodleBadge`, `DoodleDivider`, `DoodleButton` |
 | `settings/ApiKeyProviderView.vue` | `/settings/api-key/provider` | [27_AI_제공자_선택](../docs/와이어프레임/27_AI_제공자_선택.png) | ✓ | `DoodleSelectCard`, `DoodleButton` |
@@ -86,9 +86,11 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 
 **아직 안 만든 것:** 와이어프레임에 있는 화면 중 실제 라우트로 못 옮긴 건 없다. `/auth/google`,
 `/me/llm-credential`, 일정 생성 플로우(`POST /schedules`, `POST .../routes`,
-`POST .../confirm`, `GET /schedules/{id}`)는 실제 백엔드에 연결됐다(2026-08-10). 피드백
-(`POST .../feedback`)과 공유(`POST .../share`, `GET /share/{slug}`)는 아직 라우터
-자체가 없어서 `FeedbackView`/`ShareView`/`PublicShareView`가 목업 데이터로 남아있다.
+`POST .../confirm`, `GET /schedules/{id}`)는 실제 백엔드에 연결됐다(2026-08-10). 공유
+(`GET /schedules/{id}`의 `share_slug`, `GET /share/{slug}`)도 이미 실제로 붙어 있어
+`ShareView`/`PublicShareView`는 목업 데이터가 아니다(2026-08-10). 피드백
+(`POST .../feedback`)은 아직 백엔드 라우터 자체가 없어서 `FeedbackView`만 목업으로
+남아있다.
 
 ### 새 화면 만들 때
 
@@ -102,6 +104,11 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 ```
 src/
   components/doodle/   디자인 시스템 컴포넌트
+  composables/          재사용 로직 훅. useNaverMapScript.ts(지도 SDK 1회 로드),
+                         useCandidateMapData.ts(후보의 activities/routes에서
+                         마커·경로 좌표를 같은 필터링 기준으로 뽑아 markers[i]/
+                         segments[i]가 어긋나지 않게 함 — CandidateDetailView/
+                         PublicShareView 공용)
   views/                화면 (라우트 단위, settings/ 하위는 API 키 등록 흐름)
   router/               vue-router 설정 + 인증 가드
   stores/app.ts          Pinia — 로그인/API 키 등록 상태, 조건 입력값, 일정 후보·경로(실제 API 연동)
