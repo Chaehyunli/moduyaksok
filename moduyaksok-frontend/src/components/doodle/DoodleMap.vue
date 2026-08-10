@@ -56,7 +56,7 @@ function render() {
       new naver.maps.Polyline({
         map,
         path: segmentPath,
-        strokeColor: 'var(--color-ink)',
+        strokeColor: '#1f2937', // naver.maps.Polyline의 strokeColor는 SDK가 직접 쓰는 값이라 CSS 커스텀 프로퍼티(var(--color-ink))가 해석 안 될 위험이 있음 — ink 토큰의 리터럴 값을 그대로 씀
         strokeWeight: 4,
       }),
     )
