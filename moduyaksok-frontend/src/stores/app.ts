@@ -11,6 +11,8 @@ export interface Activity {
   operatingHours: string
   infoNeedsCheck: boolean
   mapUrl: string
+  lat: number | null
+  lng: number | null
 }
 
 export interface RouteOption {
@@ -20,6 +22,7 @@ export interface RouteOption {
   fareKrw: number
   transferCount: number
   description: string
+  path: [number, number][]
 }
 
 export interface RouteSegment {
@@ -64,6 +67,8 @@ function mapApiActivity(raw: any): Activity {
     operatingHours: raw.operating_hours,
     infoNeedsCheck: raw.info_needs_check,
     mapUrl: raw.map_url,
+    lat: raw.lat ?? null,
+    lng: raw.lng ?? null,
   }
 }
 
@@ -76,6 +81,7 @@ function mapApiRouteOption(raw: any): RouteOption {
     fareKrw: raw.fare_krw,
     transferCount: raw.transfer_count,
     description: raw.description,
+    path: raw.path ?? [],
   }
 }
 
@@ -142,6 +148,7 @@ export const useAppStore = defineStore('app', {
     // CandidatesView가 그대로 보여준다.
     scheduleError: null as string | null,
     shareSlug: '',
+    sharedCandidate: null as Candidate | null,
   }),
   getters: {
     selectedCandidate(state): Candidate | undefined {
@@ -252,11 +259,14 @@ export const useAppStore = defineStore('app', {
     },
     async confirmSchedule(candidateId: string) {
       if (!this.sessionId) return
-      await api.post(`/schedules/${this.sessionId}/confirm`, { candidate_id: candidateId })
+      const { data } = await api.post(`/schedules/${this.sessionId}/confirm`, {
+        candidate_id: candidateId,
+      })
+      this.shareSlug = data.share_slug
     },
-    createShareLink() {
-      this.shareSlug = Math.random().toString(36).slice(2, 10)
-      return this.shareSlug
+    async fetchSharedSchedule(slug: string) {
+      const { data } = await api.get(`/share/${slug}`)
+      this.sharedCandidate = mapApiCandidate(data)
     },
   },
 })
