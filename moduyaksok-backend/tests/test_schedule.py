@@ -11,6 +11,10 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-10, 확정 시 공유 링크 생성 검증, confirm 응답의 share_slug 필드와
 #             ShareLink row 저장을 확인하는 테스트 2개 추가.
+# 2026-08-10, 전체 브랜치 리뷰 반영(Finding 1, 3). GET /schedules/{id}가
+#             share_slug를 draft에선 null, confirm 후엔 confirm 응답과 같은 값을
+#             돌려주는지 검증하는 테스트 2개, confirm의 selected_options가 저장된
+#             후보 routes[].selected_option_id에 반영되는지 검증하는 테스트 1개 추가.
 # ------------------------------------------------------------------
 from uuid import UUID
 
@@ -255,6 +259,28 @@ def test_get_schedule_returns_stored_candidates(client, session, monkeypatch):
     assert response.json()["candidates"][0]["candidate_id"] == "A"
 
 
+def test_get_schedule_draft_session_has_null_share_slug(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.get(f"/schedules/{session_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["share_slug"] is None
+
+
+def test_get_schedule_after_confirm_returns_matching_share_slug(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    confirm_response = client.post(
+        f"/schedules/{session_id}/confirm", json={"candidate_id": "A"}, headers=headers
+    )
+    slug = confirm_response.json()["share_slug"]
+
+    response = client.get(f"/schedules/{session_id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["share_slug"] == slug
+
+
 # ── POST /schedules/{id}/confirm ────────────────────────────────────────
 
 
@@ -322,3 +348,49 @@ def test_confirm_schedule_unknown_candidate_returns_404(client, session, monkeyp
     )
 
     assert response.status_code == 404
+
+
+def test_confirm_schedule_applies_selected_options_to_stored_routes(client, session, monkeypatch):
+    """공유 화면이 recommended가 아니라 사용자가 실제로 고른 교통편을 보여줘야
+    하므로(전체 브랜치 리뷰 Finding 3), confirm 시점에 selected_options가 후보의
+    저장된 routes[].selected_option_id에 반영돼야 한다.
+    """
+    from app.pipeline.schemas import RouteOption, RouteSegment
+
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich_routes(candidate, time_range):
+        routes = [
+            RouteSegment(
+                from_order=1,
+                to_order=2,
+                options=[
+                    RouteOption(option_id="walk", mode="walk", duration_minutes=15, fare_krw=0),
+                    RouteOption(
+                        option_id="transit-0", mode="transit", duration_minutes=8, fare_krw=1400
+                    ),
+                ],
+                recommended_option_id="transit-0",
+                selected_option_id="transit-0",
+            )
+        ]
+        return candidate.model_copy(update={"routes": routes})
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich_routes)
+    client.post(f"/schedules/{session_id}/routes", json={"candidate_id": "A"}, headers=headers)
+
+    response = client.post(
+        f"/schedules/{session_id}/confirm",
+        json={"candidate_id": "A", "selected_options": [{"from_order": 1, "option_id": "walk"}]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+
+    from app.models.schedule import ScheduleSession
+
+    stored = session.get(ScheduleSession, UUID(session_id))
+    stored_route = stored.candidates["candidates"][0]["routes"][0]
+    # recommended_option_id("transit-0")가 아니라 사용자가 고른 "walk"로 바뀌어야 한다.
+    assert stored_route["selected_option_id"] == "walk"
+    assert stored_route["recommended_option_id"] == "transit-0"

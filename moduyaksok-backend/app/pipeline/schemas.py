@@ -56,6 +56,9 @@
 #             lng) 튜플로 변환해서 프런트(Naver Maps JS SDK) 지도에 직접 그릴 수
 #             있게 한다 — 지도가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서 미리
 #             순서를 맞춰 보낸다.
+# 2026-08-10, ScheduleResponse에 share_slug 추가(전체 브랜치 리뷰 Finding 1).
+#             확정 응답을 새로고침/네트워크 문제로 놓쳐도 GET /schedules/{id}로
+#             다시 slug를 찾을 수 있게 한다 — 값이 없으면(미확정) None.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -207,6 +210,9 @@ class Candidate(BaseModel):
 class ScheduleResponse(BaseModel):
     session_id: str
     candidates: list[Candidate]
+    # 확정된 뒤 생긴 공유 링크가 있으면 같이 돌려준다 — GET /schedules/{id}가
+    # 새로고침 후에도 공유 slug를 복구할 수 있게 한다(2026-08-10, Finding 1).
+    share_slug: str | None = None
 
 
 class InfeasibleResponse(BaseModel):
