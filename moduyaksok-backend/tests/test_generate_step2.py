@@ -561,6 +561,33 @@ def test_tag_bundles_reuses_one_compact_pool_when_all_places_are_nearby():
     assert all({p["title"] for p in bundle} == {"와플0", "와플1", "와플2"} for bundle in bundles)
 
 
+def test_tag_bundles_excludes_places_outside_1500m_radius():
+    # 시드와 가까운 카페는 약 1.1km, 동쪽 액티비티는 약 1.8km라 같은 후보군에
+    # 들어가면 안 된다. 시드 묶음은 식사·카페 두 카테고리를 가져 점수도 가장 높다.
+    seed = {
+        "title": "중심식당",
+        "source_category": "한식",
+        "mapx": "1270000000",
+        "mapy": "375000000",
+    }
+    nearby = {
+        "title": "가까운카페",
+        "source_category": "카페",
+        "mapx": "1270000000",
+        "mapy": "375100000",
+    }
+    outside = {
+        "title": "먼액티비티",
+        "source_category": "액티비티",
+        "mapx": "1270200000",
+        "mapy": "375000000",
+    }
+
+    bundles = _tag_bundles_by_perspective([seed, nearby, outside], 1)
+
+    assert {place["title"] for place in bundles[0]} == {"중심식당", "가까운카페"}
+
+
 def test_tag_bundles_reuses_a_match_when_fewer_than_perspectives():
     waffle = [{"title": "와플1", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}]
 

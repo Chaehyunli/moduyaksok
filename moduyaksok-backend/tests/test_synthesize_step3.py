@@ -195,6 +195,19 @@ def test_has_excessive_travel_false_for_nearby_activities():
     assert _has_excessive_travel(c) is False
 
 
+def test_has_excessive_travel_true_when_over_fifteen_minute_estimate():
+    # 남북 약 2.9km. 현재 직선거리 기반 보정식으로 16분이므로 하드 드롭해야 한다.
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", lat=37.500, lng=127.000),
+            _activity("가게2", lat=37.526, lng=127.000),
+        ],
+    )
+
+    assert _has_excessive_travel(c) is True
+
+
 def test_has_excessive_travel_false_when_coordinates_missing():
     # 좌표 없는 활동(환각 장소)은 이미 _has_hallucinated_activity가 드롭하므로
     # 여기선 그냥 건너뛴다 — 크래시하면 안 됨.

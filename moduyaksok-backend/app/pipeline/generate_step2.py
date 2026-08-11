@@ -123,6 +123,9 @@
 #             참조하던 _meal_slot_instruction/_MEAL_CATEGORIES도 세분화된 식사류
 #             카테고리 집합을 참조하게 변경(synthesize_step3.py와 같은 목록을
 #             독립적으로 유지, naver_local_search.py도 동일).
+# 2026-08-11(3차), 사용자 관측상 2.5km 후보 반경과 30분 추정 이동 상한은 도심
+#             일정에도 동선이 넓게 퍼져 보였음. 후보군 반경을 1.5km로, Step3의
+#             연속 구간 추정 상한을 15분으로 함께 좁힘.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -218,10 +221,10 @@ _MIN_ACTIVITY_MINUTES = 30
 _MAX_ACTIVITY_MINUTES = 90
 
 # LLM에게 넘길 한 관점의 장소 후보는 이 반경 안의 장소로 제한한다. 기존에는
-# 좌표를 시간 버퍼 계산과 60분 초과 사후 탈락에만 써서, 카테고리 전체 후보를
-# LLM이 함께 보고 먼 장소를 섞을 수 있었다. 중심에서 2.5km면 양 끝 장소도
-# 대체로 5km 이내라, Step3의 30분 이동 하드룰과도 자연스럽게 맞는다.
-_COMPACT_POOL_RADIUS_METERS = 2_500
+# 좌표를 시간 버퍼 계산과 사후 탈락에만 써서, 카테고리 전체 후보를 LLM이 함께
+# 보고 먼 장소를 섞을 수 있었다. 중심에서 1.5km로 제한해 양 끝도 약 3km이며,
+# Step3의 15분 추정 이동 하드룰로 한 번 더 걸러낸다.
+_COMPACT_POOL_RADIUS_METERS = 1_500
 
 # 식사 슬롯 판단 기준(2026-08-11) — synthesize_step3.py에도 같은 상수·로직이
 # 독립적으로 있다(이 프로젝트 관례상 파이프라인 단계끼리는 서로 안 부르고, 작은
