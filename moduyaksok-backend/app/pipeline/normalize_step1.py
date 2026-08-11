@@ -12,6 +12,13 @@
 #             지어내는 할루시네이션)를 예시 3번으로 그대로 박아 직접 겨냥함.
 #             liked_tags/disliked_tags가 PreferenceTag(verifiable 포함)로 바뀌어서
 #             프롬프트에도 "확인 가능/불가능 태그 구분" 지시 추가.
+# 2026-08-11, verifiable=true 태그마다 naver_local_search가 "{region} {tag}" 검색을
+#             추가로 호출하게 되면서(태그 매칭 정밀도 개선, 2026-08-10 미해결 설계
+#             질문 해소) 호출량 제어를 위해 좋아하는/싫어하는 것 각각 최대 3개로
+#             제한 — 언급된 순서가 아니라 "사용자가 더 중요하게 얘기한 순서"로
+#             고르라고 지시(예시 5번 추가). NormalizedConditions.cap_verifiable_tags()
+#             가 방어용 하한선으로 한 번 더 자른다(schemas.py 참고) — 이 지시를
+#             LLM이 못 지켜도 호출량은 항상 보장됨.
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -25,11 +32,12 @@ from app.services.structured_llm import call_structured
 # 확인됨(2026-08-07, DeepEval 골든셋). MID로 격상해서 재검증 중.
 TIER = ModelTier.MID
 
-# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 4개는 각각:
+# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 5개는 각각:
 #   1. 기본 — 명시된 항목만 추출, verifiable=True
 #   2. 부정 표현 — "빼고/못 먹어요"의 대상이 disliked로 가야 함
 #   3. 빈 입력 — 아무것도 지어내면 안 됨 (실제 관측된 할루시네이션 버그를 직접 겨냥)
 #   4. 주관적 취향 — 분위기/혼잡도는 verifiable=False
+#   5. verifiable 태그 4개 이상 언급 — 중요한 3개만 남기고 나머진 버려야 함
 _SYSTEM_PROMPT = """\
 # Role
 너는 사용자가 적은 자유 텍스트에서 선호/비선호를 정확하게 태그로 추출하는 \
@@ -46,6 +54,11 @@ _SYSTEM_PROMPT = """\
 — liked_tags에 넣으면 안 된다.
 - 원문에 없는 내용은 절대 추가하지 마라. 언급이 없거나("(없음)") 막연하면 \
 빈 배열을 반환해라 — 그럴듯한 예시를 지어내면 안 된다.
+- verifiable=true인 태그는 liked_tags/disliked_tags 각각 최대 3개까지만 남겨라. \
+그보다 많이 언급됐으면 사용자가 더 강조했거나 먼저/구체적으로 말한 순서로 \
+중요한 3개만 고르고 나머지는 버려라(단순히 등장 순서 앞 3개가 아니라 중요도 \
+판단). verifiable=false 태그는 이 제한과 무관하다 — 검색에 안 쓰이니 개수 \
+제한 없이 다 추출해라.
 
 # Format
 liked_tags, disliked_tags 각각 {tag, verifiable} 객체 배열로 출력.
@@ -66,6 +79,13 @@ liked_tags, disliked_tags 각각 {tag, verifiable} 객체 배열로 출력.
 입력: 좋아하는 것: 조용하고 차분한 분위기가 좋아요 / 싫어하는 것: 사람 많은 곳은 싫어요
 출력: liked_tags=[{tag: "조용한 분위기", verifiable: false}], \
 disliked_tags=[{tag: "사람 많은 곳", verifiable: false}]
+
+입력: 좋아하는 것: 저는 무조건 파스타예요. 그리고 스시도 좋고, 요즘은 마라탕도 \
+자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / 싫어하는 것: (없음)
+출력: liked_tags=[{tag: "파스타", verifiable: true}, {tag: "스시", verifiable: true}, \
+{tag: "마라탕", verifiable: true}], disliked_tags=[] \
+(타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 4번째부터는 \
+버린다 — 등장 순서가 아니라 사용자가 표현한 중요도로 판단한 것)
 """
 
 

@@ -20,7 +20,11 @@ function openCandidate(id: string) {
   <div class="notebook-bg min-h-dvh px-6 py-10">
     <div class="mx-auto max-w-3xl">
       <h1 class="mb-8 font-hand text-2xl text-ink">
-        {{ store.candidates.length > 0 ? '일정 후보 3개를 만들었어요' : '일정 후보를 만들지 못했어요' }}
+        {{
+          store.candidates.length > 0
+            ? `일정 후보 ${store.candidates.length}개를 만들었어요`
+            : '일정 후보를 만들지 못했어요'
+        }}
       </h1>
 
       <DoodleAlert v-if="store.candidates.length === 0" title="이 조건으로는 일정을 만들 수 없어요">

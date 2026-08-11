@@ -22,6 +22,15 @@
 #             재시도해도 InfeasibleResponse가 나올 수 있다(회복 불가능한 조건
 #             — 예산이 애초에 너무 적은 경우 등) — 그러면 그대로 반환한다,
 #             더 이상 재시도하지 않는다(관점별 최대 1회 원칙).
+# 2026-08-11, place_candidates 조회(search_places_for_regions)를 라우터에서 이
+#             함수 안으로 옮김 — 태그 기반 검색(verifiable liked_tags/disliked_tags)
+#             을 하려면 Step1이 만든 조건이 먼저 있어야 하는데, 지금까지는 라우터가
+#             Step1 실행 전에 raw_input.regions만으로 미리 검색해서 넘겨주는
+#             구조였다(카테고리 검색만 하던 시절엔 문제없었음). "여러 Step을 잇는
+#             건 오케스트레이터 몫"이라는 이 프로젝트 관례(이 파일 자체가 그 역할)
+#             그대로, 장소 검색도 Step1 직후·Step2 직전이라는 정확한 위치에
+#             놓이도록 이 함수 안으로 가져왔다. place_candidates 파라미터를 없애서
+#             시그니처가 raw_input만 받게 바뀜 — 라우터/테스트 쪽도 맞춰 변경 필요.
 # ------------------------------------------------------------------
 import asyncio
 
@@ -32,6 +41,7 @@ from app.pipeline.generate_step2 import (
 from app.pipeline.normalize_step1 import normalize_conditions
 from app.pipeline.schemas import CandidateDraft, InfeasibleResponse, ScheduleResponse
 from app.pipeline.synthesize_step3 import synthesize_and_validate
+from app.services.naver_local_search import search_places_for_regions
 
 
 def _missing_perspectives(
@@ -51,15 +61,19 @@ async def generate_schedule_candidates(
     api_key: str,
     session_id: str,
     raw_input: dict,
-    place_candidates: list[dict],
 ) -> ScheduleResponse | InfeasibleResponse:
-    """POST /schedules(장래)가 부를 진입점. Step1(조건 정규화) → Step2(후보 생성,
-    관점 라벨 유지) → Step3(검증·병합) 순서로 실행하고, Step3가 드롭한 관점이
-    있으면 그 관점만 generate_single_candidate()로 다시 생성해 Step3를 한 번 더
-    돌린다(관점별 최대 1회).
+    """POST /schedules(장래)가 부를 진입점. Step1(조건 정규화) → 장소 검색(카테고리+
+    태그) → Step2(후보 생성, 관점 라벨 유지) → Step3(검증·병합) 순서로 실행하고,
+    Step3가 드롭한 관점이 있으면 그 관점만 generate_single_candidate()로 다시
+    생성해 Step3를 한 번 더 돌린다(관점별 최대 1회).
 
-    place_candidates는 이 함수 밖(네이버 지역검색 호출부)에서 조회해서 넘겨야
-    한다 — generate_candidates()가 이미 쓰던 것과 같은 패턴.
+    장소 검색이 Step1 다음에 있는 이유: verifiable liked_tags/disliked_tags 태그
+    검색을 하려면 Step1이 만든 조건(구조화된 태그)이 먼저 있어야 한다
+    (2026-08-11, naver_local_search.search_places_for_regions 참고) — 예전엔
+    카테고리 검색만 해서 Step1 이전(라우터)에서도 가능했지만 지금은 아니다.
+
+    NaverSearchError(장소 검색 실패)는 여기서 잡지 않고 그대로 올린다 — 호출부
+    (라우터)가 502로 변환한다.
 
     사용자에게는 이 재시도가 안 보인다 — POST /schedules 응답이 나가기 전에
     이 함수 안에서 다 끝난다. Step1/2/3의 LLM 호출(call_structured)은 전부
@@ -70,6 +84,10 @@ async def generate_schedule_candidates(
 
     conditions = await loop.run_in_executor(
         None, normalize_conditions, provider, api_key, raw_input
+    )
+
+    place_candidates = await search_places_for_regions(
+        conditions.regions, conditions.liked_tags, conditions.disliked_tags, session_id=session_id
     )
 
     labeled_drafts = await generate_candidates_with_perspectives(

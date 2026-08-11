@@ -35,6 +35,10 @@
 #             재사용)해서, 공유 화면이 recommended가 아니라 사용자가 실제로 고른
 #             교통편을 보여주게 한다. _find_candidate 호출부를 존재만 검증하던
 #             것에서 반환값을 쓰는 걸로 바꿈.
+# 2026-08-11, search_places_for_regions() 호출을 orchestrate.generate_schedule_candidates
+#             안으로 옮기면서(태그 기반 검색이 Step1 조건을 필요로 해서,
+#             orchestrate.py 참고) create_schedule()이 더 이상 직접 부르지 않게
+#             변경 — NaverSearchError도 ValidationError와 같은 try 블록에서 잡음.
 # ------------------------------------------------------------------
 import secrets
 from datetime import datetime
@@ -55,7 +59,7 @@ from app.pipeline.orchestrate import generate_schedule_candidates
 from app.pipeline.schemas import Candidate, InfeasibleResponse, ScheduleResponse
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
-from app.services.naver_local_search import NaverSearchError, search_places_for_regions
+from app.services.naver_local_search import NaverSearchError
 
 router = APIRouter()
 
@@ -143,26 +147,28 @@ async def create_schedule(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Step1(조건 정규화) → Step2(후보 생성) → Step3(검증·병합)까지 실행해
-    경로 없는 후보(최대 3개)를 반환한다. 경로는 사용자가 후보를 고른 뒤
+    """Step1(조건 정규화) → 장소 검색 → Step2(후보 생성) → Step3(검증·병합)까지
+    실행해 경로 없는 후보(최대 3개)를 반환한다. 경로는 사용자가 후보를 고른 뒤
     POST /schedules/{session_id}/routes로 별도 조회한다(ODsay 호출 비용을 실제로
     볼 후보 1개로만 제한하기 위함 — docs/API명세서 참고).
+
+    장소 검색(NaverSearchError 발생 지점)이 2026-08-11부터 generate_schedule_candidates
+    안(Step1 직후)으로 옮겨져서, 여기서 별도로 먼저 호출하지 않는다 — 태그 기반
+    검색을 하려면 Step1이 만든 조건이 먼저 있어야 하기 때문(orchestrate.py 참고).
+    그래서 NaverSearchError도 ValidationError와 같은 try 블록에서 잡는다.
     """
     credential = _get_user_credential(session, current_user.id)
     api_key = decrypt_key(credential.encrypted_key)
 
+    session_id = uuid4()
     try:
-        place_candidates = await search_places_for_regions(body.regions)
+        result = await generate_schedule_candidates(
+            credential.provider, api_key, str(session_id), body.model_dump()
+        )
     except NaverSearchError as exc:
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"장소 검색에 실패했습니다: {exc}"
         ) from exc
-
-    session_id = uuid4()
-    try:
-        result = await generate_schedule_candidates(
-            credential.provider, api_key, str(session_id), body.model_dump(), place_candidates
-        )
     except ValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
@@ -220,7 +226,9 @@ def get_schedule(
     candidates = [
         Candidate.model_validate(item) for item in schedule_session.candidates.get("candidates", [])
     ]
-    share_link = session.exec(select(ShareLink).where(ShareLink.session_id == schedule_session.id)).first()
+    share_link = session.exec(
+        select(ShareLink).where(ShareLink.session_id == schedule_session.id)
+    ).first()
     return ScheduleResponse(
         session_id=str(schedule_session.id),
         candidates=candidates,

@@ -18,6 +18,13 @@
 #             서버 키(Client ID+Secret 둘 다 헤더로 보냄)라 도메인 제한과 무관 —
 #             프런트가 Dynamic Map에 쓰는 Client ID(도메인 제한 걸림, VITE_ 접두사)
 #             와는 같은 값이지만 용도가 다르다.
+# 2026-08-11, 태그 검색·광역 지역 확장으로 네이버 지역검색 호출량이 크게 늘어
+#             NAVER_RATE_LIMIT_PER_SECOND(초당 호출 상한)/NAVER_DAILY_CALL_LIMIT
+#             (일일 호출 상한) 추가 — 네이버 API HUB 공식 한도(10/sec, 25,000/day)
+#             기준값을 기본값으로 두되 환경변수로 조정 가능하게 함
+#             (app/services/rate_limiter.py). 일일 카운터는 여러 워커/인스턴스에서도
+#             정확히 집계돼야 해서 REDIS_URL 추가 — in-memory로는 프로세스가
+#             여러 개면 전역 집계가 안 맞는다.
 # ------------------------------------------------------------------
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -57,6 +64,15 @@ class Settings(BaseSettings):
     # 같은 값을 쓴다.
     naver_map_client_id: str = ""
     naver_map_client_secret: str = ""
+
+    # 태그 검색·광역 지역 확장(app/services/naver_local_search.py)으로 호출량이
+    # 늘어서 추가 — 네이버 API HUB 공식 한도(초당 10건, 일일 25,000건)가 기본값.
+    naver_rate_limit_per_second: float = 10.0
+    naver_daily_call_limit: int = 25000
+
+    # 일일 호출 카운터 저장소. 여러 워커/인스턴스에서도 전역 집계가 맞아야 해서
+    # in-memory 대신 Redis를 쓴다(app/services/rate_limiter.py).
+    redis_url: str = "redis://localhost:6380/0"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

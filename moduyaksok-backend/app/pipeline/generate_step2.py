@@ -80,6 +80,19 @@
 #             future_to_perspective 제출 순서가 PERSPECTIVES 순서와 같다는 점을
 #             이용해 라벨을 붙였다. generate_candidates()는 이 새 함수의 얇은
 #             래퍼로 바꿔서 기존 시그니처·테스트는 그대로 유지.
+# 2026-08-11, 두 가지 추가:
+#             (1) place_candidates에 naver_local_search가 붙여준 matched_tag를
+#             ActivityDraft까지 그대로 옮긴다(_matched_tag_by_title, lat/lng와 같은
+#             패턴) — Step3가 "같은 verifiable 태그를 만족하는 활동이 한 후보에
+#             2곳 이상"을 판단하는 근거. _ROLE_TASK에도 "같은 태그는 후보당 최대
+#             1곳이면 충분하다"를 명시해 애초에 덜 만들도록 지시(2026-08-10 미해결
+#             설계 질문의 (a) 해소) — 그래도 지켜지지 않을 경우를 Step3가 하드
+#             룰로 한 번 더 잡는다.
+#             (2) purpose(date/friends/family/party/other)가 지금까지 프롬프트에
+#             "목적: date"처럼 원문 그대로만 들어가고 어떻게 반영하라는 지시가
+#             없었다(사용자가 지적, 실측해보니 이 프로젝트의 다른 조건들과 달리
+#             purpose만 유일하게 전용 지시문이 없었음) — _PURPOSE_GUIDANCE로
+#             목적별 구체 지시문을 추가.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -129,6 +142,35 @@ PERSPECTIVES: tuple[tuple[str, str], ...] = (
     ),
 )
 
+# purpose별 지시문 — 지금까지 프롬프트에 "목적: date"처럼 원문만 들어가고
+# 어떻게 반영하라는 지시가 없어서 LLM의 일반 상식에만 의존하고 있었다(2026-08-11
+# 확인, 검증된 적 없는 신호였음). budget/tags처럼 구체 기준을 준다. "other"는
+# 목적이 특정되지 않은 경우라 별도 지시 없이 무난하게 구성하도록 빈 문자열로
+# 둔다.
+_PURPOSE_GUIDANCE: dict[str, str] = {
+    "date": (
+        "데이트 목적이다 — 2인이 나란히 즐기기 좋은 분위기 있는 장소(카페, 전시, "
+        "야경, 체험 등) 위주로 구성해라. 시끄럽고 번잡한 곳보다 대화하거나 함께 "
+        "경험하기 좋은 곳을 우선해라."
+    ),
+    "friends": (
+        "친구 모임 목적이다 — 여러 명이 편하게 어울리며 대화·활동하기 좋은 곳"
+        "(맛집, 카페, 액티비티) 위주로 구성해라. 격식 있는 곳보다 캐주얼한 곳을 "
+        "우선해라."
+    ),
+    "family": (
+        "가족 모임 목적이다 — 다양한 연령대가 무리 없이 이동·이용할 수 있는 곳 "
+        "위주로 구성해라. 계단이 많거나 오래 서서 기다려야 하는 곳, 소음이 심한 "
+        "곳은 피해라."
+    ),
+    "party": (
+        "파티/단체 모임 목적이다 — 여러 명이 왁자지껄하게 즐길 수 있는 곳(대형 "
+        "식당, 펍, 액티비티 등) 위주로 구성해라. 조용하고 차분한 분위기의 장소는 "
+        "피해라."
+    ),
+    "other": "",
+}
+
 # 개별 관점 호출 타임아웃(초). 각 호출이 실제로 얼마나 걸릴지 아직 실측 전이라
 # 널널하게 잡음 — 실측 후 필요하면 좁힐 것 (기술설계 §4 "파이프라인 오류/타임아웃
 # 처리"의 "예: 20초"는 참고 예시일 뿐, 이 프로젝트는 3분으로 결정).
@@ -162,7 +204,9 @@ _ROLE_TASK = """\
 - disliked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
 반드시 배제해라.
 - liked_tags 중 verifiable=true인 태그는 place_candidates의 category/title로 판단해 \
-최대한 반영해라.
+최대한 반영해라. 단, 같은 태그를 만족하는 장소는 이 후보(코스)당 최대 1곳이면 \
+충분하다 — 이미 그 태그를 만족하는 장소를 하나 골랐으면, 같은 태그를 또 만족하는 \
+곳을 추가하지 말고 다른 태그나 다른 카테고리로 채워라.
 - verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 취향이다 — \
 참고만 하고 절대 보장한다고 말하지 마라. rationale에서도 "사람이 없습니다"처럼 단정하지 \
 말고 "비교적 한산한 편인 곳으로 골랐어요"처럼 hedge된 표현을 써라.
@@ -201,10 +245,15 @@ def _build_system_prompt(perspective: tuple[str, str]) -> str:
     return _ROLE_TASK.format(label=label, instruction=instruction)
 
 
+def _format_purpose(purpose: str) -> str:
+    guidance = _PURPOSE_GUIDANCE.get(purpose, "")
+    return f"{purpose} ({guidance})" if guidance else purpose
+
+
 def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[dict]) -> str:
     start, end = conditions.time_range
     return (
-        f"목적: {conditions.purpose}\n"
+        f"목적: {_format_purpose(conditions.purpose)}\n"
         f"인원: {conditions.headcount}명\n"
         f"시간: {start.isoformat()} ~ {end.isoformat()}\n"
         f"지역(복수 가능, place_candidates는 이 지역들에서 조회된 것): "
@@ -286,6 +335,19 @@ def _coords_by_title(place_candidates: list[dict]) -> dict[str, tuple[float, flo
     return coords
 
 
+def _matched_tag_by_title(place_candidates: list[dict]) -> dict[str, str]:
+    """title -> matched_tag. naver_local_search.search_places_for_regions()가
+    liked_tags 태그 검색("{region} {tag}")에서 나온 장소에만 결정론적으로 붙여준
+    값을 그대로 옮긴다(2026-08-11) — 카테고리 검색에서만 나온 장소나 환각 장소는
+    이 dict에 없다.
+    """
+    return {
+        p["title"]: p["matched_tag"]
+        for p in place_candidates
+        if p.get("title") and p.get("matched_tag")
+    }
+
+
 def _schedule_places(
     places: list[PlaceSelectionDraft],
     time_range: tuple[datetime, datetime],
@@ -307,6 +369,7 @@ def _schedule_places(
     window_minutes = int((end - start).total_seconds() // 60)
     n = len(places)
     coords = _coords_by_title(place_candidates or [])
+    matched_tags = _matched_tag_by_title(place_candidates or [])
 
     buffers = []
     for prev, cur in zip(places, places[1:], strict=False):
@@ -338,6 +401,7 @@ def _schedule_places(
                 address=address,
                 lat=lat,
                 lng=lng,
+                matched_tag=matched_tags.get(place.name),
             )
         )
         cursor = activity_end

@@ -41,6 +41,24 @@
 #               Step2를 그 관점만 다시 불러 붙이는 방향으로 추가할 것.
 #             - normalize_conditions(Step1)처럼 LLM 호출이 1회뿐이고 병렬화가
 #               필요 없어서 async가 아니라 일반 def로 둔다(기존 스텁은 async였음).
+# 2026-08-11, _rule_based_filter에 하드 룰 2개 추가(2026-08-10 미해결 설계 질문 (a)
+#             해소 + 지역 간·지역 내 이동거리 문제):
+#             - _has_duplicate_tag_match: 같은 verifiable liked_tags 태그를 만족한
+#               활동(ActivityDraft.matched_tag)이 한 후보에 2곳 이상이면 하드 위반.
+#               generate_step2._ROLE_TASK에 "태그당 최대 1곳" 지시를 추가했지만,
+#               이 프로젝트의 기존 원칙("LLM에게 한 번에 너무 많이 시키지 말고
+#               결정론적으로 계산 가능한 부분은 코드로 떼어내라")대로 프롬프트만
+#               믿지 않고 여기서 한 번 더 하드하게 강제한다.
+#             - _has_excessive_travel: 활동 간 좌표(lat/lng) 기준 추정 이동시간
+#               (travel_estimate.estimate_buffer_minutes 재사용)이 임계값을 넘으면
+#               하드 위반 — "여러 지역을 입력했을 때 서로 먼 지역끼리 하루 코스로
+#               섞이는" 문제와 "세부지역 없는 광역 시/도가 여러 세부지역으로
+#               확장되면서 그 안에서도 먼 지역끼리 섞이는" 문제를 같은 메커니즘
+#               하나로 커버한다 — 활동에 이미 결정론적으로 붙어있는 좌표만 보고
+#               판단하므로 "이 활동이 어느 입력 지역/세부지역에서 왔는지"를 따로
+#               추적할 필요가 없다. 임계값(_MAX_TRAVEL_MINUTES)은 이 프로젝트가
+#               다른 곳(시간 초과 관용 범위)에서 이미 쓰는 60분 감각을 그대로
+#               가져온 초기값 — 실제 몇 개 케이스로 실측 후 조정할 것.
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -57,6 +75,7 @@ from app.pipeline.schemas import (
     PreferenceTag,
     ScheduleResponse,
 )
+from app.pipeline.travel_estimate import estimate_buffer_minutes
 from app.services.naver_map_url import build_naver_map_url
 from app.services.structured_llm import call_structured
 
@@ -68,6 +87,9 @@ TIER = ModelTier.HIGH
 # 관용 범위 — "무엇이 엄격/관대인가"(docs/AI파이프라인_Step별_설계 Step3 절) 확정값.
 _TIME_OVERRUN_TOLERANCE_MINUTES = 60
 _BUDGET_OVERRUN_TOLERANCE_RATIO = 0.2
+# ponytail: 초기 추정값(기존 시간 초과 관용 범위와 같은 60분 감각 재사용) — 실제
+# 이동거리 관련 골든셋 케이스로 실측한 뒤 조정할 것.
+_MAX_TRAVEL_MINUTES = 60
 # 이 이상 자카드 유사도면 LLM 프롬프트에 "겹치는 후보" 컨텍스트로 얹는다.
 _SIMILARITY_CONTEXT_THRESHOLD = 0.5
 
@@ -97,6 +119,38 @@ def _has_time_overlap(candidate: CandidateDraft) -> bool:
     return False
 
 
+def _has_duplicate_tag_match(candidate: CandidateDraft) -> bool:
+    """같은 verifiable liked_tags 태그(ActivityDraft.matched_tag)를 만족한 활동이
+    한 후보에 2곳 이상이면 하드 위반 — 태그 하나를 만족시키는 덴 한 곳이면
+    충분하다(2026-08-10 미해결 설계 질문 (a): "와플" 태그가 카페 2곳에 중복
+    반영되던 문제).
+    """
+    seen: set[str] = set()
+    for activity in candidate.activities:
+        if activity.matched_tag is None:
+            continue
+        if activity.matched_tag in seen:
+            return True
+        seen.add(activity.matched_tag)
+    return False
+
+
+def _has_excessive_travel(candidate: CandidateDraft) -> bool:
+    """연속된 두 활동 사이 추정 이동시간이 임계값을 넘으면 하드 위반 — 여러
+    지역을 입력했을 때 서로 먼 지역끼리(예: 서울 강남 + 경기 수원) 하루 코스로
+    섞이거나, 세부지역 없는 광역 시/도가 여러 세부지역으로 확장되면서 그 안에서도
+    먼 지역끼리 섞이는 문제를 잡는다. 좌표가 없는 활동(환각 장소, 이미
+    _has_hallucinated_activity가 먼저 드롭함)은 건너뛴다.
+    """
+    for prev, cur in zip(candidate.activities, candidate.activities[1:], strict=False):
+        if prev.lat is None or prev.lng is None or cur.lat is None or cur.lng is None:
+            continue
+        minutes = estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng)
+        if minutes > _MAX_TRAVEL_MINUTES:
+            return True
+    return False
+
+
 def _budget_overrun_ratio(candidate: CandidateDraft, budget_per_person: int) -> float:
     total = sum(a.price_range_per_person[0] for a in candidate.activities)
     if budget_per_person <= 0:
@@ -117,15 +171,21 @@ def _rule_based_filter(
     candidates: list[CandidateDraft], conditions: NormalizedConditions
 ) -> tuple[list[CandidateDraft], list[str]]:
     """LLM 호출 전에 결정론적으로 판단 가능한 하드 위반만 걸러낸다 — 장소 환각,
-    활동 간 시간 겹침(둘 다 예외 없이 드롭), 예산/시간 대폭 초과(관용 범위 초과분만
-    드롭). 관용 범위 이내의 예산/시간 초과는 드롭하지 않고 경고 문구를 만들어
-    survivors와 같은 순서로 돌려준다(경고 없으면 빈 문자열) — synthesize_and_validate가
-    LLM의 feasibility_note와 합쳐 최종 feasibility_warning을 만든다.
+    활동 간 시간 겹침, 같은 태그 중복 반영, 과도한 이동거리(넷 다 예외 없이 드롭),
+    예산/시간 대폭 초과(관용 범위 초과분만 드롭). 관용 범위 이내의 예산/시간
+    초과는 드롭하지 않고 경고 문구를 만들어 survivors와 같은 순서로 돌려준다
+    (경고 없으면 빈 문자열) — synthesize_and_validate가 LLM의 feasibility_note와
+    합쳐 최종 feasibility_warning을 만든다.
     """
     survivors: list[CandidateDraft] = []
     warnings: list[str] = []
     for candidate in candidates:
-        if _has_hallucinated_activity(candidate) or _has_time_overlap(candidate):
+        if (
+            _has_hallucinated_activity(candidate)
+            or _has_time_overlap(candidate)
+            or _has_duplicate_tag_match(candidate)
+            or _has_excessive_travel(candidate)
+        ):
             continue
 
         budget_ratio = _budget_overrun_ratio(candidate, conditions.budget_per_person)
@@ -274,8 +334,9 @@ def synthesize_and_validate(
     """Step2에서 나온 (최대 3개) 초안(장소·순서·시간은 이미 확정됨, 이동 경로는
     아직 없음 — Step4가 사용자 선택 이후에 채운다)을 검증해 최종 3개(또는 그
     이하)로 확정한다. 구조(장소·순서·시간)는 재배치하지 않는다:
-    1. 규칙 기반 사전 필터링(_rule_based_filter) — 장소 환각·시간 겹침은 예외
-       없이 드롭, 예산/시간 초과는 관용 범위(20%/60분) 넘을 때만 드롭
+    1. 규칙 기반 사전 필터링(_rule_based_filter) — 장소 환각·시간 겹침·같은 태그
+       중복 반영·과도한 이동거리는 예외 없이 드롭, 예산/시간 초과는 관용 범위
+       (20%/60분) 넘을 때만 드롭
     2. 후보 간 유사도 검사(_similarity_score) — LLM 호출 전에 미리 계산해서
        겹침이 심한 쌍이 있으면 프롬프트 컨텍스트로 얹음
     3. 살아남은 후보 전부를 한 번의 LLM 호출에 넣어 verifiable=true 태그 위반

@@ -12,5 +12,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # 네이버 지역검색 API 일일 호출 카운터 저장용(app/services/rate_limiter.py) —
+  # 여러 워커/인스턴스에서도 전역 집계가 맞아야 해서 in-memory 대신 씀
+  # (2026-08-11). 로컬 Homebrew Redis와 포트 충돌 피하려고 postgres와 같은
+  # 이유로 6380 사용.
+  redis:
+    image: redis:7-alpine
+    container_name: moduyaksok-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+
 volumes:
   pgdata:

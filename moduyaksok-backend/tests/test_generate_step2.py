@@ -227,6 +227,31 @@ def test_build_user_prompt_handles_empty_place_candidates():
     assert "없음" in prompt
 
 
+# ── purpose 가이던스 (2026-08-11) ────────────────────────────────────────
+
+
+def test_build_user_prompt_injects_purpose_guidance_for_date():
+    prompt = _build_user_prompt(_CONDITIONS, _PLACE_CANDIDATES)
+
+    assert "데이트 목적이다" in prompt
+
+
+def test_build_user_prompt_injects_purpose_guidance_for_family():
+    conditions = _CONDITIONS.model_copy(update={"purpose": "family"})
+
+    prompt = _build_user_prompt(conditions, _PLACE_CANDIDATES)
+
+    assert "가족 모임 목적이다" in prompt
+
+
+def test_build_user_prompt_other_purpose_has_no_extra_guidance():
+    conditions = _CONDITIONS.model_copy(update={"purpose": "other"})
+
+    prompt = _build_user_prompt(conditions, _PLACE_CANDIDATES)
+
+    assert "목적: other\n" in prompt
+
+
 def test_build_system_prompt_states_hard_constraint_for_verifiable_true():
     prompt = _build_system_prompt(PERSPECTIVES[0])
 
@@ -239,6 +264,12 @@ def test_build_system_prompt_states_soft_signal_for_verifiable_false():
 
     assert "verifiable=false" in prompt
     assert "보장한다고 말하지 마라" in prompt
+
+
+def test_build_system_prompt_limits_same_tag_to_one_place_per_candidate():
+    prompt = _build_system_prompt(PERSPECTIVES[0])
+
+    assert "최대 1곳" in prompt
 
 
 def test_build_system_prompt_includes_perspective_text():
@@ -369,6 +400,26 @@ def test_schedule_places_uses_smaller_buffer_for_closer_places():
         far_activities[0].end_time, "%H:%M"
     )
     assert close_gap < far_gap
+
+
+# ── _schedule_places() matched_tag 부착 (2026-08-11) ────────────────────────
+
+
+def test_schedule_places_attaches_matched_tag_from_place_candidates():
+    waffle_place = {**_GANGNAM_CANDIDATE, "matched_tag": "와플"}
+    places = [_place("강남역")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [waffle_place])
+
+    assert activities[0].matched_tag == "와플"
+
+
+def test_schedule_places_matched_tag_is_none_when_not_tag_matched():
+    places = [_place("강남역")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [_GANGNAM_CANDIDATE])
+
+    assert activities[0].matched_tag is None
 
 
 # ── generate_candidates_with_perspectives() / generate_single_candidate() ──

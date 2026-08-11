@@ -59,6 +59,15 @@
 # 2026-08-10, ScheduleResponse에 share_slug 추가(전체 브랜치 리뷰 Finding 1).
 #             확정 응답을 새로고침/네트워크 문제로 놓쳐도 GET /schedules/{id}로
 #             다시 slug를 찾을 수 있게 한다 — 값이 없으면(미확정) None.
+# 2026-08-11, "와플" 태그가 있는데 실제로 와플을 안 파는 카페가 verifiable=true로
+#             하드 반영되는 정밀도 문제(2026-08-10 미해결 설계 질문, AI파이프라인_
+#             Step별_설계 참고) 해결책으로 태그 전용 검색을 도입하며 두 가지 추가:
+#             (1) ActivityDraft.matched_tag — 이 장소가 어느 liked_tags 태그
+#             검색에서 나왔는지 결정론적으로 기록, Step3가 "같은 태그 중복 반영"을
+#             판단하는 근거로 씀. (2) NormalizedConditions.cap_verifiable_tags —
+#             태그 검색이 지역 확장과 곱해지면 호출량이 커지므로 verifiable 태그를
+#             좋아하는/싫어하는 것 각각 최대 3개로 제한(Step1 프롬프트가 우선
+#             지시하고, 이 validator는 방어용 하한선).
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -66,6 +75,14 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, field_validator
+
+# liked_tags/disliked_tags 중 verifiable=true인 태그 하나당 naver_local_search가
+# "{region} {tag}" 검색을 추가로 호출한다(2026-08-11 설계) — 자유텍스트라 개수
+# 제한이 없으면 지역 확장(광역 시/도 -> 세부지역 여러 개)과 곱해져 호출량이
+# 감당 안 되게 커진다. Step1이 좋아하는/싫어하는 것 각각 최대 이 개수까지만,
+# 사용자가 더 중요하게 언급한 순서로 남기도록 프롬프트로 지시하고(normalize_step1.py),
+# 이 값은 그 지시를 LLM이 안 지켰을 때의 방어용 상한이다.
+MAX_VERIFIABLE_TAGS = 3
 
 # ── Step 1. 조건 정규화 (normalize_conditions) 출력 ────────────────────────
 
@@ -120,6 +137,21 @@ class NormalizedConditions(BaseModel):
     disliked_tags: list[PreferenceTag]
     budget_per_person: int
 
+    # Step1 프롬프트가 "verifiable=true는 좋아하는/싫어하는 것 각각 최대 3개,
+    # 중요한 순서로"를 지시하지만(normalize_step1.py), LLM이 안 지킬 경우를 대비한
+    # 방어용 상한 — validate_regions()와 같은 이유로 생성 시점에 재검증한다.
+    # regions와 달리 위반이어도 ValueError를 던지지 않고 조용히 앞 3개만 남기는데,
+    # 이건 "LLM이 실수로 4개를 뽑았다"는 모델 품질 문제지 사용자가 검증을 우회하려는
+    # 상황(regions)이 아니라서 요청 자체를 실패시킬 이유가 없기 때문이다.
+    # verifiable=false 태그는 검색 호출을 안 만드니(naver_local_search.py) 이
+    # 상한과 무관하게 그대로 둔다.
+    @field_validator("liked_tags", "disliked_tags")
+    @classmethod
+    def cap_verifiable_tags(cls, v: list[PreferenceTag]) -> list[PreferenceTag]:
+        verifiable = [t for t in v if t.verifiable][:MAX_VERIFIABLE_TAGS]
+        non_verifiable = [t for t in v if not t.verifiable]
+        return verifiable + non_verifiable
+
 
 # ── Step 2. 후보 생성 (generate_candidates) 출력 ───────────────────────────
 
@@ -138,6 +170,14 @@ class ActivityDraft(BaseModel):
     address: str = ""
     lat: float | None = None
     lng: float | None = None
+    # place_candidates에서 결정론적으로 부착(lat/lng와 같은 방식) — 이 장소가
+    # naver_local_search의 verifiable liked_tags 태그 검색("{region} {tag}")에서
+    # 나온 것이면 그 태그 문자열, 아니면 None(카테고리 검색에서만 나왔거나 환각
+    # 장소). Step3._rule_based_filter가 "같은 태그를 만족한 활동이 한 후보에
+    # 2곳 이상이면 하드 위반"을 판단하는 데 쓴다(2026-08-11 설계) — LLM이
+    # category/title 텍스트로 사후 추측하던 걸 검색 단계에서 이미 확정된 값으로
+    # 대체.
+    matched_tag: str | None = None
 
 
 class CandidateDraft(BaseModel):

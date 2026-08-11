@@ -84,14 +84,10 @@ def _candidate(candidate_id: str = "A") -> Candidate:
     )
 
 
-def _mock_pipeline_success(monkeypatch, *, place_candidates_ok=True, candidates=None):
-    async def fake_search(regions):
-        return [{"title": "장소1"}]
-
-    async def fake_generate(provider, api_key, session_id, raw_input, place_candidates):
+def _mock_pipeline_success(monkeypatch, *, candidates=None):
+    async def fake_generate(provider, api_key, session_id, raw_input):
         return ScheduleResponse(session_id=session_id, candidates=candidates or [_candidate()])
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", fake_search)
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
 
@@ -140,17 +136,13 @@ def test_create_schedule_infeasible_returns_flat_409_body(client, session, monke
     headers, user_id = _login(client, monkeypatch)
     _register_credential(session, user_id)
 
-    async def fake_search(regions):
-        return []
-
-    async def fake_generate(provider, api_key, session_id, raw_input, place_candidates):
+    async def fake_generate(provider, api_key, session_id, raw_input):
         return InfeasibleResponse(
             detail="생성 가능한 일정이 없어요 ㅠㅠ 조건을 다시 설정해주세요.",
             reason="예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
             adjustable_conditions=["budget_per_person", "time_range", "regions"],
         )
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", fake_search)
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
     response = client.post("/schedules", json=_CREATE_BODY, headers=headers)
@@ -169,10 +161,12 @@ def test_create_schedule_place_search_failure_returns_502(client, session, monke
 
     from app.services.naver_local_search import NaverSearchError
 
-    async def failing_search(regions):
+    async def failing_generate(provider, api_key, session_id, raw_input):
+        # search_places_for_regions()가 2026-08-11부터 generate_schedule_candidates
+        # 안(Step1 직후)에서 호출되므로, 장소 검색 실패는 이 함수에서 올라온다.
         raise NaverSearchError("네트워크 실패")
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", failing_search)
+    monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", failing_generate)
 
     response = client.post("/schedules", json=_CREATE_BODY, headers=headers)
 

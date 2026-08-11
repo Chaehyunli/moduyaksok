@@ -69,13 +69,9 @@ def _create_and_confirm_session(client, session, monkeypatch) -> str:
         feasibility_warning=None,
     )
 
-    async def fake_search(regions):
-        return [{"title": "장소1"}]
-
-    async def fake_generate(provider, api_key, session_id, raw_input, place_candidates):
+    async def fake_generate(provider, api_key, session_id, raw_input):
         return ScheduleResponse(session_id=session_id, candidates=[candidate])
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", fake_search)
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
     headers, user_id = _login(client, monkeypatch)
@@ -162,13 +158,9 @@ def test_get_shared_schedule_only_exposes_confirmed_candidate(client, session, m
         for cid in ["A", "B", "C"]
     ]
 
-    async def fake_search(regions):
-        return [{"title": "장소1"}]
-
-    async def fake_generate(provider, api_key, session_id, raw_input, place_candidates):
+    async def fake_generate(provider, api_key, session_id, raw_input):
         return ScheduleResponse(session_id=session_id, candidates=candidates)
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", fake_search)
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
     headers, user_id = _login(client, monkeypatch)
@@ -222,13 +214,9 @@ def test_get_shared_schedule_preserves_route_option_path(client, session, monkey
         feasibility_warning=None,
     )
 
-    async def fake_search(regions):
-        return [{"title": "장소1"}]
-
-    async def fake_generate(provider, api_key, session_id, raw_input, place_candidates):
+    async def fake_generate(provider, api_key, session_id, raw_input):
         return ScheduleResponse(session_id=session_id, candidates=[candidate])
 
-    monkeypatch.setattr("app.routers.schedule.search_places_for_regions", fake_search)
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
     headers, user_id = _login(client, monkeypatch)

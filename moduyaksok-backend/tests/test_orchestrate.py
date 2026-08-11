@@ -28,7 +28,6 @@ _CONDITIONS = NormalizedConditions(
 )
 
 _RAW_INPUT = {"purpose": "date"}  # normalize_conditions는 mock되므로 내용 무의미
-_PLACE_CANDIDATES = [{"title": "가게1"}]
 
 
 def _draft(title: str) -> CandidateDraft:
@@ -43,6 +42,14 @@ def _patch_common(monkeypatch, *, labeled_drafts):
     monkeypatch.setattr(
         "app.pipeline.orchestrate.normalize_conditions",
         lambda *a: _CONDITIONS,
+    )
+
+    async def fake_search_places_for_regions(*a, **kwargs):
+        return [{"title": "가게1"}]
+
+    monkeypatch.setattr(
+        "app.pipeline.orchestrate.search_places_for_regions",
+        fake_search_places_for_regions,
     )
 
     async def fake_generate_with_perspectives(*a):
@@ -72,9 +79,7 @@ async def test_returns_first_result_without_retry_when_nothing_missing(monkeypat
 
     monkeypatch.setattr("app.pipeline.orchestrate.generate_single_candidate", fail_if_called)
 
-    result = await generate_schedule_candidates(
-        "anthropic", "sk-fake", "s1", _RAW_INPUT, _PLACE_CANDIDATES
-    )
+    result = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
 
     assert isinstance(result, ScheduleResponse)
     assert call_count == 1
@@ -111,9 +116,7 @@ async def test_retries_only_the_missing_perspective(monkeypatch):
 
     monkeypatch.setattr("app.pipeline.orchestrate.generate_single_candidate", fake_generate_single)
 
-    result = await generate_schedule_candidates(
-        "anthropic", "sk-fake", "s1", _RAW_INPUT, _PLACE_CANDIDATES
-    )
+    result = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
 
     assert regen_calls == ["동선최소화"]
     assert len(synth_calls) == 2
@@ -137,9 +140,7 @@ async def test_gives_up_and_returns_original_result_when_regeneration_fails(monk
 
     monkeypatch.setattr("app.pipeline.orchestrate.generate_single_candidate", failing_regenerate)
 
-    result = await generate_schedule_candidates(
-        "anthropic", "sk-fake", "s1", _RAW_INPUT, _PLACE_CANDIDATES
-    )
+    result = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
 
     assert result is original_result
 
@@ -169,9 +170,7 @@ async def test_retries_all_perspectives_when_first_result_is_infeasible(monkeypa
         ),
     )
 
-    result = await generate_schedule_candidates(
-        "anthropic", "sk-fake", "s1", _RAW_INPUT, _PLACE_CANDIDATES
-    )
+    result = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
 
     assert sorted(regen_calls) == ["가성비", "동선최소화"]
     assert isinstance(result, ScheduleResponse)
@@ -194,9 +193,7 @@ async def test_returns_infeasible_when_retry_also_fails(monkeypatch):
         lambda provider, api_key, conditions, place_candidates, label: _draft("A-재생성"),
     )
 
-    result = await generate_schedule_candidates(
-        "anthropic", "sk-fake", "s1", _RAW_INPUT, _PLACE_CANDIDATES
-    )
+    result = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
 
     assert isinstance(result, InfeasibleResponse)
     assert call_count == 2

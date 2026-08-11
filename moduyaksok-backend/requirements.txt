@@ -11,3 +11,4 @@ cryptography
 anthropic
 openai
 httpx
+redis

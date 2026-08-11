@@ -9,7 +9,7 @@
 # ------------------------------------------------------------------
 from datetime import datetime
 
-from app.pipeline.normalize_step1 import _ExtractedTags, normalize_conditions
+from app.pipeline.normalize_step1 import _SYSTEM_PROMPT, _ExtractedTags, normalize_conditions
 from app.pipeline.schemas import PreferenceTag
 
 _RAW_INPUT = {
@@ -106,3 +106,13 @@ def test_normalize_conditions_handles_empty_preference_text(monkeypatch):
     assert result.liked_tags == []
     assert result.disliked_tags == []
     assert "(없음)" in captured["user"]
+
+
+def test_system_prompt_instructs_capping_verifiable_tags_at_three():
+    # naver_local_search가 verifiable 태그 하나당 검색 1콜을 추가로 쓰게 되면서
+    # (2026-08-11) 호출량 제어를 위해 Step1이 좋아하는/싫어하는 것 각각 최대
+    # 3개까지만, 중요도 순으로 남기도록 지시해야 한다. 실제로 LLM이 이 지시를
+    # 잘 지키는지는 DeepEval 골든셋(eval)의 몫이라 여기선 지시문 자체가 프롬프트에
+    # 있는지만 확인한다.
+    assert "최대 3개" in _SYSTEM_PROMPT
+    assert "verifiable=false" in _SYSTEM_PROMPT.split("최대 3개")[1][:200]

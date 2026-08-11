@@ -14,6 +14,29 @@
 #             카테고리(_PLACE_CATEGORIES)로 팬아웃 검색 후 title 기준 중복 제거해
 #             병합. search_places() 자체는 안 건드림. 이 함수를 부를 POST /schedules
 #             라우터는 아직 없음(Step2와 같은 패턴 — 함수 먼저, 라우터는 나중).
+# 2026-08-11, "와플" 태그가 있는데 실제로 와플이 없는 카페가 verifiable=true로
+#             하드 반영되는 정밀도 문제(2026-08-10 미해결 설계 질문) 해결 + 세부지역
+#             없는 광역 시/도 자동 확장, 두 가지를 같이 반영:
+#             - liked_tags/disliked_tags 중 verifiable=true인 태그마다
+#               "{region} {tag}" 검색을 카테고리 검색과 별도로 추가 호출한다.
+#               지금까진 category/title 텍스트만 보고 LLM이 사후 추측했는데,
+#               "이 태그로 검색하면 실제로 뜨는 곳"이라는 더 강한 근거로 대체 —
+#               liked 매칭 결과는 place dict에 matched_tag를 부착해 "이 태그를
+#               만족하는 후보"로 인정(Step2가 참고, Step3가 같은 태그 중복 반영을
+#               판단하는 근거), disliked 매칭 결과는 애초에 결과 목록에서 제거해
+#               Step2 LLM이 볼 수도 없게 한다(카테고리/제목 텍스트로 사후 배제하던
+#               것보다 강한 보장).
+#             - 세부지역 없이 시/도만 입력된 region("서울")은 app.services.regions
+#               의 세부지역 목록으로 펼쳐서 각각 독립적으로 검색한다(카테고리 5개
+#               고정 유지, 페이지네이션은 이 API가 start를 무시해서 실측으로
+#               불가능 확인함).
+#             - 호출량이 태그·지역 확장과 곱해져 순간적으로 네이버 API HUB
+#               한도(초당 10건, 일일 25,000건)를 크게 넘길 수 있어
+#               app/services/rate_limiter.py 도입 — search_places()가 호출 하나마다
+#               초당 상한을 기다리고, search_places_for_regions()가 쿼리를 쏘기
+#               전에 일일 예산을 먼저 확보한다(부족하면 확보되는 만큼만 검색해
+#               place_candidates가 적은 채로 진행 — 2026-08-11 결정, 하드 실패보다
+#               부분 결과가 낫다는 판단).
 # ------------------------------------------------------------------
 import asyncio
 import re
@@ -21,6 +44,9 @@ import re
 import httpx
 
 from app.config import settings
+from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, PreferenceTag
+from app.services.rate_limiter import acquire_call_slot, reserve_daily_budget
+from app.services.regions import expand_broad_region
 
 # 검색어와 일치하는 부분에 네이버가 <b> 태그를 강조 표시로 넣어서 돌려준다(실측
 # 확인, 2026-08-09) — Step2 프롬프트에 그대로 넣으면 LLM이 HTML 태그를 실제
@@ -39,13 +65,20 @@ class NaverSearchError(Exception):
     """네이버 지역검색 API 호출 실패(인증 오류, 타임아웃, 5xx 등)."""
 
 
-async def search_places(query: str, display: int = _MAX_DISPLAY) -> list[dict]:
+async def search_places(
+    query: str, display: int = _MAX_DISPLAY, session_id: str = ""
+) -> list[dict]:
     """query로 네이버 지역검색을 호출해 장소 후보 목록을 반환한다.
 
     결과가 없는 건 에러가 아니다 — 그 카테고리에 후보가 없다는 뜻이라 빈 리스트를
     그대로 반환한다. 호출 자체가 실패한 경우(인증 오류, 타임아웃, 5xx)만
     NaverSearchError로 감싸서 올린다. 이 API는 Step4가 쓰는 ODsay 대중교통 길찾기
     API와 다른 상품이라 별도 키(NAVER_SEARCH_CLIENT_ID/SECRET)를 쓴다.
+
+    session_id는 rate_limiter의 라운드로빈 공평성 키다(2026-08-11) — 어느
+    `POST /schedules` 요청에서 나온 호출인지 구분해서, 동시에 여러 요청이 콜을
+    쏟아낼 때 한쪽이 다른 쪽을 굶기지 않게 한다. 이 함수를 단독으로 부르는
+    곳(테스트 등)은 기본값("")을 그냥 같은 세션으로 취급해도 무방하다.
     """
     headers = {
         "X-NCP-APIGW-API-KEY-ID": settings.naver_search_client_id,
@@ -54,6 +87,7 @@ async def search_places(query: str, display: int = _MAX_DISPLAY) -> list[dict]:
     params = {"query": query, "display": min(display, _MAX_DISPLAY), "sort": "comment"}
 
     try:
+        await acquire_call_slot(session_id)
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(_SEARCH_URL, headers=headers, params=params)
             response.raise_for_status()
@@ -71,33 +105,109 @@ async def search_places(query: str, display: int = _MAX_DISPLAY) -> list[dict]:
 # 데이터 보고 필요한 카테고리 추가/조정할 것(REGIONS 목록과 같은 원칙).
 _PLACE_CATEGORIES = ("맛집", "카페", "액티비티", "문화시설")
 
+# (query, kind, tag) 튜플에서 kind로 쓰는 상수 — category는 tag가 항상 None.
+_KIND_CATEGORY = "category"
+_KIND_LIKED = "liked"
+_KIND_DISLIKED = "disliked"
 
-async def search_places_for_regions(regions: list[str]) -> list[dict]:
-    """regions(최대 3개, 호출부가 이미 검증했다고 가정) 각각에 대해
-    _PLACE_CATEGORIES로 병렬 검색하고 title 기준으로 중복 제거해 병합한다.
 
-    "서울"처럼 시/도만 있는 넓은 지역과 "서울 잠실"처럼 세부지역까지 있는 좁은
-    지역을 구분하지 않고 동일하게 처리한다 — query 문자열에 그대로 이어붙일 뿐이라
-    네이버 지역검색이 알아서 관련도 순으로 걸러준다(display=5로 이미 상한).
+def _build_queries(
+    regions: list[str],
+    liked_tags: list[PreferenceTag],
+    disliked_tags: list[PreferenceTag],
+) -> list[tuple[str, str, str | None]]:
+    """(query 문자열, kind, tag) 리스트를 만든다. 카테고리 쿼리를 항상 먼저 두고
+    태그 쿼리를 뒤에 두는 순서가 중요하다 — 일일 예산이 부족해 뒤쪽이 잘려도
+    "일정의 뼈대"인 카테고리 검색이 먼저 살아남게 하기 위함(2026-08-11 결정,
+    태그 검색은 정밀도 보강일 뿐 필수 커버리지가 아니다).
     """
-    queries = [f"{region} {category}" for region in regions for category in _PLACE_CATEGORIES]
-    results_per_query = await asyncio.gather(
-        *(search_places(query) for query in queries), return_exceptions=True
-    )
+    leaf_regions = [leaf for region in regions for leaf in expand_broad_region(region)]
+    liked = [t.tag for t in liked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
+    disliked = [t.tag for t in disliked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
 
+    queries: list[tuple[str, str, str | None]] = []
+    for region in leaf_regions:
+        queries.extend((f"{region} {c}", _KIND_CATEGORY, None) for c in _PLACE_CATEGORIES)
+    for region in leaf_regions:
+        queries.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
+    for region in leaf_regions:
+        queries.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
+    return queries
+
+
+def _merge_results(
+    queries: list[tuple[str, str, str | None]],
+    results: list[list[dict] | BaseException],
+) -> tuple[dict[str, dict], bool]:
+    """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tag를 부착하고,
+    disliked 쿼리에서 나온 장소는 (카테고리 검색에서도 같이 나왔더라도) 최종
+    결과에서 제거한다 — Step2 LLM이 disliked 장소를 아예 볼 수 없게 하는 게
+    "category/title 텍스트로 사후 배제해라"는 프롬프트 지시보다 강한 보장이다.
+    """
     merged: dict[str, dict] = {}
+    liked_title_to_tag: dict[str, str] = {}
+    disliked_titles: set[str] = set()
     any_failed = False
-    for result in results_per_query:
+
+    for (_, kind, tag), result in zip(queries, results, strict=True):
         if isinstance(result, BaseException):
             any_failed = True
             continue
         for place in result:
-            merged.setdefault(place["title"], place)
+            title = place["title"]
+            merged.setdefault(title, place)
+            if kind == _KIND_LIKED and tag is not None:
+                liked_title_to_tag.setdefault(title, tag)
+            elif kind == _KIND_DISLIKED:
+                disliked_titles.add(title)
+
+    for title, tag in liked_title_to_tag.items():
+        if title in merged:
+            merged[title]["matched_tag"] = tag
+    for title in disliked_titles:
+        merged.pop(title, None)
+
+    return merged, any_failed
+
+
+async def search_places_for_regions(
+    regions: list[str],
+    liked_tags: list[PreferenceTag] | None = None,
+    disliked_tags: list[PreferenceTag] | None = None,
+    session_id: str = "",
+) -> list[dict]:
+    """regions(최대 3개, 호출부가 이미 검증했다고 가정) 각각에 대해
+    _PLACE_CATEGORIES로 병렬 검색하고, verifiable=true인 liked_tags/disliked_tags가
+    있으면 태그별 검색도 추가해 title 기준으로 병합한다.
+
+    "서울"처럼 시/도만 있는 넓은 지역은 app.services.regions.expand_broad_region()
+    이 세부지역들로 펼쳐서 각각 독립적으로 검색한다(2026-08-11 추가) — "서울 잠실"
+    처럼 이미 세부지역이 있는 좁은 지역은 그대로 한 번만 검색한다.
+
+    쏘기 전에 일일 호출 예산(app/services/rate_limiter.reserve_daily_budget)을
+    먼저 확보한다 — 부족하면 뒤쪽(태그 쿼리부터)이 잘려서 확보되는 만큼만
+    검색되고, place_candidates가 그만큼 적은 채로 파이프라인이 계속 진행된다.
+
+    session_id는 orchestrate.generate_schedule_candidates()가 요청마다 이미
+    만들어 쓰는 값을 그대로 넘겨받는다 — rate_limiter의 라운드로빈이 이 값으로
+    "어느 요청에서 나온 호출들인지" 묶어서 다른 요청과 공평하게 나눠 갖는다.
+    """
+    queries = _build_queries(regions, liked_tags or [], disliked_tags or [])
+    granted = await reserve_daily_budget(len(queries))
+    queries = queries[:granted]
+    if not queries:
+        return []
+
+    results_per_query = await asyncio.gather(
+        *(search_places(query, session_id=session_id) for query, _, _ in queries),
+        return_exceptions=True,
+    )
+    merged, any_failed = _merge_results(queries, results_per_query)
 
     # merged가 비어도 "이 지역들에 후보가 진짜 없음"과 "호출이 전부 실패해서 못
     # 받아온 것"은 다른 상황이다 — 후자를 빈 리스트로 조용히 돌려주면 호출부가
     # "후보 없음"으로 오해한다. 일부만 실패했을 땐(partial success) 성공한 결과가
     # 있으므로 raise하지 않는다.
     if not merged and any_failed:
-        raise NaverSearchError("모든 지역·카테고리 조회가 실패해 병합할 결과가 없습니다.")
+        raise NaverSearchError("모든 지역·카테고리·태그 조회가 실패해 병합할 결과가 없습니다.")
     return list(merged.values())

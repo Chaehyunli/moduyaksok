@@ -219,12 +219,139 @@ async def test_search_places_for_regions_queries_each_region_with_every_category
     fake = _RecordingFakeAsyncClient({})
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    await search_places_for_regions(["서울"])
+    # "서울 잠실"처럼 이미 세부지역이 있는 region은 확장 없이 그대로 검색된다.
+    await search_places_for_regions(["서울 잠실"])
 
     from app.services.naver_local_search import _PLACE_CATEGORIES
 
     for category in _PLACE_CATEGORIES:
-        assert f"서울 {category}" in _RecordingFakeAsyncClient.calls
+        assert f"서울 잠실 {category}" in _RecordingFakeAsyncClient.calls
+
+
+async def test_search_places_for_regions_expands_broad_region_into_districts(monkeypatch):
+    # 세부지역 없이 시/도만("서울") 입력되면 app.services.regions의 세부지역들로
+    # 펼쳐서 각각 검색한다(2026-08-11) — "서울 카테고리" 통짜 검색은 더 이상 안 함.
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    await search_places_for_regions(["서울"])
+
+    assert "서울 맛집" not in _RecordingFakeAsyncClient.calls
+    assert "서울 강남 맛집" in _RecordingFakeAsyncClient.calls
+    assert "서울 용산 맛집" in _RecordingFakeAsyncClient.calls
+
+
+async def test_search_places_for_regions_does_not_expand_narrow_region(monkeypatch):
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    await search_places_for_regions(["경기 수원"])
+
+    assert all(call.startswith("경기 수원 ") for call in _RecordingFakeAsyncClient.calls)
+
+
+async def test_search_places_for_regions_searches_verifiable_liked_tags_and_marks_matched(
+    monkeypatch,
+):
+    from app.pipeline.schemas import PreferenceTag
+
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 와플": [
+                {"title": "와플가게", "category": "카페,디저트>와플", "address": "서울 잠실"}
+            ]
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_regions(
+        ["서울 잠실"], liked_tags=[PreferenceTag(tag="와플", verifiable=True)]
+    )
+
+    matched = next(r for r in results if r["title"] == "와플가게")
+    assert matched["matched_tag"] == "와플"
+
+
+async def test_search_places_for_regions_ignores_non_verifiable_liked_tags(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    await search_places_for_regions(
+        ["서울 잠실"], liked_tags=[PreferenceTag(tag="조용한 분위기", verifiable=False)]
+    )
+
+    assert "서울 잠실 조용한 분위기" not in _RecordingFakeAsyncClient.calls
+
+
+async def test_search_places_for_regions_excludes_disliked_tag_matches(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 카페": [
+                {"title": "해산물집", "category": "한식", "address": "서울 잠실"},
+                {"title": "무난한카페", "category": "카페", "address": "서울 잠실"},
+            ],
+            "서울 잠실 해산물": [{"title": "해산물집", "category": "한식", "address": "서울 잠실"}],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_regions(
+        ["서울 잠실"], disliked_tags=[PreferenceTag(tag="해산물", verifiable=True)]
+    )
+
+    titles = {r["title"] for r in results}
+    assert "해산물집" not in titles
+    assert "무난한카페" in titles
+
+
+async def test_search_places_for_regions_caps_verifiable_tags_at_three(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    tags = [PreferenceTag(tag=f"태그{i}", verifiable=True) for i in range(5)]
+    await search_places_for_regions(["서울 잠실"], liked_tags=tags)
+
+    tag_calls = [c for c in _RecordingFakeAsyncClient.calls if c.startswith("서울 잠실 태그")]
+    assert len(tag_calls) == 3
+
+
+async def test_search_places_for_regions_truncates_queries_when_daily_budget_short(monkeypatch):
+    # 일일 예산이 부족하면 확보된 만큼만 쿼리를 보내고, 나머지는 조용히 스킵한다
+    # (2026-08-11 결정 — 하드 실패보다 place_candidates가 적은 채로 진행하는 쪽).
+    _RecordingFakeAsyncClient.calls = []
+    fake = _RecordingFakeAsyncClient({})
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    async def limited_budget(requested: int) -> int:
+        return 2
+
+    monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", limited_budget)
+
+    results = await search_places_for_regions(["서울 잠실"])
+
+    assert len(_RecordingFakeAsyncClient.calls) == 2
+    assert results == []
+
+
+async def test_search_places_for_regions_returns_empty_when_daily_budget_exhausted(monkeypatch):
+    async def zero_budget(requested: int) -> int:
+        return 0
+
+    monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", zero_budget)
+
+    results = await search_places_for_regions(["서울 잠실"])
+
+    assert results == []
 
 
 async def test_search_places_for_regions_raises_when_every_query_fails(monkeypatch):
@@ -239,14 +366,12 @@ async def test_search_places_for_regions_raises_when_every_query_fails(monkeypat
 
 async def test_search_places_for_regions_partial_failure_does_not_raise(monkeypatch):
     # 일부 쿼리만 실패했을 땐 성공한 결과가 있으므로 raise하지 않는다.
-    async def flaky_search_places(query, display=5):
+    async def flaky_search_places(query, display=5, session_id=""):
         if "카페" in query:
             raise NaverSearchError("일부러 실패")
         return [{"title": f"{query} 결과", "category": "한식", "address": "서울"}]
 
-    monkeypatch.setattr(
-        "app.services.naver_local_search.search_places", flaky_search_places
-    )
+    monkeypatch.setattr("app.services.naver_local_search.search_places", flaky_search_places)
 
     results = await search_places_for_regions(["서울 잠실"])
 

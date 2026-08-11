@@ -18,6 +18,8 @@ from app.pipeline.schemas import (
 from app.pipeline.synthesize_step3 import (
     _budget_overrun_ratio,
     _CandidateJudgment,
+    _has_duplicate_tag_match,
+    _has_excessive_travel,
     _has_hallucinated_activity,
     _has_time_overlap,
     _JudgmentBatch,
@@ -48,6 +50,7 @@ def _activity(
     price: tuple[int, int] = (10000, 15000),
     lat: float | None = 37.5,
     lng: float | None = 127.0,
+    matched_tag: str | None = None,
 ) -> ActivityDraft:
     return ActivityDraft(
         name=name,
@@ -58,6 +61,7 @@ def _activity(
         address="서울 송파구",
         lat=lat,
         lng=lng,
+        matched_tag=matched_tag,
     )
 
 
@@ -120,6 +124,75 @@ def test_has_time_overlap_false_when_sequential():
         ],
     )
     assert _has_time_overlap(c) is False
+
+
+# ── _has_duplicate_tag_match (2026-08-11, 태그 중복 반영 하드룰) ───────────
+
+
+def test_has_duplicate_tag_match_true_when_same_tag_matched_twice():
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", matched_tag="와플"),
+            _activity("가게2", matched_tag="와플"),
+        ],
+    )
+    assert _has_duplicate_tag_match(c) is True
+
+
+def test_has_duplicate_tag_match_false_when_different_tags():
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", matched_tag="와플"),
+            _activity("가게2", matched_tag="파스타"),
+        ],
+    )
+    assert _has_duplicate_tag_match(c) is False
+
+
+def test_has_duplicate_tag_match_false_when_no_tags_matched():
+    c = _candidate("A", [_activity("가게1"), _activity("가게2")])
+    assert _has_duplicate_tag_match(c) is False
+
+
+# ── _has_excessive_travel (2026-08-11, 이동거리 하드룰) ────────────────────
+
+
+def test_has_excessive_travel_true_for_distant_activities():
+    # 서울(37.5, 127.0) -> 부산(35.1, 129.0), 약 300km 이상
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", lat=37.5, lng=127.0),
+            _activity("가게2", lat=35.1, lng=129.0),
+        ],
+    )
+    assert _has_excessive_travel(c) is True
+
+
+def test_has_excessive_travel_false_for_nearby_activities():
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", lat=37.5000, lng=127.0000),
+            _activity("가게2", lat=37.5010, lng=127.0010),
+        ],
+    )
+    assert _has_excessive_travel(c) is False
+
+
+def test_has_excessive_travel_false_when_coordinates_missing():
+    # 좌표 없는 활동(환각 장소)은 이미 _has_hallucinated_activity가 드롭하므로
+    # 여기선 그냥 건너뛴다 — 크래시하면 안 됨.
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", lat=None, lng=None),
+            _activity("가게2", lat=37.5, lng=127.0),
+        ],
+    )
+    assert _has_excessive_travel(c) is False
 
 
 # ── _budget_overrun_ratio / _time_overrun_minutes ───────────────────────
@@ -196,6 +269,34 @@ def test_rule_based_filter_keeps_normal_candidate_with_no_warning():
 
     assert survivors == [normal]
     assert warnings == [""]
+
+
+def test_rule_based_filter_drops_candidate_with_duplicate_tag_match():
+    dup = _candidate(
+        "중복반영",
+        [
+            _activity("가게1", matched_tag="와플"),
+            _activity("가게2", matched_tag="와플"),
+        ],
+    )
+
+    survivors, _ = _rule_based_filter([dup], _CONDITIONS)
+
+    assert survivors == []
+
+
+def test_rule_based_filter_drops_candidate_with_excessive_travel():
+    far = _candidate(
+        "너무멀음",
+        [
+            _activity("가게1", lat=37.5, lng=127.0),
+            _activity("가게2", lat=35.1, lng=129.0),
+        ],
+    )
+
+    survivors, _ = _rule_based_filter([far], _CONDITIONS)
+
+    assert survivors == []
 
 
 # ── synthesize_and_validate ──────────────────────────────────────────────

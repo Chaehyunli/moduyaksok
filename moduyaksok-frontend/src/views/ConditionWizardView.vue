@@ -19,6 +19,7 @@ const PURPOSES = [
   { value: 'friends', title: '친구 모임', subtitle: '친구들과의 만남' },
   { value: 'family', title: '가족 모임', subtitle: '가족과의 만남' },
   { value: 'party', title: '파티', subtitle: '여러 명이 모이는 자리' },
+  { value: 'other', title: '기타', subtitle: '위에 해당하지 않는 만남' },
 ]
 
 // 태그 선택이 아니라 자유 텍스트 그대로 받는다 — Step1 조건 정규화(LLM)가 여기서
