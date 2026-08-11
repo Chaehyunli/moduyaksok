@@ -8,7 +8,32 @@
 #              드롭 근거로 안 쓰는지, 유사한 후보끼리 why_recommended를 차별화하는지.
 # 작성일      : 2026-08-10
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
-#
+# 2026-08-11(2차), _conditions() 기본 time_range를 10:00~21:00(점심·저녁 둘 다 필수)
+#             에서 손봄 — 이 골든셋의 모든 candidate activity가 source_category를
+#             안 채워서(테스트 목적과 무관한 필드라 원래도 생략돼 있었음), 이후
+#             추가된 식사 슬롯 하드룰(_has_missing_meal_slot, synthesize_step3.py)이
+#             전부 하드 드롭시켜 실제로는 매번 InfeasibleResponse가 나가고 있었던 걸
+#             뒤늦게 발견(similar_candidates_get_differentiated_why_recommended
+#             케이스가 eval에서 score=0으로 걸려서 확인됨 — "후보 2개가 살아남아
+#             다르게 설명돼야 함"처럼 결과가 비어있으면 안 되는 criteria라 실제로
+#             걸렸고, 나머지 케이스들은 "~하면 안 된다"류라 결과가 비어 있어도
+#             우연히 통과하고 있었음). 식사 슬롯 로직 자체는 tests/test_synthesize_
+#             step3.py(유닛테스트)가 따로 검증하므로 이 골든셋에서까지 같이
+#             테스트할 이유가 없어 범위 밖으로 뺌.
+#             1차 시도(14:00~17:00 고정)는 활동이 전부 10:00~15:00 사이인 이
+#             골든셋과 안 맞았다 — all_candidates_violate_same_hard_constraint_
+#             becomes_infeasible처럼 활동이 window 시작보다도 이른 케이스가 생겨서
+#             LLM 판단이 흔들리는 재발(eval에서 score=0.30, "이유 없이 드롭"으로
+#             오판됨)을 겪고 나서 케이스별로 다시 잡음: 기본값은 (10:00, 12:59) —
+#             이 골든셋 대부분의 활동이 여기 들어오고, end가 13:00을 안 넘어서
+#             점심 슬롯 요구 자체가 안 걸린다(_required_meal_windows는 end>=13:00일
+#             때만 점심을 필수로 침). 활동이 15:00까지 있는 similar_candidates_
+#             get_differentiated_why_recommended만 (13:00, 15:59)로 개별 override —
+#             start가 12:00을 넘어서 이번엔 점심 쪽이 안 걸린다. 활동이 window
+#             시작보다 이른 것 자체는 하드룰 위반이 아니다(_time_overrun_minutes는
+#             마지막 활동의 end만 window end와 비교, start는 안 봄) — 다만 이번에
+#             한 번 걸렸듯 LLM 자체 판단에는 영향을 줄 수 있으니, window가 실제
+#             활동 시각과 최대한 자연스럽게 겹치도록 매번 확인할 것.
 # ------------------------------------------------------------------
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,8 +53,8 @@ def _conditions(**overrides) -> NormalizedConditions:
     base = dict(
         purpose="date",
         headcount=2,
-        time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
-        regions=["서울 잠실"],
+        time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 12, 59)),
+        region="서울 잠실",
         liked_tags=[],
         disliked_tags=[],
         budget_per_person=50000,
@@ -128,7 +153,13 @@ GOLDEN_STEP3_CASES = [
     ),
     GoldenCase(
         name="similar_candidates_get_differentiated_why_recommended",
-        conditions=_conditions(),
+        # 활동이 15:00까지 있어 기본 window(10:00~12:59)로는 61분 초과라 하드
+        # 드롭된다 — start를 12:00 뒤로 넘겨서 점심 슬롯 요구를 피하고(저녁은
+        # 애초에 end가 19:00을 안 넘어서 무관), 활동 종료(15:00)는 window
+        # 안(15:59)에 들어오게 잡았다.
+        conditions=_conditions(
+            time_range=(datetime(2026, 8, 15, 13, 0), datetime(2026, 8, 15, 15, 59))
+        ),
         candidates=[
             _candidate(
                 "잠실 데이트 A",
