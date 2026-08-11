@@ -39,71 +39,31 @@ const form = reactive({
   budgetPerPerson: 50000,
 })
 
-interface RegionRow {
-  province: string
-  area: string
-}
-
-// 최소 1행 유지 — 사용자가 첫 지역 하나는 항상 채워야 다음 단계로 못 감(canNext)
-const regions = ref<RegionRow[]>([{ province: '', area: '' }])
+// 세부지역까지 포함된 지역 하나만 받는다(2026-08-11(2차) 결정) — 네이버 지역검색
+// API가 display(최대 5)/start(사실상 고정)를 좁게 제한해서, 여러 지역을 받아봐야
+// 지역당 결과만 희석된다는 걸 공식 문서로 확인했다. 대신 백엔드가 지역 하나에
+// 카테고리·태그 쿼리를 최대한 팬아웃해서 지역당 후보 풀을 채운다
+// (naver_local_search.py). 세부지역(area)은 이제 선택이 아니라 필수 — "전체"
+// 옵션 없이 REGIONS의 세부지역 중 하나를 반드시 골라야 한다.
+const region = reactive({ province: '', area: '' })
 
 function areaOptionsFor(province: string) {
   return REGIONS[province]?.map((name) => ({ value: name, label: name })) ?? []
 }
 
-// 전체 개수는 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만.
-// 네이버 API 호출 횟수는 지역 수 × 카테고리 수라 넓은/좁은 지역이나 다 똑같이
-// 계산된다 — 호출 비용 때문이 아니다. "서울"처럼 넓은 지역은 결과 상한(카테고리당
-// 5개)이 넓은 면적에 그대로 적용돼 검색 결과가 희석되므로, 넓은 지역을 여러 개
-// 겹쳐 넣으면 좁고 구체적인 지역 검색보다 관련성 낮은 결과가 병합 후보 풀을
-// 채우게 된다(2026-08-09 결정). 백엔드 NormalizedConditions.validate_regions()가
-// 같은 규칙으로 다시 검증한다.
-const broadCount = computed(() => regions.value.filter((r) => r.province && !r.area).length)
-const tooManyBroadRegions = computed(() => broadCount.value > 1)
-const canAddRegion = computed(() => regions.value.length < 3)
-
-function addRegion() {
-  if (canAddRegion.value) regions.value.push({ province: '', area: '' })
-}
-function removeRegion(index: number) {
-  if (regions.value.length > 1) regions.value.splice(index, 1)
-}
-
-// 같은 시/도를 세부지역 없이(전체) 선택한 행이 있으면, 그 시/도의 세부지역 행은
-// 포함관계상 중복이니 자동으로 지운다 (예: "서울"과 "서울 잠실"을 같이 넣으면
-// "서울 잠실" 행 제거 — 요구사항: 포함되는 세부지역은 프런트에서 자동 정리).
-// 세부지역을 실제로 "선택"했을 때만 실행한다 — 시/도만 바꿔서 area가 잠깐 ''로
-// 리셋되는 중간 상태(세부지역 아직 안 고른 상태)까지 "전체 선택"으로 오인해
-// 다른 행을 지우면 안 된다(예: 경기 수원 입력 후 새 행에서 경기를 고르는 순간
-// 수원 행이 사라지던 버그).
-function dedupeBroadRegions() {
-  const broadProvinces = new Set(
-    regions.value.filter((r) => r.province && !r.area).map((r) => r.province),
-  )
-  if (broadProvinces.size === 0) return
-  const kept = regions.value.filter((r) => !(r.area && broadProvinces.has(r.province)))
-  if (kept.length !== regions.value.length) regions.value = kept
-}
-
 // 시/도를 바꾸면 이전 세부지역이 새 시/도 목록에 없을 수 있으니 초기화한다.
-function onProvinceChange(row: RegionRow) {
-  row.area = ''
+function onProvinceChange() {
+  region.area = ''
 }
 
-function onAreaChange() {
-  dedupeBroadRegions()
-}
-
-const regionLabels = computed(() =>
-  regions.value
-    .filter((r) => r.province)
-    .map((r) => (r.area ? `${r.province} ${r.area}` : r.province)),
+const regionLabel = computed(() =>
+  region.province && region.area ? `${region.province} ${region.area}` : '',
 )
 
 const canNext = computed(() => {
   if (step.value === 0) return !!form.purpose
   if (step.value === 1) return form.headcount > 0 && form.startTime < form.endTime
-  if (step.value === 2) return regionLabels.value.length > 0 && !tooManyBroadRegions.value
+  if (step.value === 2) return !!regionLabel.value
   if (step.value === 4) return form.budgetPerPerson > 0
   return true
 })
@@ -126,7 +86,7 @@ async function submit() {
     headcount: form.headcount,
     startTime: form.startTime,
     endTime: form.endTime,
-    regions: regionLabels.value,
+    region: regionLabel.value,
     budgetPerPerson: form.budgetPerPerson,
     likedText: form.likedText.trim(),
     dislikedText: form.dislikedText.trim(),
@@ -171,41 +131,22 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
       <div v-else-if="step === 2" class="space-y-5">
         <h1 class="mb-4 font-hand text-2xl text-ink">어디서 만나나요?</h1>
         <p class="font-hand text-sm text-ink/50">
-          최대 3곳까지 고를 수 있어요. 단, 세부지역 없이 시/도만 고른 곳은 1곳까지만요
+          시/도와 세부지역을 하나씩 골라주세요 — 세부지역까지 정해야 정확한 장소를 찾을 수 있어요
         </p>
-        <p v-if="tooManyBroadRegions" class="font-hand text-sm text-red">
-          시/도만 선택한 지역은 1개까지만 가능해요 — 세부지역을 골라주세요
-        </p>
-        <div v-for="(row, i) in regions" :key="i" class="space-y-2 border-b-2 border-ink/10 pb-4">
-          <div class="flex items-center justify-between">
-            <span class="font-hand text-sm text-ink/60">지역 {{ i + 1 }}</span>
-            <button
-              v-if="regions.length > 1"
-              type="button"
-              class="font-hand text-sm text-ink/50 hover:text-red"
-              @click="removeRegion(i)"
-            >
-              삭제
-            </button>
-          </div>
-          <DoodleSelect
-            v-model="row.province"
-            :options="PROVINCES.map((p) => ({ value: p, label: p }))"
-            placeholder="시/도 선택"
-            label="시/도"
-            @update:modelValue="onProvinceChange(row)"
-          />
-          <DoodleSelect
-            v-model="row.area"
-            :options="[{ value: '', label: '전체' }, ...areaOptionsFor(row.province)]"
-            :disabled="!row.province"
-            label="세부지역 (선택)"
-            @update:modelValue="onAreaChange"
-          />
-        </div>
-        <DoodleButton v-if="canAddRegion" variant="ghost" size="sm" @click="addRegion">
-          + 지역 추가
-        </DoodleButton>
+        <DoodleSelect
+          v-model="region.province"
+          :options="PROVINCES.map((p) => ({ value: p, label: p }))"
+          placeholder="시/도 선택"
+          label="시/도"
+          @update:modelValue="onProvinceChange"
+        />
+        <DoodleSelect
+          v-model="region.area"
+          :options="areaOptionsFor(region.province)"
+          :disabled="!region.province"
+          placeholder="세부지역 선택"
+          label="세부지역"
+        />
       </div>
 
       <!-- 3: 선호/비선호 (선택 입력) -->
@@ -237,7 +178,7 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         <DoodleCard class="space-y-2 font-hand text-lg text-ink">
           <p>목적: {{ purposeLabel }}</p>
           <p>인원: {{ form.headcount }}명 · {{ form.startTime }} ~ {{ form.endTime }}</p>
-          <p>지역: {{ regionLabels.join(', ') }}</p>
+          <p>지역: {{ regionLabel }}</p>
           <p>1인 예산: {{ form.budgetPerPerson.toLocaleString() }}원</p>
           <p v-if="form.likedText">좋아하는 것: {{ form.likedText }}</p>
           <p v-if="form.dislikedText">싫어하는 것: {{ form.dislikedText }}</p>

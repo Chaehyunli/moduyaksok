@@ -47,7 +47,7 @@ export interface Conditions {
   headcount: number
   startTime: string
   endTime: string
-  regions: string[]
+  region: string
   budgetPerPerson: number
   // 태그 선택이 아니라 자유 텍스트 그대로 백엔드로 보낸다 — Step1 조건 정규화(LLM)가
   // 여기서 구조화 태그를 뽑아낸다 (docs/기술설계_2026-08-06.md §4 Step1).
@@ -219,7 +219,7 @@ export const useAppStore = defineStore('app', {
           purpose: conditions.purpose,
           headcount: conditions.headcount,
           time_range: [startIso, endIso],
-          regions: conditions.regions,
+          region: conditions.region,
           liked_text: conditions.likedText,
           disliked_text: conditions.dislikedText,
           budget_per_person: conditions.budgetPerPerson,
