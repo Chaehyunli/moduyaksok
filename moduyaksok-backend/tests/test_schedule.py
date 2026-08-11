@@ -2,7 +2,7 @@
 # 작성자      : 임채현
 # 작성목적    : POST /schedules, POST /schedules/{id}/routes,
 #              POST /schedules/{id}/confirm, GET /schedules/{id} 테스트.
-#              장소 검색(search_places_for_regions)·파이프라인
+#              장소 검색(search_places_for_region)·파이프라인
 #              (generate_schedule_candidates)·경로 조회(enrich_routes)는 전부
 #              mock — 실제로 뭘 돌려주는지가 아니라 라우터의 조립/저장/에러
 #              변환 로직을 검증한다(파이프라인 함수 자체는 각자 파일에서 이미
@@ -16,10 +16,17 @@
 #             돌려주는지 검증하는 테스트 2개, confirm의 selected_options가 저장된
 #             후보 routes[].selected_option_id에 반영되는지 검증하는 테스트 1개 추가.
 # ------------------------------------------------------------------
+from datetime import datetime
 from uuid import UUID
 
 from app.models.llm_credential import LLMCredential
-from app.pipeline.schemas import Activity, Candidate, InfeasibleResponse, ScheduleResponse
+from app.pipeline.schemas import (
+    Activity,
+    Candidate,
+    InfeasibleResponse,
+    NormalizedConditions,
+    ScheduleResponse,
+)
 from app.services.credential import encrypt_key
 
 _TIME_RANGE = ["2026-08-15T10:00:00", "2026-08-15T21:00:00"]
@@ -27,11 +34,24 @@ _CREATE_BODY = {
     "purpose": "date",
     "headcount": 2,
     "time_range": _TIME_RANGE,
-    "regions": ["서울 강남"],
+    "region": "서울 강남",
     "liked_text": "",
     "disliked_text": "",
     "budget_per_person": 50000,
 }
+
+# generate_schedule_candidates()가 2026-08-11(2차)부터 (result, conditions,
+# place_candidates) 튜플을 반환하게 바뀌어서(SchedulePlacePool 저장에 필요),
+# 이 파이프라인을 mock하는 테스트는 전부 이 conditions를 같이 돌려줘야 한다.
+_FAKE_CONDITIONS = NormalizedConditions(
+    purpose="date",
+    headcount=2,
+    time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
+    region="서울 강남",
+    liked_tags=[],
+    disliked_tags=[],
+    budget_per_person=50000,
+)
 
 
 def _login(client, monkeypatch, google_id="schedule-test-google-id") -> tuple[dict, UUID]:
@@ -86,7 +106,8 @@ def _candidate(candidate_id: str = "A") -> Candidate:
 
 def _mock_pipeline_success(monkeypatch, *, candidates=None):
     async def fake_generate(provider, api_key, session_id, raw_input):
-        return ScheduleResponse(session_id=session_id, candidates=candidates or [_candidate()])
+        result = ScheduleResponse(session_id=session_id, candidates=candidates or [_candidate()])
+        return result, _FAKE_CONDITIONS, [{"title": "가게1"}]
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -132,16 +153,38 @@ def test_create_schedule_success_returns_candidates_and_persists_session(
     assert stored.candidates["candidates"][0]["candidate_id"] == "A"
 
 
+def test_create_schedule_success_persists_place_pool(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    _mock_pipeline_success(monkeypatch)
+
+    response = client.post("/schedules", json=_CREATE_BODY, headers=headers)
+    session_id = response.json()["session_id"]
+
+    from sqlmodel import select
+
+    from app.models.schedule import SchedulePlacePool
+
+    pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == UUID(session_id))
+    ).first()
+    assert pool is not None
+    assert pool.places["places"] == [{"title": "가게1"}]
+    assert pool.searched_liked_tags == []
+    assert pool.searched_disliked_tags == []
+
+
 def test_create_schedule_infeasible_returns_flat_409_body(client, session, monkeypatch):
     headers, user_id = _login(client, monkeypatch)
     _register_credential(session, user_id)
 
     async def fake_generate(provider, api_key, session_id, raw_input):
-        return InfeasibleResponse(
+        result = InfeasibleResponse(
             detail="생성 가능한 일정이 없어요 ㅠㅠ 조건을 다시 설정해주세요.",
             reason="예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
-            adjustable_conditions=["budget_per_person", "time_range", "regions"],
+            adjustable_conditions=["budget_per_person", "time_range", "region"],
         )
+        return result, _FAKE_CONDITIONS, []
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -152,7 +195,7 @@ def test_create_schedule_infeasible_returns_flat_409_body(client, session, monke
     # HTTPException(detail=...)이었다면 {"detail": {"detail": ..., ...}}로 중첩됐을 것 —
     # reason/adjustable_conditions가 최상위에 그대로 있는지가 이 테스트의 핵심.
     assert body["reason"] == "예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다."
-    assert body["adjustable_conditions"] == ["budget_per_person", "time_range", "regions"]
+    assert body["adjustable_conditions"] == ["budget_per_person", "time_range", "region"]
 
 
 def test_create_schedule_place_search_failure_returns_502(client, session, monkeypatch):
@@ -162,7 +205,7 @@ def test_create_schedule_place_search_failure_returns_502(client, session, monke
     from app.services.naver_local_search import NaverSearchError
 
     async def failing_generate(provider, api_key, session_id, raw_input):
-        # search_places_for_regions()가 2026-08-11부터 generate_schedule_candidates
+        # search_places_for_region()가 2026-08-11부터 generate_schedule_candidates
         # 안(Step1 직후)에서 호출되므로, 장소 검색 실패는 이 함수에서 올라온다.
         raise NaverSearchError("네트워크 실패")
 

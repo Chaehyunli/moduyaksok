@@ -21,8 +21,10 @@ from app.pipeline.synthesize_step3 import (
     _has_duplicate_tag_match,
     _has_excessive_travel,
     _has_hallucinated_activity,
+    _has_missing_meal_slot,
     _has_time_overlap,
     _JudgmentBatch,
+    _required_meal_windows,
     _rule_based_filter,
     _similarity_score,
     _time_overrun_minutes,
@@ -31,14 +33,23 @@ from app.pipeline.synthesize_step3 import (
 
 _TIME_RANGE = (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0))
 
+# 점심(12~13시)/저녁(18~19시)이 안 낀 오후 시간대 — 식사 슬롯 하드룰(2026-08-11)과
+# 무관한 기존 테스트들이 이 새 룰에 걸리지 않게 일부러 좁혔다. 식사 슬롯 자체를
+# 테스트할 땐 _MEAL_CONDITIONS(아래, 점심·저녁 다 낀 _TIME_RANGE 재사용)를 쓴다.
 _CONDITIONS = NormalizedConditions(
     purpose="date",
     headcount=2,
-    time_range=_TIME_RANGE,
-    regions=["서울 잠실"],
+    time_range=(datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0)),
+    region="서울 잠실",
     liked_tags=[PreferenceTag(tag="콩국수", verifiable=True)],
     disliked_tags=[PreferenceTag(tag="해산물", verifiable=True)],
     budget_per_person=50000,
+)
+
+_MEAL_CONDITIONS = _CONDITIONS.model_copy(update={"time_range": _TIME_RANGE})
+# 점심만 필요한 좁은 창(11:00~14:00) — 점심/저녁을 각각 독립적으로 테스트하기 위함.
+_LUNCH_ONLY_CONDITIONS = _CONDITIONS.model_copy(
+    update={"time_range": (datetime(2026, 8, 15, 11, 0), datetime(2026, 8, 15, 14, 0))}
 )
 
 
@@ -51,6 +62,7 @@ def _activity(
     lat: float | None = 37.5,
     lng: float | None = 127.0,
     matched_tag: str | None = None,
+    source_category: str | None = None,
 ) -> ActivityDraft:
     return ActivityDraft(
         name=name,
@@ -62,6 +74,7 @@ def _activity(
         lat=lat,
         lng=lng,
         matched_tag=matched_tag,
+        source_category=source_category,
     )
 
 
@@ -193,6 +206,50 @@ def test_has_excessive_travel_false_when_coordinates_missing():
         ],
     )
     assert _has_excessive_travel(c) is False
+
+
+# ── _has_missing_meal_slot (2026-08-11, 식사 슬롯 하드룰) ───────────────────
+
+
+def test_required_meal_windows_both_when_range_spans_lunch_and_dinner():
+    assert len(_required_meal_windows(_TIME_RANGE)) == 2  # 10:00~21:00
+
+
+def test_required_meal_windows_empty_for_afternoon_only_range():
+    assert _required_meal_windows(_CONDITIONS.time_range) == []  # 14:00~17:00
+
+
+def test_has_missing_meal_slot_true_when_no_matgip_in_lunch_window():
+    c = _candidate("A", [_activity("카페1", source_category="카페", start="12:00", end="13:00")])
+    assert _has_missing_meal_slot(c, _MEAL_CONDITIONS) is True
+
+
+def test_has_missing_meal_slot_false_when_matgip_covers_lunch_window():
+    c = _candidate("A", [_activity("식당1", source_category="한식", start="12:00", end="13:00")])
+    assert _has_missing_meal_slot(c, _LUNCH_ONLY_CONDITIONS) is False
+
+
+def test_has_missing_meal_slot_false_when_no_meal_window_required():
+    # _CONDITIONS는 14:00~17:00라 점심/저녁 슬롯 자체가 필요 없음
+    c = _candidate("A", [_activity("카페1", source_category="카페")])
+    assert _has_missing_meal_slot(c, _CONDITIONS) is False
+
+
+def test_has_missing_meal_slot_true_when_dinner_missing_even_if_lunch_covered():
+    c = _candidate("A", [_activity("식당1", source_category="한식", start="12:00", end="13:00")])
+    # _MEAL_CONDITIONS(10:00~21:00)는 점심·저녁 둘 다 필요한데 저녁이 없음
+    assert _has_missing_meal_slot(c, _MEAL_CONDITIONS) is True
+
+
+def test_rule_based_filter_drops_candidate_missing_meal_slot():
+    dessert_only = _candidate(
+        "디저트만",
+        [_activity("카페1", source_category="카페", start="12:00", end="13:00")],
+    )
+
+    survivors, _ = _rule_based_filter([dessert_only], _MEAL_CONDITIONS)
+
+    assert survivors == []
 
 
 # ── _budget_overrun_ratio / _time_overrun_minutes ───────────────────────

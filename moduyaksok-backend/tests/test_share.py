@@ -10,10 +10,25 @@
 #             안 나오는 테스트, route option의 path가 confirm -> GET /share
 #             왕복에서 그대로 보존되는지 확인하는 테스트 추가.
 # ------------------------------------------------------------------
+from datetime import datetime
 from uuid import UUID
 
 from app.models.llm_credential import LLMCredential
+from app.pipeline.schemas import NormalizedConditions
 from app.services.credential import encrypt_key
+
+# generate_schedule_candidates()가 2026-08-11(2차)부터 (result, conditions,
+# place_candidates) 튜플을 반환하게 바뀌어서(SchedulePlacePool 저장에 필요),
+# 이 파이프라인을 mock하는 테스트는 전부 이 conditions를 같이 돌려줘야 한다.
+_FAKE_CONDITIONS = NormalizedConditions(
+    purpose="date",
+    headcount=2,
+    time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
+    region="서울 강남",
+    liked_tags=[],
+    disliked_tags=[],
+    budget_per_person=50000,
+)
 
 
 def _login(client, monkeypatch, google_id="share-test-google-id") -> tuple[dict, UUID]:
@@ -70,7 +85,8 @@ def _create_and_confirm_session(client, session, monkeypatch) -> str:
     )
 
     async def fake_generate(provider, api_key, session_id, raw_input):
-        return ScheduleResponse(session_id=session_id, candidates=[candidate])
+        result = ScheduleResponse(session_id=session_id, candidates=[candidate])
+        return result, _FAKE_CONDITIONS, []
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -81,7 +97,7 @@ def _create_and_confirm_session(client, session, monkeypatch) -> str:
         "purpose": "date",
         "headcount": 2,
         "time_range": ["2026-08-15T10:00:00", "2026-08-15T21:00:00"],
-        "regions": ["서울 강남"],
+        "region": "서울 강남",
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,
@@ -159,7 +175,8 @@ def test_get_shared_schedule_only_exposes_confirmed_candidate(client, session, m
     ]
 
     async def fake_generate(provider, api_key, session_id, raw_input):
-        return ScheduleResponse(session_id=session_id, candidates=candidates)
+        result = ScheduleResponse(session_id=session_id, candidates=candidates)
+        return result, _FAKE_CONDITIONS, []
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -170,7 +187,7 @@ def test_get_shared_schedule_only_exposes_confirmed_candidate(client, session, m
         "purpose": "date",
         "headcount": 2,
         "time_range": ["2026-08-15T10:00:00", "2026-08-15T21:00:00"],
-        "regions": ["서울 강남"],
+        "region": "서울 강남",
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,
@@ -215,7 +232,8 @@ def test_get_shared_schedule_preserves_route_option_path(client, session, monkey
     )
 
     async def fake_generate(provider, api_key, session_id, raw_input):
-        return ScheduleResponse(session_id=session_id, candidates=[candidate])
+        result = ScheduleResponse(session_id=session_id, candidates=[candidate])
+        return result, _FAKE_CONDITIONS, []
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -226,7 +244,7 @@ def test_get_shared_schedule_preserves_route_option_path(client, session, monkey
         "purpose": "date",
         "headcount": 2,
         "time_range": ["2026-08-15T10:00:00", "2026-08-15T21:00:00"],
-        "regions": ["서울 강남"],
+        "region": "서울 강남",
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,

@@ -149,7 +149,10 @@ async def test_get_car_option_converts_path_to_lat_lng_tuples(monkeypatch):
 
 
 async def test_get_car_option_path_defaults_to_empty_list_when_missing(monkeypatch):
-    payload = {"code": 0, "route": {"trafast": [{"summary": _SUCCESS_PAYLOAD["route"]["trafast"][0]["summary"]}]}}
+    payload = {
+        "code": 0,
+        "route": {"trafast": [{"summary": _SUCCESS_PAYLOAD["route"]["trafast"][0]["summary"]}]},
+    }
     _patch_client(monkeypatch, lambda: _FakeResponse(200, payload))
 
     option = await get_car_option(*_GANGNAM, *_CITY_HALL)

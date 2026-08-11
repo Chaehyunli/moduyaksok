@@ -16,7 +16,7 @@ _RAW_INPUT = {
     "purpose": "date",
     "headcount": 2,
     "time_range": [datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)],
-    "regions": ["서울 잠실"],
+    "region": "서울 잠실",
     "liked_text": "콩국수나 텐동, 와플 먹고 싶어",
     "disliked_text": "해산물은 못 먹어요",
     "budget_per_person": 50000,
@@ -40,7 +40,7 @@ def test_normalize_conditions_passes_through_already_structured_fields(monkeypat
 
     assert result.purpose == "date"
     assert result.headcount == 2
-    assert result.regions == ["서울 잠실"]
+    assert result.region == "서울 잠실"
     assert result.budget_per_person == 50000
     assert result.time_range == (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0))
 
@@ -108,11 +108,14 @@ def test_normalize_conditions_handles_empty_preference_text(monkeypatch):
     assert "(없음)" in captured["user"]
 
 
-def test_system_prompt_instructs_capping_verifiable_tags_at_three():
+def test_system_prompt_instructs_capping_verifiable_tags_at_max():
     # naver_local_search가 verifiable 태그 하나당 검색 1콜을 추가로 쓰게 되면서
-    # (2026-08-11) 호출량 제어를 위해 Step1이 좋아하는/싫어하는 것 각각 최대
-    # 3개까지만, 중요도 순으로 남기도록 지시해야 한다. 실제로 LLM이 이 지시를
-    # 잘 지키는지는 DeepEval 골든셋(eval)의 몫이라 여기선 지시문 자체가 프롬프트에
-    # 있는지만 확인한다.
-    assert "최대 3개" in _SYSTEM_PROMPT
-    assert "verifiable=false" in _SYSTEM_PROMPT.split("최대 3개")[1][:200]
+    # (2026-08-11) 호출량 제어를 위해 Step1이 좋아하는/싫어하는 것 각각
+    # MAX_VERIFIABLE_TAGS개까지만, 중요도 순으로 남기도록 지시해야 한다. 실제로
+    # LLM이 이 지시를 잘 지키는지는 DeepEval 골든셋(eval)의 몫이라 여기선 지시문
+    # 자체가 프롬프트에 있는지만 확인한다.
+    from app.pipeline.schemas import MAX_VERIFIABLE_TAGS
+
+    cap_text = f"최대 {MAX_VERIFIABLE_TAGS}개"
+    assert cap_text in _SYSTEM_PROMPT
+    assert "verifiable=false" in _SYSTEM_PROMPT.split(cap_text)[1][:200]

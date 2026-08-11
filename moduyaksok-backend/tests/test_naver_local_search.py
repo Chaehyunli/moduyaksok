@@ -12,7 +12,7 @@ import pytest
 from app.services.naver_local_search import (
     NaverSearchError,
     search_places,
-    search_places_for_regions,
+    search_places_for_region,
 )
 
 
@@ -183,44 +183,26 @@ class _RecordingFakeAsyncClient:
         return _FakeResponse(200, {"items": items})
 
 
-async def test_search_places_for_regions_merges_results_across_regions(monkeypatch):
-    _RecordingFakeAsyncClient.calls = []
+async def test_search_places_for_region_dedupes_by_title(monkeypatch):
     fake = _RecordingFakeAsyncClient(
         {
-            "서울 잠실 맛집": [{"title": "잠실집", "category": "한식", "address": "서울 잠실"}],
-            "서울 성수 맛집": [{"title": "성수집", "category": "한식", "address": "서울 성수"}],
-        }
-    )
-    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
-
-    results = await search_places_for_regions(["서울 잠실", "서울 성수"])
-
-    titles = {r["title"] for r in results}
-    assert "잠실집" in titles
-    assert "성수집" in titles
-
-
-async def test_search_places_for_regions_dedupes_by_title(monkeypatch):
-    fake = _RecordingFakeAsyncClient(
-        {
-            "서울 잠실 맛집": [{"title": "중복집", "category": "한식", "address": "서울 잠실"}],
+            "서울 잠실 한식": [{"title": "중복집", "category": "한식", "address": "서울 잠실"}],
             "서울 잠실 카페": [{"title": "중복집", "category": "한식", "address": "서울 잠실"}],
         }
     )
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    results = await search_places_for_regions(["서울 잠실"])
+    results = await search_places_for_region("서울 잠실")
 
     assert len([r for r in results if r["title"] == "중복집"]) == 1
 
 
-async def test_search_places_for_regions_queries_each_region_with_every_category(monkeypatch):
+async def test_search_places_for_region_queries_every_category(monkeypatch):
     _RecordingFakeAsyncClient.calls = []
     fake = _RecordingFakeAsyncClient({})
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    # "서울 잠실"처럼 이미 세부지역이 있는 region은 확장 없이 그대로 검색된다.
-    await search_places_for_regions(["서울 잠실"])
+    await search_places_for_region("서울 잠실")
 
     from app.services.naver_local_search import _PLACE_CATEGORIES
 
@@ -228,31 +210,7 @@ async def test_search_places_for_regions_queries_each_region_with_every_category
         assert f"서울 잠실 {category}" in _RecordingFakeAsyncClient.calls
 
 
-async def test_search_places_for_regions_expands_broad_region_into_districts(monkeypatch):
-    # 세부지역 없이 시/도만("서울") 입력되면 app.services.regions의 세부지역들로
-    # 펼쳐서 각각 검색한다(2026-08-11) — "서울 카테고리" 통짜 검색은 더 이상 안 함.
-    _RecordingFakeAsyncClient.calls = []
-    fake = _RecordingFakeAsyncClient({})
-    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
-
-    await search_places_for_regions(["서울"])
-
-    assert "서울 맛집" not in _RecordingFakeAsyncClient.calls
-    assert "서울 강남 맛집" in _RecordingFakeAsyncClient.calls
-    assert "서울 용산 맛집" in _RecordingFakeAsyncClient.calls
-
-
-async def test_search_places_for_regions_does_not_expand_narrow_region(monkeypatch):
-    _RecordingFakeAsyncClient.calls = []
-    fake = _RecordingFakeAsyncClient({})
-    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
-
-    await search_places_for_regions(["경기 수원"])
-
-    assert all(call.startswith("경기 수원 ") for call in _RecordingFakeAsyncClient.calls)
-
-
-async def test_search_places_for_regions_searches_verifiable_liked_tags_and_marks_matched(
+async def test_search_places_for_region_searches_verifiable_liked_tags_and_marks_matched(
     monkeypatch,
 ):
     from app.pipeline.schemas import PreferenceTag
@@ -266,29 +224,65 @@ async def test_search_places_for_regions_searches_verifiable_liked_tags_and_mark
     )
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    results = await search_places_for_regions(
-        ["서울 잠실"], liked_tags=[PreferenceTag(tag="와플", verifiable=True)]
+    results = await search_places_for_region(
+        "서울 잠실", liked_tags=[PreferenceTag(tag="와플", verifiable=True)]
     )
 
     matched = next(r for r in results if r["title"] == "와플가게")
     assert matched["matched_tag"] == "와플"
 
 
-async def test_search_places_for_regions_ignores_non_verifiable_liked_tags(monkeypatch):
+async def test_search_places_for_region_attaches_source_category(monkeypatch):
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 한식": [{"title": "잠실집", "category": "한식", "address": "서울 잠실"}],
+            "서울 잠실 카페": [{"title": "카페집", "category": "카페", "address": "서울 잠실"}],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_region("서울 잠실")
+
+    by_title = {r["title"]: r for r in results}
+    assert by_title["잠실집"]["source_category"] == "한식"
+    assert by_title["카페집"]["source_category"] == "카페"
+
+
+async def test_search_places_for_region_source_category_missing_for_tag_only_match(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 와플": [
+                {"title": "와플전문점", "category": "카페,디저트>와플", "address": "서울 잠실"}
+            ]
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_region(
+        "서울 잠실", liked_tags=[PreferenceTag(tag="와플", verifiable=True)]
+    )
+
+    matched = next(r for r in results if r["title"] == "와플전문점")
+    assert matched.get("source_category") is None
+
+
+async def test_search_places_for_region_ignores_non_verifiable_liked_tags(monkeypatch):
     from app.pipeline.schemas import PreferenceTag
 
     _RecordingFakeAsyncClient.calls = []
     fake = _RecordingFakeAsyncClient({})
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    await search_places_for_regions(
-        ["서울 잠실"], liked_tags=[PreferenceTag(tag="조용한 분위기", verifiable=False)]
+    await search_places_for_region(
+        "서울 잠실", liked_tags=[PreferenceTag(tag="조용한 분위기", verifiable=False)]
     )
 
     assert "서울 잠실 조용한 분위기" not in _RecordingFakeAsyncClient.calls
 
 
-async def test_search_places_for_regions_excludes_disliked_tag_matches(monkeypatch):
+async def test_search_places_for_region_excludes_disliked_tag_matches(monkeypatch):
     from app.pipeline.schemas import PreferenceTag
 
     fake = _RecordingFakeAsyncClient(
@@ -302,8 +296,8 @@ async def test_search_places_for_regions_excludes_disliked_tag_matches(monkeypat
     )
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    results = await search_places_for_regions(
-        ["서울 잠실"], disliked_tags=[PreferenceTag(tag="해산물", verifiable=True)]
+    results = await search_places_for_region(
+        "서울 잠실", disliked_tags=[PreferenceTag(tag="해산물", verifiable=True)]
     )
 
     titles = {r["title"] for r in results}
@@ -311,21 +305,21 @@ async def test_search_places_for_regions_excludes_disliked_tag_matches(monkeypat
     assert "무난한카페" in titles
 
 
-async def test_search_places_for_regions_caps_verifiable_tags_at_three(monkeypatch):
+async def test_search_places_for_region_caps_verifiable_tags_at_five(monkeypatch):
     from app.pipeline.schemas import PreferenceTag
 
     _RecordingFakeAsyncClient.calls = []
     fake = _RecordingFakeAsyncClient({})
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    tags = [PreferenceTag(tag=f"태그{i}", verifiable=True) for i in range(5)]
-    await search_places_for_regions(["서울 잠실"], liked_tags=tags)
+    tags = [PreferenceTag(tag=f"태그{i}", verifiable=True) for i in range(7)]
+    await search_places_for_region("서울 잠실", liked_tags=tags)
 
     tag_calls = [c for c in _RecordingFakeAsyncClient.calls if c.startswith("서울 잠실 태그")]
-    assert len(tag_calls) == 3
+    assert len(tag_calls) == 5
 
 
-async def test_search_places_for_regions_truncates_queries_when_daily_budget_short(monkeypatch):
+async def test_search_places_for_region_truncates_queries_when_daily_budget_short(monkeypatch):
     # 일일 예산이 부족하면 확보된 만큼만 쿼리를 보내고, 나머지는 조용히 스킵한다
     # (2026-08-11 결정 — 하드 실패보다 place_candidates가 적은 채로 진행하는 쪽).
     _RecordingFakeAsyncClient.calls = []
@@ -337,34 +331,34 @@ async def test_search_places_for_regions_truncates_queries_when_daily_budget_sho
 
     monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", limited_budget)
 
-    results = await search_places_for_regions(["서울 잠실"])
+    results = await search_places_for_region("서울 잠실")
 
     assert len(_RecordingFakeAsyncClient.calls) == 2
     assert results == []
 
 
-async def test_search_places_for_regions_returns_empty_when_daily_budget_exhausted(monkeypatch):
+async def test_search_places_for_region_returns_empty_when_daily_budget_exhausted(monkeypatch):
     async def zero_budget(requested: int) -> int:
         return 0
 
     monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", zero_budget)
 
-    results = await search_places_for_regions(["서울 잠실"])
+    results = await search_places_for_region("서울 잠실")
 
     assert results == []
 
 
-async def test_search_places_for_regions_raises_when_every_query_fails(monkeypatch):
-    # 모든 region×category 조회가 실패(타임아웃 등)하면 "후보 없음"(빈 리스트)과
-    # 구분해서 NaverSearchError를 올려야 한다 — 안 그러면 호출부가 "이 지역엔
-    # 진짜로 후보가 없다"로 오해한다.
+async def test_search_places_for_region_raises_when_every_query_fails(monkeypatch):
+    # 모든 카테고리 조회가 실패(타임아웃 등)하면 "후보 없음"(빈 리스트)과 구분해서
+    # NaverSearchError를 올려야 한다 — 안 그러면 호출부가 "이 지역엔 진짜로 후보가
+    # 없다"로 오해한다.
     _patch_client(monkeypatch, raise_timeout=True)
 
     with pytest.raises(NaverSearchError):
-        await search_places_for_regions(["서울 잠실"])
+        await search_places_for_region("서울 잠실")
 
 
-async def test_search_places_for_regions_partial_failure_does_not_raise(monkeypatch):
+async def test_search_places_for_region_partial_failure_does_not_raise(monkeypatch):
     # 일부 쿼리만 실패했을 땐 성공한 결과가 있으므로 raise하지 않는다.
     async def flaky_search_places(query, display=5, session_id=""):
         if "카페" in query:
@@ -373,6 +367,6 @@ async def test_search_places_for_regions_partial_failure_does_not_raise(monkeypa
 
     monkeypatch.setattr("app.services.naver_local_search.search_places", flaky_search_places)
 
-    results = await search_places_for_regions(["서울 잠실"])
+    results = await search_places_for_region("서울 잠실")
 
     assert len(results) > 0

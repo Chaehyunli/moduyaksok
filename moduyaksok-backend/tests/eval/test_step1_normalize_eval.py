@@ -48,7 +48,7 @@ def _build_raw_input(liked_text: str, disliked_text: str) -> dict:
         "purpose": "date",
         "headcount": 2,
         "time_range": [datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)],
-        "regions": ["서울 잠실"],
+        "region": "서울 잠실",
         "liked_text": liked_text,
         "disliked_text": disliked_text,
         "budget_per_person": 50000,

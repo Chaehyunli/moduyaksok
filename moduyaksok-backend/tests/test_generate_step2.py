@@ -7,6 +7,9 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-09, region: str -> regions: list[str] 변경 반영. 지역 2개를 넣어 프롬프트에
 #             둘 다 들어가는지 검증하는 assert 추가.
+# 2026-08-11(2차), regions: list[str] -> region: str로 다시 축소되면서 위 테스트를
+#             단일 지역 검증으로 되돌림. _MEAL_CATEGORIES 세분화에 맞춰 "[맛집]"
+#             표시 관련 테스트도 세분화된 카테고리("한식" 등) 기준으로 변경.
 # 2026-08-09, Step2를 "장소 선택"(LLM)과 "시간 배정"(결정론적 계산)으로 분리 —
 #             call_structured는 이제 CandidateSelectionDraft(시간 없음)를 반환하고,
 #             _schedule_places()가 시간을 채운다. _fake_draft를 CandidateSelectionDraft
@@ -19,7 +22,7 @@
 #             테스트 추가 — Step3 재시도 오케스트레이터(orchestrate.py)가 쓸
 #             "관점 라벨 유지"·"관점 하나만 재생성" 기능 검증.
 # ------------------------------------------------------------------
-from datetime import datetime
+from datetime import datetime, time
 
 import pytest
 
@@ -27,7 +30,11 @@ from app.pipeline.generate_step2 import (
     PERSPECTIVES,
     _build_system_prompt,
     _build_user_prompt,
+    _format_place_candidates,
+    _meal_slot_instruction,
+    _required_meal_windows,
     _schedule_places,
+    _tag_bundles_by_perspective,
     generate_candidates,
     generate_candidates_with_perspectives,
     generate_single_candidate,
@@ -44,7 +51,7 @@ _CONDITIONS = NormalizedConditions(
     purpose="date",
     headcount=2,
     time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
-    regions=["서울 잠실", "서울 성수"],
+    region="서울 잠실",
     liked_tags=[PreferenceTag(tag="콩국수", verifiable=True)],
     disliked_tags=[
         PreferenceTag(tag="해산물", verifiable=True),
@@ -209,7 +216,6 @@ def test_build_user_prompt_injects_place_candidates_and_conditions():
     assert "잠실장어와 한우" in prompt
     assert "OO카페" in prompt
     assert "서울 잠실" in prompt
-    assert "서울 성수" in prompt
     assert "50000" in prompt
 
 
@@ -250,6 +256,69 @@ def test_build_user_prompt_other_purpose_has_no_extra_guidance():
     prompt = _build_user_prompt(conditions, _PLACE_CANDIDATES)
 
     assert "목적: other\n" in prompt
+
+
+# ── 식사 슬롯 (2026-08-11) ──────────────────────────────────────────────
+
+
+def test_required_meal_windows_includes_both_when_range_spans_both():
+    windows = _required_meal_windows((datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)))
+    assert len(windows) == 2
+
+
+def test_required_meal_windows_lunch_only():
+    windows = _required_meal_windows((datetime(2026, 8, 15, 11, 0), datetime(2026, 8, 15, 14, 0)))
+    assert windows == [(time(12, 0), time(13, 0))]
+
+
+def test_required_meal_windows_empty_for_narrow_afternoon_range():
+    windows = _required_meal_windows((datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0)))
+    assert windows == []
+
+
+def test_meal_slot_instruction_empty_when_no_windows_required():
+    instruction = _meal_slot_instruction(
+        (datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0))
+    )
+    assert instruction == ""
+
+
+def test_meal_slot_instruction_mentions_lunch_and_dinner_and_meal_category_bracket():
+    instruction = _meal_slot_instruction(
+        (datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0))
+    )
+    assert "점심" in instruction
+    assert "저녁" in instruction
+    assert "[한식]" in instruction  # _MEAL_CATEGORIES 중 하나가 대괄호로 표시됨
+
+
+def test_build_user_prompt_injects_meal_slot_instruction():
+    prompt = _build_user_prompt(_CONDITIONS, _PLACE_CANDIDATES)  # 10:00~21:00, 둘 다 필요
+
+    assert "점심" in prompt
+    assert "저녁" in prompt
+
+
+def test_build_user_prompt_omits_meal_slot_instruction_when_not_needed():
+    conditions = _CONDITIONS.model_copy(
+        update={"time_range": (datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0))}
+    )
+
+    prompt = _build_user_prompt(conditions, _PLACE_CANDIDATES)
+
+    assert "식사가 되는 카테고리" not in prompt
+
+
+def test_format_place_candidates_shows_source_category_bracket():
+    formatted = _format_place_candidates(
+        [{"title": "잠실집", "category": "한식", "source_category": "한식"}]
+    )
+    assert "[한식]" in formatted
+
+
+def test_format_place_candidates_no_bracket_when_source_category_missing():
+    formatted = _format_place_candidates([{"title": "잠실집", "category": "한식"}])
+    assert "[" not in formatted
 
 
 def test_build_system_prompt_states_hard_constraint_for_verifiable_true():
@@ -422,6 +491,108 @@ def test_schedule_places_matched_tag_is_none_when_not_tag_matched():
     assert activities[0].matched_tag is None
 
 
+# ── _schedule_places() source_category 부착 (2026-08-11) ────────────────────
+
+
+def test_schedule_places_attaches_source_category_from_place_candidates():
+    place = {**_GANGNAM_CANDIDATE, "source_category": "맛집"}
+    places = [_place("강남역")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [place])
+
+    assert activities[0].source_category == "맛집"
+
+
+def test_schedule_places_source_category_is_none_when_not_set():
+    places = [_place("강남역")]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, [_GANGNAM_CANDIDATE])
+
+    assert activities[0].source_category is None
+
+
+# ── _tag_bundles_by_perspective() (2026-08-11) ──────────────────────────────
+
+
+def test_tag_bundles_returns_copies_of_shared_list_when_no_tag_matches():
+    place_candidates = [{"title": "카페1", "category": "카페"}]
+
+    bundles = _tag_bundles_by_perspective(place_candidates, 3)
+
+    assert bundles == [place_candidates, place_candidates, place_candidates]
+
+
+def test_tag_bundles_shares_non_matched_places_across_all_perspectives():
+    shared = {"title": "카페1", "category": "카페"}
+    waffle = [
+        {"title": f"와플{i}", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}
+        for i in range(3)
+    ]
+
+    bundles = _tag_bundles_by_perspective([shared, *waffle], 3)
+
+    for bundle in bundles:
+        assert shared in bundle
+
+
+def test_tag_bundles_gives_each_perspective_a_different_tag_match():
+    waffle = [
+        {"title": f"와플{i}", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}
+        for i in range(3)
+    ]
+
+    bundles = _tag_bundles_by_perspective(waffle, 3)
+
+    picked_titles = [
+        next(p["title"] for p in bundle if p.get("matched_tag") == "와플") for bundle in bundles
+    ]
+    assert len(set(picked_titles)) == 3  # 셋 다 다른 와플 매장을 봄
+
+
+def test_tag_bundles_reuses_a_match_when_fewer_than_perspectives():
+    waffle = [{"title": "와플1", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}]
+
+    bundles = _tag_bundles_by_perspective(waffle, 3)
+
+    for bundle in bundles:
+        assert bundle[0]["title"] == "와플1"  # 매칭이 1곳뿐이면 다 같은 곳을 볼 수밖에 없음
+
+
+def test_tag_bundles_pairs_multiple_tags_by_proximity():
+    # 와플1/파스타1은 서로 가깝고(강남), 와플2/파스타2도 서로 가깝다(홍대) —
+    # 관점0은 강남 조합, 관점1은 홍대 조합을 봐야 한다(멀리 떨어진 조합이 섞이면 안 됨).
+    waffle1 = {
+        "title": "강남와플",
+        "matched_tag": "와플",
+        "mapx": "1270000000",
+        "mapy": "375000000",
+    }
+    waffle2 = {
+        "title": "홍대와플",
+        "matched_tag": "와플",
+        "mapx": "1269000000",
+        "mapy": "378000000",
+    }
+    pasta1 = {
+        "title": "강남파스타",
+        "matched_tag": "파스타",
+        "mapx": "1270010000",
+        "mapy": "375010000",
+    }
+    pasta2 = {
+        "title": "홍대파스타",
+        "matched_tag": "파스타",
+        "mapx": "1269010000",
+        "mapy": "378010000",
+    }
+
+    bundles = _tag_bundles_by_perspective([waffle1, waffle2, pasta1, pasta2], 2)
+
+    for bundle in bundles:
+        titles = {p["title"] for p in bundle}
+        assert titles == {"강남와플", "강남파스타"} or titles == {"홍대와플", "홍대파스타"}
+
+
 # ── generate_candidates_with_perspectives() / generate_single_candidate() ──
 
 
@@ -497,3 +668,55 @@ def test_generate_single_candidate_raises_for_unknown_perspective_label():
         generate_single_candidate(
             "anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES, "존재하지 않는 관점"
         )
+
+
+# ── 관점별로 다른 place_candidates를 보는지 (2026-08-11) ─────────────────────
+
+_WAFFLE_MATCHES = [
+    {
+        "title": f"와플{i}",
+        "category": "카페,디저트>와플",
+        "matched_tag": "와플",
+        "mapx": "1270000000",
+        "mapy": "375000000",
+    }
+    for i in range(3)
+]
+
+
+async def test_generate_candidates_gives_each_perspective_a_different_tag_match(monkeypatch):
+    captured_users: list[str] = []
+
+    def fake_call_structured(**kwargs):
+        captured_users.append(kwargs["user"])
+        return _fake_draft(kwargs["system"])
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _WAFFLE_MATCHES)
+
+    assert len(captured_users) == 3
+    seen_per_prompt = [
+        {title for title in ("와플0", "와플1", "와플2") if title in u} for u in captured_users
+    ]
+    # 관점마다 3곳 중 정확히 1곳만 봐야 하고, 셋이 서로 달라야 한다.
+    assert all(len(s) == 1 for s in seen_per_prompt)
+    assert len(set.union(*seen_per_prompt)) == 3
+
+
+def test_generate_single_candidate_reuses_same_partition_as_full_run(monkeypatch):
+    captured: dict[str, str] = {}
+
+    def fake_call_structured(**kwargs):
+        captured["user"] = kwargs["user"]
+        return _fake_draft(kwargs["system"])
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    label = PERSPECTIVES[1][0]
+    index = 1
+    generate_single_candidate("anthropic", "sk-ant-fake", _CONDITIONS, _WAFFLE_MATCHES, label)
+
+    expected_bundle = _tag_bundles_by_perspective(_WAFFLE_MATCHES, len(PERSPECTIVES))[index]
+    expected_title = next(p["title"] for p in expected_bundle if p.get("matched_tag") == "와플")
+    assert expected_title in captured["user"]

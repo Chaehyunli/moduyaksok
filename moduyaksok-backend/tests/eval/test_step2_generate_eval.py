@@ -48,7 +48,7 @@ from tests.eval.golden_step2 import GOLDEN_STEP2_CASES
 pytestmark = pytest.mark.eval
 
 _QUALITY_CRITERIA = (
-    "actual_output은 place_candidates 목록과 조건(purpose/headcount/regions 포함)이 "
+    "actual_output은 place_candidates 목록과 조건(purpose/headcount/region 포함)이 "
     "주어졌을 때 생성된 최대 3개의 "
     "일정 후보(candidate)를 'title=... activities=[...] rationale=...' 형태로 "
     "나열한 것이다. 각 activity는 'name(category, start_time-end_time)' 형태이고, "
@@ -123,7 +123,7 @@ def _format_input(case) -> str:
     start, end = c.time_range
     return (
         f"purpose={c.purpose}, headcount={c.headcount}, "
-        f"regions={c.regions}, time_range={start.isoformat()}~{end.isoformat()}, "
+        f"region={c.region}, time_range={start.isoformat()}~{end.isoformat()}, "
         f"budget_per_person={c.budget_per_person}, "
         f"liked_tags={_format_tags(c.liked_tags)}, "
         f"disliked_tags={_format_tags(c.disliked_tags)}, "
@@ -164,7 +164,7 @@ def _print_report(case, drafts: list[CandidateDraft], metric: GEval) -> None:
     print("--- input ---")
     print(f"  purpose           : {c.purpose}")
     print(f"  headcount         : {c.headcount}")
-    print(f"  regions           : {c.regions}")
+    print(f"  region            : {c.region}")
     print(f"  time_range        : {start.strftime('%H:%M')} ~ {end.strftime('%H:%M')}")
     print(f"  budget_per_person : {c.budget_per_person}")
     print(f"  liked_tags        : {_format_tags(c.liked_tags)}")
