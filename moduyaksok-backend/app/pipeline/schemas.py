@@ -261,6 +261,10 @@ class Candidate(BaseModel):
 class ScheduleResponse(BaseModel):
     session_id: str
     candidates: list[Candidate]
+    # POST /schedules와 GET /schedules/{id}가 함께 돌려주는 검색 스냅샷. 최종
+    # 후보와 달리 "일정을 만들기 위해 무엇을 검색했는지"를 보여주는 보조 정보다.
+    # 파이프라인 순수 함수 단독 호출에서는 만들지 않으므로 기본값은 None이다.
+    place_pool: dict | None = None
     # 확정된 뒤 생긴 공유 링크가 있으면 같이 돌려준다 — GET /schedules/{id}가
     # 새로고침 후에도 공유 slug를 복구할 수 있게 한다(2026-08-10, Finding 1).
     share_slug: str | None = None

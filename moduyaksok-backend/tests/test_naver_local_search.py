@@ -305,6 +305,40 @@ async def test_search_places_for_region_excludes_disliked_tag_matches(monkeypatc
     assert "무난한카페" in titles
 
 
+async def test_search_places_for_region_keeps_grouped_search_snapshot(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 카페": [
+                {"title": "해산물집", "category": "한식", "address": "서울 잠실"},
+                {"title": "무난한카페", "category": "카페", "address": "서울 잠실"},
+            ],
+            "서울 잠실 와플": [{"title": "와플가게", "category": "카페", "address": "서울 잠실"}],
+            "서울 잠실 해산물": [{"title": "해산물집", "category": "한식", "address": "서울 잠실"}],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_region(
+        "서울 잠실",
+        liked_tags=[PreferenceTag(tag="와플", verifiable=True)],
+        disliked_tags=[PreferenceTag(tag="해산물", verifiable=True)],
+    )
+
+    snapshot = results.search_groups
+    assert snapshot["candidate_count"] == len(results)
+    assert snapshot["groups"]["liked"][0]["label"] == "와플"
+    assert snapshot["groups"]["liked"][0]["places"][0]["map_url"].startswith(
+        "https://map.naver.com"
+    )
+    assert snapshot["groups"]["disliked"][0]["places"][0]["name"] == "해산물집"
+    cafe_group = next(
+        group for group in snapshot["groups"]["categories"] if group["label"] == "카페"
+    )
+    assert [place["name"] for place in cafe_group["places"]] == ["무난한카페"]
+
+
 async def test_search_places_for_region_caps_verifiable_tags_at_five(monkeypatch):
     from app.pipeline.schemas import PreferenceTag
 

@@ -65,6 +65,11 @@ class SchedulePlacePool(SQLModel, table=True):
     # 중복 제거된 place dict 목록) 그대로. {"places": [...]} 형태로 감싸는 건
     # ScheduleSession.candidates와 같은 관례(app/routers/schedule.py 참고).
     places: dict = Field(default_factory=dict, sa_column=Column(JSONB))
+    # 검색 질의별 결과 스냅샷. ``places``는 Step2에 넘긴 안전한 병합 목록만 갖지만,
+    # 이 필드는 좋아요/싫어요/카테고리별 원본 결과를 보존한다. 특히 싫어요 태그와
+    # 겹쳐 Step2에서 제거된 장소도 여기에는 남겨 사용자가 제외 근거를 확인하고,
+    # 추후 피드백 검색 시 이미 조회한 결과를 재사용할 수 있다.
+    search_groups: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     # 지금까지 태그 검색을 실제로 호출한 verifiable 태그 목록 — 나중에 피드백으로
     # 새 태그가 추가되면 이 목록에 없는 태그만 추가 검색하면 된다(피드백 엔드포인트
     # 자체는 아직 미구현, schedule.md 참고).

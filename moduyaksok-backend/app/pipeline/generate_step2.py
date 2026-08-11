@@ -217,6 +217,12 @@ _ACTIVITY_BUFFER_MINUTES = 30
 _MIN_ACTIVITY_MINUTES = 30
 _MAX_ACTIVITY_MINUTES = 90
 
+# LLM에게 넘길 한 관점의 장소 후보는 이 반경 안의 장소로 제한한다. 기존에는
+# 좌표를 시간 버퍼 계산과 60분 초과 사후 탈락에만 써서, 카테고리 전체 후보를
+# LLM이 함께 보고 먼 장소를 섞을 수 있었다. 중심에서 2.5km면 양 끝 장소도
+# 대체로 5km 이내라, Step3의 30분 이동 하드룰과도 자연스럽게 맞는다.
+_COMPACT_POOL_RADIUS_METERS = 2_500
+
 # 식사 슬롯 판단 기준(2026-08-11) — synthesize_step3.py에도 같은 상수·로직이
 # 독립적으로 있다(이 프로젝트 관례상 파이프라인 단계끼리는 서로 안 부르고, 작은
 # 헬퍼는 각자 파일에 둔다 — _format_tags()도 이미 두 파일에 각각 있음).
@@ -310,8 +316,9 @@ def _meal_slot_instruction(time_range: tuple[datetime, datetime]) -> str:
     return (
         f"이 시간대엔 {', '.join(parts)}이(가) 껴 있다 — 해당 시간대에 식사가 되는 "
         f"카테고리({meal_labels} 중 하나) 표시된 장소를 최소 1곳씩 포함해라(정확히 "
-        "그 시각일 필요는 없고 자연스러운 범위면 된다). 나머지 시간은 자유롭게(카페/"
-        "액티비티/문화시설 등으로) 채워라."
+        "그 시각일 필요는 없고 자연스러운 범위면 된다). 식사 장소는 방문 순서에도 "
+        "점심부터 저녁 순으로 넣어라. 시간 배정기는 이 순서를 바탕으로 실제 식사 "
+        "시각에 배치한다. 나머지 시간은 자유롭게(카페/액티비티/문화시설 등으로) 채워라."
     )
 
 
@@ -344,26 +351,17 @@ def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[
 def _tag_bundles_by_perspective(
     place_candidates: list[dict], num_perspectives: int
 ) -> list[list[dict]]:
-    """관점마다 서로 다른 place_candidates 부분집합을 만든다 — 관점 3개가 같은
-    취향 태그 매칭 장소를 동시에 욕심내서 비슷한 후보만 나오는 문제(2026-08-11,
-    사용자 관측) 대응. 매칭 태그가 없는 장소(카테고리 검색으로만 나온 것)는
-    지금처럼 모든 관점에 동일하게 공유하고, matched_tag가 있는 장소만 관점별로
-    분배한다:
-    - 매칭이 제일 많은 태그를 "시드 태그"로 삼아 관점마다 다른 시드 장소를 배정.
-    - 다른 태그는 그 시드와 좌표(mapx/mapy — Step4 이동시간 추정과 같은 값)상
-      가장 가까운 매칭을 골라 묶는다 — 관점 하나가 보는 태그 매칭 장소들이
-      지리적으로 흩어지지 않게.
-    - 같은 곳을 여러 관점이 아예 볼 수 없게 만드는 게 목적이라, 매칭이 적으면
-      (예: 태그당 1곳뿐) 자연히 겹칠 수 있다 — 그건 정상(억지로 완전히 다르게
-      만들려고 하지 않음).
+    """관점마다 사용할 좌표 기반 근거리 후보 묶음을 결정론적으로 만든다.
+
+    이전 구현은 liked 태그 장소만 좌표로 묶고, 카테고리 검색 장소는 모두 공유했다.
+    따라서 LLM이 카테고리 장소를 서로 멀리 섞어도 60분을 넘기기 전까지는 통과할
+    수 있었다. 이제 모든 후보를 반경 2.5km의 지역 묶음으로 먼저 자른다.
+
+    묶음 점수는 식사 가능한 카테고리, 카테고리 다양성, 좋아요 태그, 후보 수를
+    함께 보므로 단순히 장소가 많은 상권보다 실제 일정으로 구성 가능한 중심을
+    우선한다. 서로 다른 중심을 우선 선택해 관점 차이도 유지하지만, 충분한 다른
+    중심이 없으면 가장 좋은 묶음을 재사용한다.
     """
-    shared = [p for p in place_candidates if not p.get("matched_tag")]
-    tag_matches: dict[str, list[dict]] = {}
-    for p in place_candidates:
-        if tag := p.get("matched_tag"):
-            tag_matches.setdefault(tag, []).append(p)
-    if not tag_matches:
-        return [list(shared) for _ in range(num_perspectives)]
 
     def coords(place: dict) -> tuple[float, float] | None:
         mapx, mapy = place.get("mapx"), place.get("mapy")
@@ -374,29 +372,46 @@ def _tag_bundles_by_perspective(
         except (TypeError, ValueError):
             return None
 
-    seed_tag = max(tag_matches, key=lambda t: len(tag_matches[t]))
-    seeds = tag_matches[seed_tag]
+    located = [(place, point) for place in place_candidates if (point := coords(place)) is not None]
+    # 좌표가 아예 없는 응답은 기존 동작으로 폴백한다. 실제 선택된 장소는 Step3가
+    # 좌표 누락을 환각으로 드롭하므로, 이 경우도 조용한 품질 저하가 아니라 재생성
+    # 또는 명확한 생성 불가로 끝난다.
+    if not located:
+        return [list(place_candidates) for _ in range(num_perspectives)]
 
-    per_perspective = [list(shared) for _ in range(num_perspectives)]
-    for i in range(num_perspectives):
-        seed = seeds[i % len(seeds)]
-        per_perspective[i].append(seed)
-        seed_coord = coords(seed)
-        for tag, matches in tag_matches.items():
-            if tag == seed_tag:
-                continue
-            with_coord: list[tuple[dict, tuple[float, float]]] = []
-            for m in matches:
-                c = coords(m)
-                if c is not None:
-                    with_coord.append((m, c))
-            if seed_coord is not None and with_coord:
-                lat0, lng0 = seed_coord
-                pick = min(with_coord, key=lambda mc: haversine_distance_m(lat0, lng0, *mc[1]))[0]
-            else:
-                pick = matches[i % len(matches)]
-            per_perspective[i].append(pick)
-    return per_perspective
+    neighborhoods: list[
+        tuple[dict, tuple[float, float], list[dict], tuple[int, int, int, int]]
+    ] = []
+    for seed, seed_coord in located:
+        nearby = [
+            place
+            for place, point in located
+            if haversine_distance_m(seed_coord[0], seed_coord[1], point[0], point[1])
+            <= _COMPACT_POOL_RADIUS_METERS
+        ]
+        meal_count = sum(p.get("source_category") in _MEAL_CATEGORIES for p in nearby)
+        category_count = len({p.get("source_category") for p in nearby if p.get("source_category")})
+        matched_tag_count = sum(bool(p.get("matched_tag")) for p in nearby)
+        # 이름을 마지막 tie-breaker로 써서 네트워크 응답 순서가 달라져도 결과가 흔들리지 않는다.
+        score = (meal_count, category_count, matched_tag_count, len(nearby))
+        neighborhoods.append((seed, seed_coord, nearby, score))
+
+    neighborhoods.sort(key=lambda item: (item[3], item[0].get("title", "")), reverse=True)
+    selected: list[tuple[dict, tuple[float, float], list[dict], tuple[int, int, int, int]]] = []
+    for neighborhood in neighborhoods:
+        _, center, _, _ = neighborhood
+        if all(
+            haversine_distance_m(center[0], center[1], existing[1][0], existing[1][1])
+            > _COMPACT_POOL_RADIUS_METERS
+            for existing in selected
+        ):
+            selected.append(neighborhood)
+        if len(selected) == num_perspectives:
+            break
+
+    if not selected:
+        return [list(place_candidates) for _ in range(num_perspectives)]
+    return [list(selected[i % len(selected)][2]) for i in range(num_perspectives)]
 
 
 def _call_all_perspectives_sync(
@@ -499,6 +514,45 @@ def _source_category_by_title(place_candidates: list[dict]) -> dict[str, str]:
     }
 
 
+def _meal_anchor_starts(
+    places: list[PlaceSelectionDraft],
+    time_range: tuple[datetime, datetime],
+    source_categories: dict[str, str],
+) -> dict[int, datetime]:
+    """점심·저녁 식사 장소를 실제 식사 시간대에 배치할 앵커를 만든다.
+
+    이전에는 Step3가 12-13시와 18-19시의 식사를 하드 검증하면서도,
+    _schedule_places()는 모든 활동을 시작 시각부터 빈틈없이 앞당겨 배치했다.
+    특히 10-21시처럼 긴 기본 입력에서는 저녁까지 도달하지 못해 후보 풀이
+    충분해도 전부 드롭될 수 있었다. 선택된 식사 장소의 방문 순서를 보존하면서
+    첫 식사는 첫 필수 창, 마지막 식사는 마지막 필수 창에 맞춰 공백을 배정한다.
+
+    식사 장소 개수가 필요한 창보다 적으면 빈 dict를 반환한다. 이 경우에는
+    Step3가 기존 하드룰로 후보를 재생성하게 하므로, 식사 없이 통과시키지 않는다.
+    """
+    windows = _required_meal_windows(time_range)
+    if not windows:
+        return {}
+    meal_indices = [
+        i for i, place in enumerate(places) if source_categories.get(place.name) in _MEAL_CATEGORIES
+    ]
+    if len(meal_indices) < len(windows):
+        return {}
+
+    if len(windows) == 1:
+        selected_indices = [meal_indices[0]]
+    else:
+        # 첫·마지막 식사 장소를 각각 이른·늦은 식사 창에 붙이면 LLM이 고른
+        # 방문 순서도 유지하고, 중간 활동은 두 끼 사이로 자연스럽게 들어간다.
+        selected_indices = [meal_indices[0], meal_indices[-1]]
+
+    date = time_range[0].date()
+    return {
+        index: datetime.combine(date, window[0])
+        for index, window in zip(selected_indices, windows, strict=True)
+    }
+
+
 def _schedule_places(
     places: list[PlaceSelectionDraft],
     time_range: tuple[datetime, datetime],
@@ -522,6 +576,7 @@ def _schedule_places(
     coords = _coords_by_title(place_candidates or [])
     matched_tags = _matched_tag_by_title(place_candidates or [])
     source_categories = _source_category_by_title(place_candidates or [])
+    meal_anchors = _meal_anchor_starts(places, time_range, source_categories)
 
     buffers = []
     for prev, cur in zip(places, places[1:], strict=False):
@@ -541,6 +596,8 @@ def _schedule_places(
     for i, place in enumerate(places):
         if i > 0:
             cursor = cursor + timedelta(minutes=buffers[i - 1])
+        if anchor_start := meal_anchors.get(i):
+            cursor = max(cursor, anchor_start)
         activity_end = cursor + timedelta(minutes=per_activity)
         lat, lng, address = coords.get(place.name, (None, None, ""))
         activities.append(

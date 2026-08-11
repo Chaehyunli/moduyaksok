@@ -42,6 +42,27 @@ export interface Candidate {
   feasibilityWarning: string | null
 }
 
+export interface PlacePoolItem {
+  name: string
+  category: string
+  address: string
+  mapUrl: string
+}
+
+export interface PlacePoolGroup {
+  label: string
+  places: PlacePoolItem[]
+}
+
+export interface PlacePool {
+  candidateCount: number
+  groups: {
+    liked: PlacePoolGroup[]
+    disliked: PlacePoolGroup[]
+    categories: PlacePoolGroup[]
+  }
+}
+
 export interface Conditions {
   purpose: string
   headcount: number
@@ -108,6 +129,29 @@ function mapApiCandidate(raw: any): Candidate {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiPlacePool(raw: any): PlacePool | null {
+  if (!raw) return null
+  const mapGroup = (group: any): PlacePoolGroup => ({
+    label: group.label,
+    places: (group.places ?? []).map((place: any): PlacePoolItem => ({
+      name: place.name,
+      category: place.category,
+      address: place.address,
+      mapUrl: place.map_url,
+    })),
+  })
+  const groups = raw.groups ?? {}
+  return {
+    candidateCount: raw.candidate_count ?? 0,
+    groups: {
+      liked: (groups.liked ?? []).map(mapGroup),
+      disliked: (groups.disliked ?? []).map(mapGroup),
+      categories: (groups.categories ?? []).map(mapGroup),
+    },
+  }
+}
+
 // 위저드(ConditionWizardView)엔 아직 날짜 선택 UI가 없고 시:분만 받는다 — 오늘 날짜와
 // 합쳐서 ISO datetime을 만들되, 이미 지난 시각이면 내일 날짜로 굴린다. 날짜 선택
 // UI는 나중에 추가할 것(ponytail: 지금 범위 밖).
@@ -143,6 +187,7 @@ export const useAppStore = defineStore('app', {
     conditions: null as Conditions | null,
     sessionId: null as string | null,
     candidates: [] as Candidate[],
+    placePool: null as PlacePool | null,
     selectedCandidateId: null as string | null,
     // 409(조건 불만족) 사유든 그 외 네트워크/서버 오류든, 후보를 못 만든 이유를
     // CandidatesView가 그대로 보여준다.
@@ -212,6 +257,7 @@ export const useAppStore = defineStore('app', {
       this.scheduleError = null
       this.sessionId = null
       this.candidates = []
+      this.placePool = null
 
       const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
       try {
@@ -226,6 +272,7 @@ export const useAppStore = defineStore('app', {
         })
         this.sessionId = data.session_id
         this.candidates = data.candidates.map(mapApiCandidate)
+        this.placePool = mapApiPlacePool(data.place_pool)
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError =
@@ -278,6 +325,7 @@ export const useAppStore = defineStore('app', {
     async fetchSchedule(sessionId: string) {
       const { data } = await api.get(`/schedules/${sessionId}`)
       this.candidates = data.candidates.map(mapApiCandidate)
+      this.placePool = mapApiPlacePool(data.place_pool)
       this.shareSlug = data.share_slug ?? ''
     },
     async fetchSharedSchedule(slug: string) {

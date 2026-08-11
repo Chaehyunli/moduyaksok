@@ -511,6 +511,21 @@ def test_schedule_places_source_category_is_none_when_not_set():
     assert activities[0].source_category is None
 
 
+def test_schedule_places_anchors_lunch_and_dinner_in_a_long_window():
+    places = [_place("카페"), _place("점심식당"), _place("전시"), _place("저녁식당")]
+    candidates = [
+        {**_GANGNAM_CANDIDATE, "title": "카페", "source_category": "카페"},
+        {**_NEARBY_CANDIDATE, "title": "점심식당", "source_category": "한식"},
+        {**_NEARBY_CANDIDATE, "title": "전시", "source_category": "전시"},
+        {**_GANGNAM_CANDIDATE, "title": "저녁식당", "source_category": "양식"},
+    ]
+
+    activities = _schedule_places(places, _WINDOW_10_TO_21, candidates)
+
+    assert activities[1].start_time == "12:00"
+    assert activities[3].start_time == "18:00"
+
+
 # ── _tag_bundles_by_perspective() (2026-08-11) ──────────────────────────────
 
 
@@ -522,20 +537,20 @@ def test_tag_bundles_returns_copies_of_shared_list_when_no_tag_matches():
     assert bundles == [place_candidates, place_candidates, place_candidates]
 
 
-def test_tag_bundles_shares_non_matched_places_across_all_perspectives():
-    shared = {"title": "카페1", "category": "카페"}
-    waffle = [
+def test_tag_bundles_excludes_unlocated_place_when_coordinates_exist():
+    unlocated = {"title": "좌표없는카페", "category": "카페"}
+    located = [
         {"title": f"와플{i}", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}
         for i in range(3)
     ]
 
-    bundles = _tag_bundles_by_perspective([shared, *waffle], 3)
+    bundles = _tag_bundles_by_perspective([unlocated, *located], 3)
 
     for bundle in bundles:
-        assert shared in bundle
+        assert unlocated not in bundle
 
 
-def test_tag_bundles_gives_each_perspective_a_different_tag_match():
+def test_tag_bundles_reuses_one_compact_pool_when_all_places_are_nearby():
     waffle = [
         {"title": f"와플{i}", "matched_tag": "와플", "mapx": "1270000000", "mapy": "375000000"}
         for i in range(3)
@@ -543,10 +558,7 @@ def test_tag_bundles_gives_each_perspective_a_different_tag_match():
 
     bundles = _tag_bundles_by_perspective(waffle, 3)
 
-    picked_titles = [
-        next(p["title"] for p in bundle if p.get("matched_tag") == "와플") for bundle in bundles
-    ]
-    assert len(set(picked_titles)) == 3  # 셋 다 다른 와플 매장을 봄
+    assert all({p["title"] for p in bundle} == {"와플0", "와플1", "와플2"} for bundle in bundles)
 
 
 def test_tag_bundles_reuses_a_match_when_fewer_than_perspectives():
@@ -693,15 +705,33 @@ async def test_generate_candidates_gives_each_perspective_a_different_tag_match(
 
     monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
 
-    await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _WAFFLE_MATCHES)
+    nearby = [
+        {
+            "title": f"강남와플{i}",
+            "category": "카페",
+            "matched_tag": "와플",
+            "mapx": str(1270000000 + i * 10000),
+            "mapy": str(375000000 + i * 10000),
+        }
+        for i in range(2)
+    ]
+    distant = [
+        {
+            "title": f"홍대와플{i}",
+            "category": "카페",
+            "matched_tag": "와플",
+            "mapx": str(1269000000 + i * 10000),
+            "mapy": str(378000000 + i * 10000),
+        }
+        for i in range(2)
+    ]
+
+    await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, [*nearby, *distant])
 
     assert len(captured_users) == 3
-    seen_per_prompt = [
-        {title for title in ("와플0", "와플1", "와플2") if title in u} for u in captured_users
-    ]
-    # 관점마다 3곳 중 정확히 1곳만 봐야 하고, 셋이 서로 달라야 한다.
-    assert all(len(s) == 1 for s in seen_per_prompt)
-    assert len(set.union(*seen_per_prompt)) == 3
+    # 한 프롬프트 안에 강남·홍대 후보가 섞이면 안 된다. 관점별 후보의 차이는
+    # "서로 다른 태그 하나"보다 "실제로 이동 가능한 근거리 묶음"이 우선이다.
+    assert all(not ("강남와플" in user and "홍대와플" in user) for user in captured_users)
 
 
 def test_generate_single_candidate_reuses_same_partition_as_full_run(monkeypatch):

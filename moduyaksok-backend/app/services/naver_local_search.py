@@ -58,11 +58,13 @@
 # ------------------------------------------------------------------
 import asyncio
 import re
+from dataclasses import dataclass
 
 import httpx
 
 from app.config import settings
 from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, PreferenceTag
+from app.services.naver_map_url import build_naver_map_url
 from app.services.rate_limiter import acquire_call_slot, reserve_daily_budget
 
 # 검색어와 일치하는 부분에 네이버가 <b> 태그를 강조 표시로 넣어서 돌려준다(실측
@@ -80,6 +82,23 @@ _MAX_DISPLAY = 5
 
 class NaverSearchError(Exception):
     """네이버 지역검색 API 호출 실패(인증 오류, 타임아웃, 5xx 등)."""
+
+
+@dataclass
+class PlaceSearchResult(list[dict]):
+    """Step2가 사용할 안전한 장소 목록과, 사용자에게 보여줄 검색 이력.
+
+    list를 상속해 기존 파이프라인이 ``list[dict]``처럼 그대로 사용할 수 있게
+    유지한다. ``search_groups``에는 각 검색 질의의 결과를 별도로 보존한다. 특히
+    disliked 검색 결과는 Step2 입력에서는 제거되지만, 사용자가 "왜 이 장소는
+    후보에서 빠졌는지" 확인할 수 있도록 이력에는 남긴다.
+    """
+
+    search_groups: dict
+
+    def __init__(self, places: list[dict], search_groups: dict):
+        super().__init__(places)
+        self.search_groups = search_groups
 
 
 async def search_places(
@@ -222,6 +241,55 @@ def _merge_results(
     return merged, any_failed
 
 
+def _to_snapshot_place(place: dict) -> dict:
+    """검색 이력 화면에 필요한 공개 가능한 최소 장소 정보만 남긴다."""
+    address = place.get("roadAddress") or place.get("address", "")
+    return {
+        "name": place.get("title", ""),
+        "category": place.get("category", ""),
+        "address": address,
+        "map_url": build_naver_map_url(place),
+    }
+
+
+def _build_search_groups(
+    queries: list[tuple[str, str, str | None]],
+    results: list[list[dict] | BaseException],
+    eligible_titles: set[str],
+) -> dict:
+    """검색 시점의 질의별 결과를 UI/피드백 재사용용 JSON으로 정리한다.
+
+    카테고리와 좋아요 그룹은 실제 Step2에 남긴 안전한 장소만 보여준다. 싫어요
+    그룹만은 의도적으로 제외 전 원본을 남겨, 해당 검색이 어떤 장소를 차단했는지
+    투명하게 확인할 수 있게 한다.
+    """
+    grouped: dict[str, list[dict]] = {
+        "liked": [],
+        "disliked": [],
+        "categories": [],
+    }
+    for (_, kind, value), result in zip(queries, results, strict=True):
+        if isinstance(result, BaseException) or value is None:
+            continue
+        places = [
+            _to_snapshot_place(place)
+            for place in result
+            if kind == _KIND_DISLIKED or place.get("title") in eligible_titles
+        ]
+        if not places:
+            continue
+        group = {"label": value, "places": places}
+        if kind == _KIND_CATEGORY:
+            grouped["categories"].append(group)
+        else:
+            grouped[kind].append(group)
+
+    return {
+        "candidate_count": len(eligible_titles),
+        "groups": grouped,
+    }
+
+
 async def search_places_for_region(
     region: str,
     liked_tags: list[PreferenceTag] | None = None,
@@ -249,7 +317,10 @@ async def search_places_for_region(
     granted = await reserve_daily_budget(len(queries))
     queries = queries[:granted]
     if not queries:
-        return []
+        return PlaceSearchResult(
+            [],
+            {"candidate_count": 0, "groups": {"liked": [], "disliked": [], "categories": []}},
+        )
 
     results_per_query = await asyncio.gather(
         *(search_places(query, session_id=session_id) for query, _, _ in queries),
@@ -263,4 +334,7 @@ async def search_places_for_region(
     # 있으므로 raise하지 않는다.
     if not merged and any_failed:
         raise NaverSearchError("모든 카테고리·태그 조회가 실패해 병합할 결과가 없습니다.")
-    return list(merged.values())
+    return PlaceSearchResult(
+        list(merged.values()),
+        _build_search_groups(queries, results_per_query, set(merged)),
+    )

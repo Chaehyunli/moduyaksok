@@ -91,3 +91,33 @@ def test_strips_basement_floor_only_no_unit():
 
     decoded = unquote(url.removeprefix("https://map.naver.com/p/search/"))
     assert decoded == "지하 카페 서울 강남구 테헤란로 1"
+
+
+def test_trims_floor_and_repeated_store_name_after_road_number():
+    from urllib.parse import unquote
+
+    place = {
+        "title": "츄플러스",
+        "roadAddress": "경기 수원시 팔달구 화서문로45번길 26 1층 츄플러스",
+    }
+
+    url = build_naver_map_url(place)
+
+    decoded = unquote(url.removeprefix("https://map.naver.com/p/search/"))
+    assert decoded == "츄플러스 경기 수원시 팔달구 화서문로45번길 26"
+
+
+def test_trims_building_name_and_floor_range_after_road_number():
+    from urllib.parse import unquote
+
+    place = {
+        "title": "아이엠제이 브런치카페 수원성균관대역점",
+        "roadAddress": "경기도 수원시 장안구 화산로285번길 18-1 더크리스탈 지하1-지상1층",
+    }
+
+    url = build_naver_map_url(place)
+
+    decoded = unquote(url.removeprefix("https://map.naver.com/p/search/"))
+    assert decoded == (
+        "아이엠제이 브런치카페 수원성균관대역점 경기도 수원시 장안구 화산로285번길 18-1"
+    )

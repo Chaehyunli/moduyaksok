@@ -106,8 +106,24 @@ def _candidate(candidate_id: str = "A") -> Candidate:
 
 def _mock_pipeline_success(monkeypatch, *, candidates=None):
     async def fake_generate(provider, api_key, session_id, raw_input):
+        from app.services.naver_local_search import PlaceSearchResult
+
         result = ScheduleResponse(session_id=session_id, candidates=candidates or [_candidate()])
-        return result, _FAKE_CONDITIONS, [{"title": "가게1"}]
+        return (
+            result,
+            _FAKE_CONDITIONS,
+            PlaceSearchResult(
+                [{"title": "가게1"}],
+                {
+                    "candidate_count": 1,
+                    "groups": {
+                        "liked": [{"label": "와플", "places": [{"name": "와플집"}]}],
+                        "disliked": [],
+                        "categories": [{"label": "카페", "places": [{"name": "가게1"}]}],
+                    },
+                },
+            ),
+        )
 
     monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
 
@@ -144,6 +160,7 @@ def test_create_schedule_success_returns_candidates_and_persists_session(
     assert len(body["candidates"]) == 1
     assert body["candidates"][0]["candidate_id"] == "A"
     assert body["candidates"][0]["routes"] == []
+    assert body["place_pool"]["candidate_count"] == 1
 
     from app.models.schedule import ScheduleSession
 
@@ -170,6 +187,7 @@ def test_create_schedule_success_persists_place_pool(client, session, monkeypatc
     ).first()
     assert pool is not None
     assert pool.places["places"] == [{"title": "가게1"}]
+    assert pool.search_groups["groups"]["liked"][0]["label"] == "와플"
     assert pool.searched_liked_tags == []
     assert pool.searched_disliked_tags == []
 

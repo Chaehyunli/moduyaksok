@@ -146,6 +146,11 @@ def _replace_candidate(schedule_session: ScheduleSession, updated: Candidate) ->
     }
 
 
+def _empty_place_pool() -> dict:
+    """구버전/테스트용 list 결과에도 일관된 API 모양을 제공한다."""
+    return {"candidate_count": 0, "groups": {"liked": [], "disliked": [], "categories": []}}
+
+
 @router.post("/schedules", response_model=ScheduleResponse)
 async def create_schedule(
     body: ScheduleCreateRequest,
@@ -180,6 +185,7 @@ async def create_schedule(
     if isinstance(result, InfeasibleResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=result.model_dump())
 
+    place_pool = getattr(place_candidates, "search_groups", _empty_place_pool())
     schedule_session = ScheduleSession(
         id=session_id,
         user_id=current_user.id,
@@ -195,13 +201,16 @@ async def create_schedule(
         SchedulePlacePool(
             session_id=session_id,
             places={"places": place_candidates},
+            search_groups=place_pool,
             searched_liked_tags=[t.tag for t in conditions.liked_tags if t.verifiable],
             searched_disliked_tags=[t.tag for t in conditions.disliked_tags if t.verifiable],
         )
     )
     session.commit()
 
-    return ScheduleResponse(session_id=str(session_id), candidates=result.candidates)
+    return ScheduleResponse(
+        session_id=str(session_id), candidates=result.candidates, place_pool=place_pool
+    )
 
 
 @router.post("/schedules/{session_id}/routes", response_model=Candidate)
@@ -246,9 +255,13 @@ def get_schedule(
     share_link = session.exec(
         select(ShareLink).where(ShareLink.session_id == schedule_session.id)
     ).first()
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == schedule_session.id)
+    ).first()
     return ScheduleResponse(
         session_id=str(schedule_session.id),
         candidates=candidates,
+        place_pool=place_pool.search_groups if place_pool else _empty_place_pool(),
         share_slug=share_link.slug if share_link else None,
     )
 
