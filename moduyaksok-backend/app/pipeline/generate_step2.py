@@ -93,10 +93,40 @@
 #             없었다(사용자가 지적, 실측해보니 이 프로젝트의 다른 조건들과 달리
 #             purpose만 유일하게 전용 지시문이 없었음) — _PURPOSE_GUIDANCE로
 #             목적별 구체 지시문을 추가.
+# 2026-08-11, 사용자 관측 2건 대응 — (1) 관점 3개가 비슷한 후보를 만듦(같은
+#             취향 태그 매칭 장소를 관점들이 동시에 욕심냄), (2) 식사(점심/저녁)
+#             없이 디저트/카페만으로 채워지는 경우가 있음(강한 liked_tag가 있을 때).
+#             둘 다 "LLM 지시만으로는 못 믿는다"는 이 프로젝트 기존 결론에 따라
+#             결정론적으로 해소:
+#             (1) _tag_bundles_by_perspective() — 관점마다 다른 태그 매칭 장소를
+#             "시드"로 배정하고, 다른 태그는 그 시드와 좌표상 가장 가까운 매칭으로
+#             채운 뒤, 관점별로 서로 다른 place_candidates 부분집합을 준다(전부
+#             똑같은 풀을 보여주던 것에서 변경) — 같은 곳을 여러 관점이 동시에
+#             볼 수조차 없게 만들어 겹침을 원천 차단. 좌표는 mapx/mapy를 그대로
+#             쓴다(Step4 이동시간 추정과 같은 값, travel_estimate.haversine_
+#             distance_m 재사용 — 새 지역 문자열 필드를 따로 안 만듦).
+#             (2) 카테고리 검색(맛집/카페/액티비티/문화시설) 소싱 시점에 어느
+#             버킷에서 나왔는지를 place dict에 source_category로 부착(naver_
+#             local_search.py, matched_tag와 같은 패턴)하고 ActivityDraft까지
+#             그대로 옮김. time_range가 점심(12~13시)/저녁(18~19시) 시간대를
+#             포함하면 그 시간대에 [맛집] 장소를 최소 1곳 포함하라고 유저
+#             프롬프트에 동적으로 지시(1차, _meal_slot_instruction) — Step3에
+#             하드룰 백스탑을 추가(2차, synthesize_step3.py 참고). 무조건 정확히
+#             그 시각에 먹으라는 게 아니라 "그 시간대가 일정에 껴 있으면 식사
+#             하나는 넣는다"는 느슨한 기준(사용자 제안).
+#             place_candidates 표시 텍스트에도 [맛집] 같은 버킷 라벨을 붙여서
+#             (_format_place_candidates) LLM이 텍스트로 카테고리를 추측하지
+#             않고 바로 참조하게 함.
+# 2026-08-11(2차), NormalizedConditions.regions: list[str] -> region: str로 축소되면서
+#             _build_user_prompt의 지역 표시를 단일 값으로 변경. naver_local_search의
+#             카테고리가 4개("맛집" 등)에서 15개로 세분화되며 "맛집" 하나로 뭉뚱그려
+#             참조하던 _meal_slot_instruction/_MEAL_CATEGORIES도 세분화된 식사류
+#             카테고리 집합을 참조하게 변경(synthesize_step3.py와 같은 목록을
+#             독립적으로 유지, naver_local_search.py도 동일).
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from app.pipeline.models import ModelTier, get_model
 from app.pipeline.schemas import (
@@ -107,7 +137,7 @@ from app.pipeline.schemas import (
     PlaceSelectionDraft,
     PreferenceTag,
 )
-from app.pipeline.travel_estimate import estimate_buffer_minutes
+from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
 from app.services.structured_llm import call_structured
 
 # MID -> HIGH로 격상(2026-08-09, 장소선택/시간배정 분리 이전). 예산 합산·중복
@@ -187,6 +217,16 @@ _ACTIVITY_BUFFER_MINUTES = 30
 _MIN_ACTIVITY_MINUTES = 30
 _MAX_ACTIVITY_MINUTES = 90
 
+# 식사 슬롯 판단 기준(2026-08-11) — synthesize_step3.py에도 같은 상수·로직이
+# 독립적으로 있다(이 프로젝트 관례상 파이프라인 단계끼리는 서로 안 부르고, 작은
+# 헬퍼는 각자 파일에 둔다 — _format_tags()도 이미 두 파일에 각각 있음).
+_LUNCH_WINDOW = (time(12, 0), time(13, 0))
+_DINNER_WINDOW = (time(18, 0), time(19, 0))
+# naver_local_search._PLACE_CATEGORIES 중 "식사가 되는" 카테고리 — 그쪽과 같은
+# 목록을 독립적으로 유지한다(위 주석과 같은 이유). 카테고리 목록을 바꿀 땐
+# 두 파일(naver_local_search.py, synthesize_step3.py) 다 같이 확인할 것.
+_MEAL_CATEGORIES = frozenset({"한식", "중식", "일식", "양식", "분식", "고깃집"})
+
 _ROLE_TASK = """\
 # Role
 너는 주어진 조건과 장소 후보 목록 안에서 만남 일정에 쓸 장소를 고르는 전문 플래너다.
@@ -232,12 +272,47 @@ def _format_place_candidates(place_candidates: list[dict]) -> str:
     if not place_candidates:
         return "(없음 — 이 조건으로는 활동을 채울 장소가 없다는 뜻이니 최소한의 \
 초안만 만들어라)"
-    lines = [
-        f"- {p.get('title', '')} | {p.get('category', '')} | "
-        f"{p.get('roadAddress') or p.get('address', '')}"
-        for p in place_candidates
-    ]
+    lines = []
+    for p in place_candidates:
+        bucket = p.get("source_category")
+        bucket_label = f" [{bucket}]" if bucket else ""
+        lines.append(
+            f"- {p.get('title', '')} | {p.get('category', '')}{bucket_label} | "
+            f"{p.get('roadAddress') or p.get('address', '')}"
+        )
     return "\n".join(lines)
+
+
+def _required_meal_windows(time_range: tuple[datetime, datetime]) -> list[tuple[time, time]]:
+    """time_range가 점심(12~13시)/저녁(18~19시) 구간을 포함하면 그 구간을 필수
+    식사 슬롯으로 반환한다 — 무조건 그 시각에 먹으라는 게 아니라, 그 시간대가
+    일정에 껴 있으면 식사 하나는 넣는 게 자연스럽다는 느슨한 기준(2026-08-11,
+    사용자 제안). 나중에 피드백 단계(POST /schedules/{id}/feedback, 아직
+    미구현)에서 "점심은 만나서 먹을 거예요" 같은 입력이 이 요구사항 자체를
+    덮어쓰게 하면 된다.
+    """
+    start, end = time_range
+    windows: list[tuple[time, time]] = []
+    if start.time() <= _LUNCH_WINDOW[0] and end.time() >= _LUNCH_WINDOW[1]:
+        windows.append(_LUNCH_WINDOW)
+    if start.time() <= _DINNER_WINDOW[0] and end.time() >= _DINNER_WINDOW[1]:
+        windows.append(_DINNER_WINDOW)
+    return windows
+
+
+def _meal_slot_instruction(time_range: tuple[datetime, datetime]) -> str:
+    windows = _required_meal_windows(time_range)
+    if not windows:
+        return ""
+    labels = {_LUNCH_WINDOW: "점심(12:00~13:00 부근)", _DINNER_WINDOW: "저녁(18:00~19:00 부근)"}
+    parts = [labels[w] for w in windows]
+    meal_labels = "/".join(f"[{c}]" for c in sorted(_MEAL_CATEGORIES))
+    return (
+        f"이 시간대엔 {', '.join(parts)}이(가) 껴 있다 — 해당 시간대에 식사가 되는 "
+        f"카테고리({meal_labels} 중 하나) 표시된 장소를 최소 1곳씩 포함해라(정확히 "
+        "그 시각일 필요는 없고 자연스러운 범위면 된다). 나머지 시간은 자유롭게(카페/"
+        "액티비티/문화시설 등으로) 채워라."
+    )
 
 
 def _build_system_prompt(perspective: tuple[str, str]) -> str:
@@ -252,17 +327,76 @@ def _format_purpose(purpose: str) -> str:
 
 def _build_user_prompt(conditions: NormalizedConditions, place_candidates: list[dict]) -> str:
     start, end = conditions.time_range
+    meal_instruction = _meal_slot_instruction(conditions.time_range)
     return (
         f"목적: {_format_purpose(conditions.purpose)}\n"
         f"인원: {conditions.headcount}명\n"
         f"시간: {start.isoformat()} ~ {end.isoformat()}\n"
-        f"지역(복수 가능, place_candidates는 이 지역들에서 조회된 것): "
-        f"{', '.join(conditions.regions)}\n"
+        + (f"{meal_instruction}\n" if meal_instruction else "")
+        + f"지역(place_candidates는 이 지역에서 조회된 것): {conditions.region}\n"
         f"1인 예산: {conditions.budget_per_person}원\n"
         f"좋아하는 것: {_format_tags(conditions.liked_tags)}\n"
         f"싫어하는 것: {_format_tags(conditions.disliked_tags)}\n\n"
         f"장소 후보 목록(place_candidates):\n{_format_place_candidates(place_candidates)}"
     )
+
+
+def _tag_bundles_by_perspective(
+    place_candidates: list[dict], num_perspectives: int
+) -> list[list[dict]]:
+    """관점마다 서로 다른 place_candidates 부분집합을 만든다 — 관점 3개가 같은
+    취향 태그 매칭 장소를 동시에 욕심내서 비슷한 후보만 나오는 문제(2026-08-11,
+    사용자 관측) 대응. 매칭 태그가 없는 장소(카테고리 검색으로만 나온 것)는
+    지금처럼 모든 관점에 동일하게 공유하고, matched_tag가 있는 장소만 관점별로
+    분배한다:
+    - 매칭이 제일 많은 태그를 "시드 태그"로 삼아 관점마다 다른 시드 장소를 배정.
+    - 다른 태그는 그 시드와 좌표(mapx/mapy — Step4 이동시간 추정과 같은 값)상
+      가장 가까운 매칭을 골라 묶는다 — 관점 하나가 보는 태그 매칭 장소들이
+      지리적으로 흩어지지 않게.
+    - 같은 곳을 여러 관점이 아예 볼 수 없게 만드는 게 목적이라, 매칭이 적으면
+      (예: 태그당 1곳뿐) 자연히 겹칠 수 있다 — 그건 정상(억지로 완전히 다르게
+      만들려고 하지 않음).
+    """
+    shared = [p for p in place_candidates if not p.get("matched_tag")]
+    tag_matches: dict[str, list[dict]] = {}
+    for p in place_candidates:
+        if tag := p.get("matched_tag"):
+            tag_matches.setdefault(tag, []).append(p)
+    if not tag_matches:
+        return [list(shared) for _ in range(num_perspectives)]
+
+    def coords(place: dict) -> tuple[float, float] | None:
+        mapx, mapy = place.get("mapx"), place.get("mapy")
+        if mapx is None or mapy is None:
+            return None
+        try:
+            return float(mapy) / 1e7, float(mapx) / 1e7
+        except (TypeError, ValueError):
+            return None
+
+    seed_tag = max(tag_matches, key=lambda t: len(tag_matches[t]))
+    seeds = tag_matches[seed_tag]
+
+    per_perspective = [list(shared) for _ in range(num_perspectives)]
+    for i in range(num_perspectives):
+        seed = seeds[i % len(seeds)]
+        per_perspective[i].append(seed)
+        seed_coord = coords(seed)
+        for tag, matches in tag_matches.items():
+            if tag == seed_tag:
+                continue
+            with_coord: list[tuple[dict, tuple[float, float]]] = []
+            for m in matches:
+                c = coords(m)
+                if c is not None:
+                    with_coord.append((m, c))
+            if seed_coord is not None and with_coord:
+                lat0, lng0 = seed_coord
+                pick = min(with_coord, key=lambda mc: haversine_distance_m(lat0, lng0, *mc[1]))[0]
+            else:
+                pick = matches[i % len(matches)]
+            per_perspective[i].append(pick)
+    return per_perspective
 
 
 def _call_all_perspectives_sync(
@@ -274,7 +408,11 @@ def _call_all_perspectives_sync(
     """스레드 하나 안에서 관점 3개를 병렬 제출하고, 각각 개별 timeout으로
     result()를 기다린다. asyncio.wait_for/asyncio.timeout을 쓰지 않아 이걸
     호출하는 async 쪽이 어떤 이벤트루프/nest_asyncio 상태에 있든 영향받지 않는다.
+    관점마다 _tag_bundles_by_perspective()가 만든 서로 다른 place_candidates
+    부분집합을 넘긴다(2026-08-11) — 예전엔 3개 관점 모두 동일한 place_candidates를
+    봤다.
     """
+    per_perspective_candidates = _tag_bundles_by_perspective(place_candidates, len(PERSPECTIVES))
     with ThreadPoolExecutor(max_workers=len(PERSPECTIVES)) as executor:
         future_to_perspective = {
             executor.submit(
@@ -283,10 +421,10 @@ def _call_all_perspectives_sync(
                 api_key=api_key,
                 model=get_model(provider, TIER),
                 system=_build_system_prompt(perspective),
-                user=_build_user_prompt(conditions, place_candidates),
+                user=_build_user_prompt(conditions, per_perspective_candidates[i]),
                 schema=CandidateSelectionDraft,
             ): perspective
-            for perspective in PERSPECTIVES
+            for i, perspective in enumerate(PERSPECTIVES)
         }
         results: list[CandidateSelectionDraft | BaseException] = []
         for future in future_to_perspective:
@@ -336,7 +474,7 @@ def _coords_by_title(place_candidates: list[dict]) -> dict[str, tuple[float, flo
 
 
 def _matched_tag_by_title(place_candidates: list[dict]) -> dict[str, str]:
-    """title -> matched_tag. naver_local_search.search_places_for_regions()가
+    """title -> matched_tag. naver_local_search.search_places_for_region()가
     liked_tags 태그 검색("{region} {tag}")에서 나온 장소에만 결정론적으로 붙여준
     값을 그대로 옮긴다(2026-08-11) — 카테고리 검색에서만 나온 장소나 환각 장소는
     이 dict에 없다.
@@ -345,6 +483,19 @@ def _matched_tag_by_title(place_candidates: list[dict]) -> dict[str, str]:
         p["title"]: p["matched_tag"]
         for p in place_candidates
         if p.get("title") and p.get("matched_tag")
+    }
+
+
+def _source_category_by_title(place_candidates: list[dict]) -> dict[str, str]:
+    """title -> source_category(맛집/카페/액티비티/문화시설). naver_local_search가
+    카테고리 검색 버킷에서 결정론적으로 붙여준 값을 그대로 옮긴다(2026-08-11,
+    matched_tag와 같은 패턴) — Step3가 점심/저녁 슬롯에 실제 식사류가 있는지
+    판단하는 근거로 쓴다.
+    """
+    return {
+        p["title"]: p["source_category"]
+        for p in place_candidates
+        if p.get("title") and p.get("source_category")
     }
 
 
@@ -370,6 +521,7 @@ def _schedule_places(
     n = len(places)
     coords = _coords_by_title(place_candidates or [])
     matched_tags = _matched_tag_by_title(place_candidates or [])
+    source_categories = _source_category_by_title(place_candidates or [])
 
     buffers = []
     for prev, cur in zip(places, places[1:], strict=False):
@@ -402,6 +554,7 @@ def _schedule_places(
                 lat=lat,
                 lng=lng,
                 matched_tag=matched_tags.get(place.name),
+                source_category=source_categories.get(place.name),
             )
         )
         cursor = activity_end
@@ -504,14 +657,20 @@ def generate_single_candidate(
     _call_all_perspectives_sync가 관점 3개에 각각 하던 걸 관점 1개로 좁혀 그대로
     재사용한 것 — 스레드풀 없이 동기 호출 1번(단일 호출이라 병렬화할 대상이
     없음, normalize_conditions와 같은 이유로 sync def).
+
+    _tag_bundles_by_perspective()도 같은 인덱스로 다시 계산해서 써야 한다
+    (2026-08-11) — 안 그러면 재시도가 원래 관점 몫이 아니었던 태그 매칭 장소를
+    보게 돼서, 재생성한 후보가 다른 관점과 다시 겹칠 수 있다.
     """
     perspective = _find_perspective(perspective_label)
+    index = PERSPECTIVES.index(perspective)
+    per_perspective_candidates = _tag_bundles_by_perspective(place_candidates, len(PERSPECTIVES))
     selection = call_structured(
         provider=provider,
         api_key=api_key,
         model=get_model(provider, TIER),
         system=_build_system_prompt(perspective),
-        user=_build_user_prompt(conditions, place_candidates),
+        user=_build_user_prompt(conditions, per_perspective_candidates[index]),
         schema=CandidateSelectionDraft,
     )
     return _draft_from_selection(selection, conditions, place_candidates)

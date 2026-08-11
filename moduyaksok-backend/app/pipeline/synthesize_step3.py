@@ -59,8 +59,16 @@
 #               추적할 필요가 없다. 임계값(_MAX_TRAVEL_MINUTES)은 이 프로젝트가
 #               다른 곳(시간 초과 관용 범위)에서 이미 쓰는 60분 감각을 그대로
 #               가져온 초기값 — 실제 몇 개 케이스로 실측 후 조정할 것.
+# 2026-08-11, _has_missing_meal_slot 추가 — 강한 liked_tag(예: "와플")가 있으면
+#             디저트/카페만으로 일정이 채워지고 점심·저녁이 아예 없는 경우가
+#             있었다(사용자 관측). time_range가 점심(12~13시)/저녁(18~19시)
+#             시간대를 포함하는데 그 시간대와 겹치는 '맛집' 카테고리 활동
+#             (ActivityDraft.source_category, generate_step2.py 참고)이 없으면
+#             하드 위반. generate_step2._meal_slot_instruction()이 먼저 프롬프트로
+#             지시하지만(1차), "태그당 1곳" 때와 같은 이유로 여기서 한 번 더
+#             결정론적으로 강제한다(2차).
 # ------------------------------------------------------------------
-from datetime import datetime
+from datetime import datetime, time
 
 from pydantic import BaseModel
 
@@ -90,6 +98,15 @@ _BUDGET_OVERRUN_TOLERANCE_RATIO = 0.2
 # ponytail: 초기 추정값(기존 시간 초과 관용 범위와 같은 60분 감각 재사용) — 실제
 # 이동거리 관련 골든셋 케이스로 실측한 뒤 조정할 것.
 _MAX_TRAVEL_MINUTES = 60
+# 식사 슬롯 판단 기준 — generate_step2.py에도 같은 상수·로직이 독립적으로 있다
+# (이 프로젝트 관례상 파이프라인 단계끼리는 서로 안 부르고, 작은 헬퍼는 각자
+# 파일에 둔다 — _format_tags()도 이미 두 파일에 각각 있음).
+_LUNCH_WINDOW = (time(12, 0), time(13, 0))
+_DINNER_WINDOW = (time(18, 0), time(19, 0))
+# naver_local_search._PLACE_CATEGORIES 중 "식사가 되는" 카테고리 — 그쪽과 같은
+# 목록을 독립적으로 유지한다(위 주석과 같은 이유). 카테고리 목록을 바꿀 땐
+# 두 파일(naver_local_search.py, generate_step2.py) 다 같이 확인할 것.
+_MEAL_CATEGORIES = frozenset({"한식", "중식", "일식", "양식", "분식", "고깃집"})
 # 이 이상 자카드 유사도면 LLM 프롬프트에 "겹치는 후보" 컨텍스트로 얹는다.
 _SIMILARITY_CONTEXT_THRESHOLD = 0.5
 
@@ -151,6 +168,36 @@ def _has_excessive_travel(candidate: CandidateDraft) -> bool:
     return False
 
 
+def _required_meal_windows(time_range: tuple[datetime, datetime]) -> list[tuple[time, time]]:
+    """time_range가 점심(12~13시)/저녁(18~19시) 구간을 포함하면 그 구간을 필수
+    식사 슬롯으로 반환한다 — generate_step2._required_meal_windows()와 같은 로직.
+    """
+    start, end = time_range
+    windows: list[tuple[time, time]] = []
+    if start.time() <= _LUNCH_WINDOW[0] and end.time() >= _LUNCH_WINDOW[1]:
+        windows.append(_LUNCH_WINDOW)
+    if start.time() <= _DINNER_WINDOW[0] and end.time() >= _DINNER_WINDOW[1]:
+        windows.append(_DINNER_WINDOW)
+    return windows
+
+
+def _has_missing_meal_slot(candidate: CandidateDraft, conditions: NormalizedConditions) -> bool:
+    """time_range가 점심/저녁 시간대를 포함하는데 그 시간대와 겹치는 식사류
+    카테고리 활동(ActivityDraft.source_category)이 없으면 하드 위반 — 강한
+    liked_tag가 있을 때 디저트/카페만으로 일정이 채워지는 문제 대응.
+    """
+    for slot_start, slot_end in _required_meal_windows(conditions.time_range):
+        has_meal = any(
+            activity.source_category in _MEAL_CATEGORIES
+            and datetime.strptime(activity.start_time, "%H:%M").time() < slot_end
+            and datetime.strptime(activity.end_time, "%H:%M").time() > slot_start
+            for activity in candidate.activities
+        )
+        if not has_meal:
+            return True
+    return False
+
+
 def _budget_overrun_ratio(candidate: CandidateDraft, budget_per_person: int) -> float:
     total = sum(a.price_range_per_person[0] for a in candidate.activities)
     if budget_per_person <= 0:
@@ -171,11 +218,11 @@ def _rule_based_filter(
     candidates: list[CandidateDraft], conditions: NormalizedConditions
 ) -> tuple[list[CandidateDraft], list[str]]:
     """LLM 호출 전에 결정론적으로 판단 가능한 하드 위반만 걸러낸다 — 장소 환각,
-    활동 간 시간 겹침, 같은 태그 중복 반영, 과도한 이동거리(넷 다 예외 없이 드롭),
-    예산/시간 대폭 초과(관용 범위 초과분만 드롭). 관용 범위 이내의 예산/시간
-    초과는 드롭하지 않고 경고 문구를 만들어 survivors와 같은 순서로 돌려준다
-    (경고 없으면 빈 문자열) — synthesize_and_validate가 LLM의 feasibility_note와
-    합쳐 최종 feasibility_warning을 만든다.
+    활동 간 시간 겹침, 같은 태그 중복 반영, 과도한 이동거리, 식사 슬롯 누락
+    (다섯 다 예외 없이 드롭), 예산/시간 대폭 초과(관용 범위 초과분만 드롭).
+    관용 범위 이내의 예산/시간 초과는 드롭하지 않고 경고 문구를 만들어 survivors와
+    같은 순서로 돌려준다(경고 없으면 빈 문자열) — synthesize_and_validate가 LLM의
+    feasibility_note와 합쳐 최종 feasibility_warning을 만든다.
     """
     survivors: list[CandidateDraft] = []
     warnings: list[str] = []
@@ -185,6 +232,7 @@ def _rule_based_filter(
             or _has_time_overlap(candidate)
             or _has_duplicate_tag_match(candidate)
             or _has_excessive_travel(candidate)
+            or _has_missing_meal_slot(candidate, conditions)
         ):
             continue
 
@@ -246,7 +294,7 @@ def _infeasible_response() -> InfeasibleResponse:
     return InfeasibleResponse(
         detail="생성 가능한 일정이 없어요 ㅠㅠ 조건을 다시 설정해주세요.",
         reason="예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
-        adjustable_conditions=["budget_per_person", "time_range", "regions"],
+        adjustable_conditions=["budget_per_person", "time_range", "region"],
     )
 
 
@@ -335,7 +383,7 @@ def synthesize_and_validate(
     아직 없음 — Step4가 사용자 선택 이후에 채운다)을 검증해 최종 3개(또는 그
     이하)로 확정한다. 구조(장소·순서·시간)는 재배치하지 않는다:
     1. 규칙 기반 사전 필터링(_rule_based_filter) — 장소 환각·시간 겹침·같은 태그
-       중복 반영·과도한 이동거리는 예외 없이 드롭, 예산/시간 초과는 관용 범위
+       중복 반영·과도한 이동거리·식사 슬롯 누락은 예외 없이 드롭, 예산/시간 초과는 관용 범위
        (20%/60분) 넘을 때만 드롭
     2. 후보 간 유사도 검사(_similarity_score) — LLM 호출 전에 미리 계산해서
        겹침이 심한 쌍이 있으면 프롬프트 컨텍스트로 얹음

@@ -37,6 +37,24 @@
 #               전에 일일 예산을 먼저 확보한다(부족하면 확보되는 만큼만 검색해
 #               place_candidates가 적은 채로 진행 — 2026-08-11 결정, 하드 실패보다
 #               부분 결과가 낫다는 판단).
+# 2026-08-11, 카테고리 쿼리에도 매칭값을 부착 — 지금까진 (query, kind, tag)
+#             튜플에서 카테고리 쿼리는 항상 tag=None이었는데, 그 자리에 카테고리
+#             이름 자체("맛집" 등)를 넣어 place dict에 source_category로 부착한다.
+#             Step2가 "이 활동이 어느 검색 버킷에서 나왔는지"(카페 검색으로만
+#             나온 곳인지, 맛집 검색으로 나온 곳인지)를 결정론적으로 알아야
+#             점심/저녁 시간대에 실제 식사류를 채울 수 있다 — 네이버 원본
+#             category 문자열은 카페도 "음식점>카페,디저트"로 묶여있어(실측 확인)
+#             이걸로는 "식사 가능한 곳"과 "디저트만 되는 곳"을 못 가른다. tag와
+#             같은 방식(우리가 무슨 쿼리로 찾았는지)이 더 신뢰할 수 있는 근거.
+# 2026-08-11(2차), NAVER API HUB 공식 문서로 display(1~5)/start(사실상 고정)
+#             제한을 재확인 — 여러 지역을 조합해서 받던 걸 세부지역 필수 단일
+#             region으로 좁히고(regions.py 삭제, expand_broad_region 제거),
+#             대신 _PLACE_CATEGORIES를 4개("맛집/카페/액티비티/문화시설")에서
+#             15개로 세분화 + MAX_VERIFIABLE_TAGS 5로 상향해서 지역 하나당
+#             카테고리·태그 쿼리 팬아웃만으로 최소 50개 이상의 고유 장소를
+#             모으게 했다(사용자 결정 — start 페이지네이션이 막혀있으니 쿼리
+#             다양화로 대신한다). search_places_for_regions() ->
+#             search_places_for_region()으로 개명(단수 지역만 받게 됨).
 # ------------------------------------------------------------------
 import asyncio
 import re
@@ -46,7 +64,6 @@ import httpx
 from app.config import settings
 from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, PreferenceTag
 from app.services.rate_limiter import acquire_call_slot, reserve_daily_budget
-from app.services.regions import expand_broad_region
 
 # 검색어와 일치하는 부분에 네이버가 <b> 태그를 강조 표시로 넣어서 돌려준다(실측
 # 확인, 2026-08-09) — Step2 프롬프트에 그대로 넣으면 LLM이 HTML 태그를 실제
@@ -101,37 +118,65 @@ async def search_places(
     return items
 
 
-# region마다 이 카테고리들로 각각 검색해서 place_candidates를 채운다. 실제 사용
-# 데이터 보고 필요한 카테고리 추가/조정할 것(REGIONS 목록과 같은 원칙).
-_PLACE_CATEGORIES = ("맛집", "카페", "액티비티", "문화시설")
+# region 하나에 이 카테고리들로 각각 검색해서 place_candidates를 채운다.
+# 2026-08-11(2차) 세분화: "맛집" 하나로 뭉쳐두면 카테고리당 display 상한(5개)에
+# 막혀 식사류 전체가 5곳으로 제한됐다 — 요리별로 쪼개면 쿼리 수만큼 5개씩 더
+# 받을 수 있다(카테고리 결과끼리는 겹치는 장소가 거의 없어 보여 세분화해도
+# 손해가 없다는 게 사용자 판단, title 기준 dedup이 그래도 있을 중복은 처리).
+# 이 목록 × 태그 쿼리(최대 MAX_VERIFIABLE_TAGS×2개)를 합치면 지역 하나당
+# 최소 50개 이상의 고유 장소를 모으는 게 목표(2026-08-11(2차) 결정) — 네이버
+# API의 start 페이지네이션이 사실상 고정이라(공식 문서로 확인) 그쪽으론 늘릴
+# 수 없어서 쿼리 팬아웃으로 대신한다. 실제 사용 데이터 보고 계속 추가/조정할 것.
+_PLACE_CATEGORIES = (
+    "한식",
+    "중식",
+    "일식",
+    "양식",
+    "분식",
+    "고깃집",
+    "카페",
+    "베이커리",
+    "술집",
+    "액티비티",
+    "방탈출",
+    "보드게임카페",
+    "전시",
+    "공연장",
+    "영화관",
+)
 
-# (query, kind, tag) 튜플에서 kind로 쓰는 상수 — category는 tag가 항상 None.
+# _PLACE_CATEGORIES 중 "식사가 되는" 카테고리만 — synthesize_step3.py의
+# _has_missing_meal_slot과 generate_step2.py의 프롬프트 안내문이 "점심/저녁
+# 시간대에 식사류가 있는지"를 판단할 때 이 집합과 ActivityDraft.source_category를
+# 비교한다(카페/베이커리/술집은 디저트·주류 위주라 "식사"로 안 침). 카테고리
+# 목록을 바꿀 땐 이 집합도 같이 확인할 것.
+_MEAL_CATEGORIES = frozenset({"한식", "중식", "일식", "양식", "분식", "고깃집"})
+
+# (query, kind, value) 튜플에서 kind로 쓰는 상수. value는 kind별로 뜻이 다르다 —
+# category는 카테고리 이름 자체("한식" 등), liked/disliked는 태그 문자열.
 _KIND_CATEGORY = "category"
 _KIND_LIKED = "liked"
 _KIND_DISLIKED = "disliked"
 
 
 def _build_queries(
-    regions: list[str],
+    region: str,
     liked_tags: list[PreferenceTag],
     disliked_tags: list[PreferenceTag],
 ) -> list[tuple[str, str, str | None]]:
-    """(query 문자열, kind, tag) 리스트를 만든다. 카테고리 쿼리를 항상 먼저 두고
+    """(query 문자열, kind, value) 리스트를 만든다. 카테고리 쿼리를 항상 먼저 두고
     태그 쿼리를 뒤에 두는 순서가 중요하다 — 일일 예산이 부족해 뒤쪽이 잘려도
     "일정의 뼈대"인 카테고리 검색이 먼저 살아남게 하기 위함(2026-08-11 결정,
     태그 검색은 정밀도 보강일 뿐 필수 커버리지가 아니다).
     """
-    leaf_regions = [leaf for region in regions for leaf in expand_broad_region(region)]
     liked = [t.tag for t in liked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
     disliked = [t.tag for t in disliked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
 
-    queries: list[tuple[str, str, str | None]] = []
-    for region in leaf_regions:
-        queries.extend((f"{region} {c}", _KIND_CATEGORY, None) for c in _PLACE_CATEGORIES)
-    for region in leaf_regions:
-        queries.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
-    for region in leaf_regions:
-        queries.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
+    queries: list[tuple[str, str, str | None]] = [
+        (f"{region} {c}", _KIND_CATEGORY, c) for c in _PLACE_CATEGORIES
+    ]
+    queries.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
+    queries.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
     return queries
 
 
@@ -139,50 +184,58 @@ def _merge_results(
     queries: list[tuple[str, str, str | None]],
     results: list[list[dict] | BaseException],
 ) -> tuple[dict[str, dict], bool]:
-    """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tag를 부착하고,
-    disliked 쿼리에서 나온 장소는 (카테고리 검색에서도 같이 나왔더라도) 최종
-    결과에서 제거한다 — Step2 LLM이 disliked 장소를 아예 볼 수 없게 하는 게
-    "category/title 텍스트로 사후 배제해라"는 프롬프트 지시보다 강한 보장이다.
+    """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tag를, 카테고리 쿼리에서
+    나온 장소엔 source_category를 부착한다. disliked 쿼리에서 나온 장소는
+    (카테고리 검색에서도 같이 나왔더라도) 최종 결과에서 제거한다 — Step2 LLM이
+    disliked 장소를 아예 볼 수 없게 하는 게 "category/title 텍스트로 사후
+    배제해라"는 프롬프트 지시보다 강한 보장이다.
     """
     merged: dict[str, dict] = {}
     liked_title_to_tag: dict[str, str] = {}
+    category_title_to_bucket: dict[str, str] = {}
     disliked_titles: set[str] = set()
     any_failed = False
 
-    for (_, kind, tag), result in zip(queries, results, strict=True):
+    for (_, kind, value), result in zip(queries, results, strict=True):
         if isinstance(result, BaseException):
             any_failed = True
             continue
         for place in result:
             title = place["title"]
             merged.setdefault(title, place)
-            if kind == _KIND_LIKED and tag is not None:
-                liked_title_to_tag.setdefault(title, tag)
+            if kind == _KIND_LIKED and value is not None:
+                liked_title_to_tag.setdefault(title, value)
             elif kind == _KIND_DISLIKED:
                 disliked_titles.add(title)
+            elif kind == _KIND_CATEGORY and value is not None:
+                category_title_to_bucket.setdefault(title, value)
 
     for title, tag in liked_title_to_tag.items():
         if title in merged:
             merged[title]["matched_tag"] = tag
+    for title, bucket in category_title_to_bucket.items():
+        if title in merged:
+            merged[title].setdefault("source_category", bucket)
     for title in disliked_titles:
         merged.pop(title, None)
 
     return merged, any_failed
 
 
-async def search_places_for_regions(
-    regions: list[str],
+async def search_places_for_region(
+    region: str,
     liked_tags: list[PreferenceTag] | None = None,
     disliked_tags: list[PreferenceTag] | None = None,
     session_id: str = "",
 ) -> list[dict]:
-    """regions(최대 3개, 호출부가 이미 검증했다고 가정) 각각에 대해
+    """region(세부지역 포함 단일 값, 호출부가 이미 검증했다고 가정) 하나에 대해
     _PLACE_CATEGORIES로 병렬 검색하고, verifiable=true인 liked_tags/disliked_tags가
     있으면 태그별 검색도 추가해 title 기준으로 병합한다.
 
-    "서울"처럼 시/도만 있는 넓은 지역은 app.services.regions.expand_broad_region()
-    이 세부지역들로 펼쳐서 각각 독립적으로 검색한다(2026-08-11 추가) — "서울 잠실"
-    처럼 이미 세부지역이 있는 좁은 지역은 그대로 한 번만 검색한다.
+    2026-08-11(2차)부터 지역은 항상 세부지역이 포함된 단일 값이라(NormalizedConditions.
+    validate_region) 광역 시/도 확장(app.services.regions, 삭제됨)은 더 이상
+    필요 없다 — 카테고리·태그 쿼리 팬아웃만으로 지역당 최소 50개 이상의 고유
+    장소를 모으는 게 목표.
 
     쏘기 전에 일일 호출 예산(app/services/rate_limiter.reserve_daily_budget)을
     먼저 확보한다 — 부족하면 뒤쪽(태그 쿼리부터)이 잘려서 확보되는 만큼만
@@ -192,7 +245,7 @@ async def search_places_for_regions(
     만들어 쓰는 값을 그대로 넘겨받는다 — rate_limiter의 라운드로빈이 이 값으로
     "어느 요청에서 나온 호출들인지" 묶어서 다른 요청과 공평하게 나눠 갖는다.
     """
-    queries = _build_queries(regions, liked_tags or [], disliked_tags or [])
+    queries = _build_queries(region, liked_tags or [], disliked_tags or [])
     granted = await reserve_daily_budget(len(queries))
     queries = queries[:granted]
     if not queries:
@@ -204,10 +257,10 @@ async def search_places_for_regions(
     )
     merged, any_failed = _merge_results(queries, results_per_query)
 
-    # merged가 비어도 "이 지역들에 후보가 진짜 없음"과 "호출이 전부 실패해서 못
+    # merged가 비어도 "이 지역에 후보가 진짜 없음"과 "호출이 전부 실패해서 못
     # 받아온 것"은 다른 상황이다 — 후자를 빈 리스트로 조용히 돌려주면 호출부가
     # "후보 없음"으로 오해한다. 일부만 실패했을 땐(partial success) 성공한 결과가
     # 있으므로 raise하지 않는다.
     if not merged and any_failed:
-        raise NaverSearchError("모든 지역·카테고리·태그 조회가 실패해 병합할 결과가 없습니다.")
+        raise NaverSearchError("모든 카테고리·태그 조회가 실패해 병합할 결과가 없습니다.")
     return list(merged.values())

@@ -35,10 +35,15 @@
 #             재사용)해서, 공유 화면이 recommended가 아니라 사용자가 실제로 고른
 #             교통편을 보여주게 한다. _find_candidate 호출부를 존재만 검증하던
 #             것에서 반환값을 쓰는 걸로 바꿈.
-# 2026-08-11, search_places_for_regions() 호출을 orchestrate.generate_schedule_candidates
+# 2026-08-11, search_places_for_region() 호출을 orchestrate.generate_schedule_candidates
 #             안으로 옮기면서(태그 기반 검색이 Step1 조건을 필요로 해서,
 #             orchestrate.py 참고) create_schedule()이 더 이상 직접 부르지 않게
 #             변경 — NaverSearchError도 ValidationError와 같은 try 블록에서 잡음.
+# 2026-08-11(2차), ScheduleCreateRequest.regions: list[str] -> region: str로 축소.
+#             generate_schedule_candidates()가 (result, conditions, place_candidates)
+#             튜플을 반환하게 바뀌어서, create_schedule()이 ScheduleSession과 같은
+#             트랜잭션에서 SchedulePlacePool(신규 테이블)도 같이 저장한다 — 나중에
+#             피드백 단계가 이미 검색한 장소·태그를 재사용할 수 있게 미리 쌓아둠.
 # ------------------------------------------------------------------
 import secrets
 from datetime import datetime
@@ -52,7 +57,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
-from app.models.schedule import ScheduleSession, ShareLink
+from app.models.schedule import SchedulePlacePool, ScheduleSession, ShareLink
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
 from app.pipeline.orchestrate import generate_schedule_candidates
@@ -68,7 +73,7 @@ class ScheduleCreateRequest(BaseModel):
     purpose: Literal["date", "friends", "family", "party", "other"]
     headcount: int
     time_range: tuple[datetime, datetime]
-    regions: list[str]
+    region: str
     liked_text: str = ""
     disliked_text: str = ""
     budget_per_person: int
@@ -162,7 +167,7 @@ async def create_schedule(
 
     session_id = uuid4()
     try:
-        result = await generate_schedule_candidates(
+        result, conditions, place_candidates = await generate_schedule_candidates(
             credential.provider, api_key, str(session_id), body.model_dump()
         )
     except NaverSearchError as exc:
@@ -182,6 +187,18 @@ async def create_schedule(
         candidates={"candidates": [c.model_dump(mode="json") for c in result.candidates]},
     )
     session.add(schedule_session)
+    # SchedulePlacePool.session_id는 FK라 schedule_session insert가 먼저 나가야
+    # 한다 — 서로 relationship()으로 안 엮인 두 테이블이라 커밋 시점의 자동
+    # 의존성 정렬을 믿지 말고 flush로 순서를 직접 보장한다.
+    session.flush()
+    session.add(
+        SchedulePlacePool(
+            session_id=session_id,
+            places={"places": place_candidates},
+            searched_liked_tags=[t.tag for t in conditions.liked_tags if t.verifiable],
+            searched_disliked_tags=[t.tag for t in conditions.disliked_tags if t.verifiable],
+        )
+    )
     session.commit()
 
     return ScheduleResponse(session_id=str(session_id), candidates=result.candidates)

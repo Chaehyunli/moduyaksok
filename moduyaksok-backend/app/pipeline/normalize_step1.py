@@ -23,7 +23,7 @@
 from pydantic import BaseModel
 
 from app.pipeline.models import ModelTier, get_model
-from app.pipeline.schemas import NormalizedConditions, PreferenceTag
+from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, NormalizedConditions, PreferenceTag
 from app.services.structured_llm import call_structured
 
 # 구조화 추출/분류 작업이라 창의성은 필요 없지만, PreferenceTag(verifiable 포함)로
@@ -37,8 +37,12 @@ TIER = ModelTier.MID
 #   2. 부정 표현 — "빼고/못 먹어요"의 대상이 disliked로 가야 함
 #   3. 빈 입력 — 아무것도 지어내면 안 됨 (실제 관측된 할루시네이션 버그를 직접 겨냥)
 #   4. 주관적 취향 — 분위기/혼잡도는 verifiable=False
-#   5. verifiable 태그 4개 이상 언급 — 중요한 3개만 남기고 나머진 버려야 함
-_SYSTEM_PROMPT = """\
+#   5. verifiable 태그가 상한(MAX_VERIFIABLE_TAGS)보다 많이 언급 — 중요한 것만
+#      남기고 나머진 버려야 함
+# MAX_VERIFIABLE_TAGS를 문자열로 두 번 박아넣지 않고 f-string으로 주입 — 상한이
+# 바뀔 때(2026-08-11(2차)에 3 -> 5로 한 번 바뀌었음) 프롬프트 문구를 깜빡하고
+# 안 고치는 사고를 막는다.
+_SYSTEM_PROMPT = f"""\
 # Role
 너는 사용자가 적은 자유 텍스트에서 선호/비선호를 정확하게 태그로 추출하는 \
 전문 도우미다.
@@ -54,38 +58,41 @@ _SYSTEM_PROMPT = """\
 — liked_tags에 넣으면 안 된다.
 - 원문에 없는 내용은 절대 추가하지 마라. 언급이 없거나("(없음)") 막연하면 \
 빈 배열을 반환해라 — 그럴듯한 예시를 지어내면 안 된다.
-- verifiable=true인 태그는 liked_tags/disliked_tags 각각 최대 3개까지만 남겨라. \
-그보다 많이 언급됐으면 사용자가 더 강조했거나 먼저/구체적으로 말한 순서로 \
-중요한 3개만 고르고 나머지는 버려라(단순히 등장 순서 앞 3개가 아니라 중요도 \
-판단). verifiable=false 태그는 이 제한과 무관하다 — 검색에 안 쓰이니 개수 \
-제한 없이 다 추출해라.
+- verifiable=true인 태그는 liked_tags/disliked_tags 각각 최대 {MAX_VERIFIABLE_TAGS}개까지만 \
+남겨라. 그보다 많이 언급됐으면 사용자가 더 강조했거나 먼저/구체적으로 말한 순서로 \
+중요한 {MAX_VERIFIABLE_TAGS}개만 고르고 나머지는 버려라(단순히 등장 순서 앞 \
+{MAX_VERIFIABLE_TAGS}개가 아니라 중요도 판단). verifiable=false 태그는 이 제한과 \
+무관하다 — 검색에 안 쓰이니 개수 제한 없이 다 추출해라.
 
 # Format
-liked_tags, disliked_tags 각각 {tag, verifiable} 객체 배열로 출력.
+liked_tags, disliked_tags 각각 {{tag, verifiable}} 객체 배열로 출력.
 
 # Examples
 
 입력: 좋아하는 것: 콩국수나 텐동, 와플 먹고 싶어 / 싫어하는 것: (없음)
-출력: liked_tags=[{tag: "콩국수", verifiable: true}, {tag: "텐동", verifiable: true}, \
-{tag: "와플", verifiable: true}], disliked_tags=[]
+출력: liked_tags=[{{tag: "콩국수", verifiable: true}}, {{tag: "텐동", verifiable: true}}, \
+{{tag: "와플", verifiable: true}}], disliked_tags=[]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: 해산물 빼고 매운 것도 못 먹어요
-출력: liked_tags=[], disliked_tags=[{tag: "해산물", verifiable: true}, \
-{tag: "매운 음식", verifiable: true}]
+출력: liked_tags=[], disliked_tags=[{{tag: "해산물", verifiable: true}}, \
+{{tag: "매운 음식", verifiable: true}}]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: (없음)
 출력: liked_tags=[], disliked_tags=[]
 
 입력: 좋아하는 것: 조용하고 차분한 분위기가 좋아요 / 싫어하는 것: 사람 많은 곳은 싫어요
-출력: liked_tags=[{tag: "조용한 분위기", verifiable: false}], \
-disliked_tags=[{tag: "사람 많은 곳", verifiable: false}]
+출력: liked_tags=[{{tag: "조용한 분위기", verifiable: false}}], \
+disliked_tags=[{{tag: "사람 많은 곳", verifiable: false}}]
 
-입력: 좋아하는 것: 저는 무조건 파스타예요. 그리고 스시도 좋고, 요즘은 마라탕도 \
-자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / 싫어하는 것: (없음)
-출력: liked_tags=[{tag: "파스타", verifiable: true}, {tag: "스시", verifiable: true}, \
-{tag: "마라탕", verifiable: true}], disliked_tags=[] \
-(타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 4번째부터는 \
-버린다 — 등장 순서가 아니라 사용자가 표현한 중요도로 판단한 것)
+입력: 좋아하는 것: 저는 무조건 파스타예요. 스시도 좋고, 마라탕도 자주 먹고, 초밥이랑 \
+라멘도 자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / \
+싫어하는 것: (없음)
+출력: liked_tags=[{{tag: "파스타", verifiable: true}}, {{tag: "스시", verifiable: true}}, \
+{{tag: "마라탕", verifiable: true}}, {{tag: "초밥", verifiable: true}}, \
+{{tag: "라멘", verifiable: true}}], disliked_tags=[] \
+(타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 \
+{MAX_VERIFIABLE_TAGS}번째 다음부터는 버린다 — 등장 순서가 아니라 사용자가 표현한 \
+중요도로 판단한 것)
 """
 
 
@@ -97,7 +104,7 @@ class _ExtractedTags(BaseModel):
 def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> NormalizedConditions:
     """POST /schedules 요청 바디를 NormalizedConditions로 변환한다.
 
-    raw_input의 purpose/headcount/time_range/regions/budget_per_person은 프런트에서
+    raw_input의 purpose/headcount/time_range/region/budget_per_person은 프런트에서
     이미 구조화해서 보낸 값이라 그대로 통과시키고, liked_text/disliked_text(자유
     텍스트, 각 최대 100자)만 LLM 1회 호출로 구조화 태그(PreferenceTag)로 뽑는다.
 
@@ -122,7 +129,7 @@ def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> Normal
         purpose=raw_input["purpose"],
         headcount=raw_input["headcount"],
         time_range=tuple(raw_input["time_range"]),
-        regions=raw_input["regions"],
+        region=raw_input["region"],
         liked_tags=extracted.liked_tags,
         disliked_tags=extracted.disliked_tags,
         budget_per_person=raw_input["budget_per_person"],

@@ -15,6 +15,20 @@
 # 2026-08-10, confirmed_candidate_id 컬럼 추가 — GET /share/{slug}가 3개 후보 중
 #             확정된 하나를 찾으려면 어느 candidate_id가 확정됐는지 저장해야 함
 #             (기존엔 status만 confirmed로 바뀌고 어떤 후보인지는 저장 안 됐음).
+# 2026-08-11, SchedulePlacePool 추가 — 네이버 지역검색 결과(place_candidates,
+#             지역당 최소 50개 목표)를 세션마다 저장해서, 나중에 피드백으로 일정을
+#             수정할 때 이미 검색한 태그는 네이버 API를 다시 안 부르고(새로 등장한
+#             태그만 추가 검색) 재사용하기 위함. 처음엔 이 컬럼들(place_pool,
+#             searched_liked_tags, searched_disliked_tags)을 ScheduleSession에
+#             바로 얹는 안을 검토했는데, ScheduleSession은 상태 전이(draft/confirmed)
+#             시점에만 바뀌는 "핵심 엔티티"이고 place_pool은 피드백이 올 때마다
+#             갱신되는 "생성용 내부 상태"라 갱신 빈도·읽는 이유가 전혀 다르다는
+#             지적(사용자)에 따라 별도 테이블로 분리 — 일정 조회/공유처럼 자주
+#             일어나는 가벼운 읽기가 이 큰 JSONB 블록을 매번 같이 들고 다닐
+#             필요가 없다. session_id에 unique 제약을 걸어 1:1 관계를 강제한다.
+#             candidates(최종 3개 후보)는 그대로 ScheduleSession에 남겨둔다 —
+#             이건 사용자가 실제로 조회/확정하는 대상이라 place_pool과 달리
+#             "핵심 엔티티"의 일부로 취급한다.
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -39,6 +53,24 @@ class ScheduleSession(SQLModel, table=True):
     # GET /share/{slug}가 3개 후보 중 어느 걸 공개할지 이 값으로 찾는다.
     confirmed_candidate_id: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SchedulePlacePool(SQLModel, table=True):
+    __tablename__ = "schedule_place_pool"
+
+    id: UUID = Field(primary_key=True, default_factory=uuid4)
+    # 1:1 — 세션 하나당 place_pool 하나만 누적한다(unique 제약).
+    session_id: UUID = Field(foreign_key="schedule_session.id", unique=True)
+    # naver_local_search.search_places_for_region()이 반환한 병합 결과(title 기준
+    # 중복 제거된 place dict 목록) 그대로. {"places": [...]} 형태로 감싸는 건
+    # ScheduleSession.candidates와 같은 관례(app/routers/schedule.py 참고).
+    places: dict = Field(default_factory=dict, sa_column=Column(JSONB))
+    # 지금까지 태그 검색을 실제로 호출한 verifiable 태그 목록 — 나중에 피드백으로
+    # 새 태그가 추가되면 이 목록에 없는 태그만 추가 검색하면 된다(피드백 엔드포인트
+    # 자체는 아직 미구현, schedule.md 참고).
+    searched_liked_tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    searched_disliked_tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class FeedbackMessage(SQLModel, table=True):

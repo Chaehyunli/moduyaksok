@@ -68,6 +68,20 @@
 #             태그 검색이 지역 확장과 곱해지면 호출량이 커지므로 verifiable 태그를
 #             좋아하는/싫어하는 것 각각 최대 3개로 제한(Step1 프롬프트가 우선
 #             지시하고, 이 validator는 방어용 하한선).
+# 2026-08-11, 관점 3개가 비슷한 후보를 만드는 문제(같은 태그 매칭 장소를 여러
+#             관점이 동시에 욕심냄) + 식사(점심/저녁) 없이 디저트만으로 채워지는
+#             문제, 두 가지를 같이 해소하며 ActivityDraft.source_category 추가 —
+#             matched_tag와 같은 방식으로, 이 장소가 카테고리 검색(맛집/카페/
+#             액티비티/문화시설) 중 어느 쿼리에서 나왔는지 결정론적으로 기록.
+#             Step3가 "점심/저녁 시간대에 맛집 카테고리 활동이 있는지" 판단하는
+#             근거로 쓴다.
+# 2026-08-11(2차), regions: list[str] -> region: str로 축소, MAX_VERIFIABLE_TAGS
+#             3 -> 5로 상향. 네이버 지역검색 API가 display(1~5)/start(사실상 고정)
+#             둘 다 좁아서 여러 지역을 받아봐야 지역당 결과만 희석된다는 걸 문서로
+#             확인(사용자) — 세부지역 필수 단일 지역 + 카테고리/태그 쿼리 팬아웃
+#             (naver_local_search.py)으로 지역당 최소 50개 후보를 모으는 쪽으로
+#             방향 전환. 이 축소로 지역 확장(app.services.regions.expand_broad_region)
+#             호출량 여유가 생겨 verifiable 태그 상한도 함께 올렸다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -78,11 +92,13 @@ from pydantic import BaseModel, field_validator
 
 # liked_tags/disliked_tags 중 verifiable=true인 태그 하나당 naver_local_search가
 # "{region} {tag}" 검색을 추가로 호출한다(2026-08-11 설계) — 자유텍스트라 개수
-# 제한이 없으면 지역 확장(광역 시/도 -> 세부지역 여러 개)과 곱해져 호출량이
-# 감당 안 되게 커진다. Step1이 좋아하는/싫어하는 것 각각 최대 이 개수까지만,
-# 사용자가 더 중요하게 언급한 순서로 남기도록 프롬프트로 지시하고(normalize_step1.py),
-# 이 값은 그 지시를 LLM이 안 지켰을 때의 방어용 상한이다.
-MAX_VERIFIABLE_TAGS = 3
+# 제한이 없으면 호출량이 감당 안 되게 커진다. Step1이 좋아하는/싫어하는 것 각각
+# 최대 이 개수까지만, 사용자가 더 중요하게 언급한 순서로 남기도록 프롬프트로
+# 지시하고(normalize_step1.py), 이 값은 그 지시를 LLM이 안 지켰을 때의 방어용
+# 상한이다. 2026-08-11(2차): region을 세부지역 필수 단일 값으로 좁히면서(지역
+# 확장이 사라져 호출량 여유가 생김) + 카테고리도 세분화하면서, 태그 커버리지를
+# 넓히려고 3 -> 5로 상향(사용자 결정).
+MAX_VERIFIABLE_TAGS = 5
 
 # ── Step 1. 조건 정규화 (normalize_conditions) 출력 ────────────────────────
 
@@ -100,38 +116,26 @@ class NormalizedConditions(BaseModel):
     purpose: Literal["date", "friends", "family", "party", "other"]
     headcount: int
     time_range: tuple[datetime, datetime]
-    # 총 최대 3개, 그중 "시/도만(세부지역 없음)"인 항목은 최대 1개까지만 —
-    # validate_regions()가 강제. 여러 지역 각각에 대해 네이버 지역검색을 호출해
-    # 병합한다(app/services/naver_local_search.py의 search_places_for_regions(),
-    # 이 함수를 부를 POST /schedules 라우터는 아직 없음).
-    regions: list[str]
+    # 세부지역까지 포함한 단일 지역 하나만 받는다(예: "서울 강남") — 2026-08-11(2차)
+    # 결정. 예전엔 최대 3개까지 조합해서 받았는데, 네이버 지역검색 API가 display를
+    # 1~5로, start를 사실상 고정으로 제한해서(NAVER API HUB 공식 문서로 확인)
+    # 지역을 여러 개로 쪼갤수록 지역당 결과가 더 희석되는 역효과가 났다. 대신
+    # 지역 하나에 카테고리·태그 쿼리를 최대한 팬아웃해서(naver_local_search.py)
+    # 지역당 후보 풀을 최소 50개 이상 확보하는 쪽으로 방향을 바꿨다 — 여러 지역
+    # 지원을 포기한 게 의도한 흐름(사용자 결정).
+    region: str
 
     # 프런트(ConditionWizardView)에서 같은 규칙으로 먼저 걸러주지만, 요청을 직접
     # 조작해 우회할 수 있으므로 여기서 다시 검증한다(app/routers/credential.py의
     # API 키 형식 검증과 같은 패턴, 2026-08-09).
-    @field_validator("regions")
+    @field_validator("region")
     @classmethod
-    def validate_regions(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("regions는 최소 1개 이상이어야 합니다.")
-
-        def has_district(region: str) -> bool:
-            return len(region.split()) >= 2
-
-        # 포함관계 중복 제거: 같은 시/도를 세부지역 없이(전체) 넣은 게 있으면
-        # 그 시/도의 세부지역 항목은 포함관계상 중복이므로 제거한다.
-        broad_provinces = {r for r in v if not has_district(r)}
-        deduped = [r for r in v if not has_district(r) or r.split()[0] not in broad_provinces]
-
-        broad_count = sum(1 for r in deduped if not has_district(r))
-        if len(deduped) > 3:
-            raise ValueError(f"regions는 최대 3개까지만 가능합니다 (받은 개수: {len(deduped)}).")
-        if broad_count > 1:
+    def validate_region(cls, v: str) -> str:
+        if len(v.split()) < 2:
             raise ValueError(
-                f"세부지역 없이 시/도만 넣은 지역은 최대 1개까지만 가능합니다 "
-                f"(받은 개수: {broad_count})."
+                f"region은 세부지역까지 포함해야 합니다 (예: '서울 강남'). 받은 값: {v!r}"
             )
-        return deduped
+        return v
 
     liked_tags: list[PreferenceTag]
     disliked_tags: list[PreferenceTag]
@@ -178,6 +182,13 @@ class ActivityDraft(BaseModel):
     # category/title 텍스트로 사후 추측하던 걸 검색 단계에서 이미 확정된 값으로
     # 대체.
     matched_tag: str | None = None
+    # place_candidates에서 결정론적으로 부착(matched_tag와 같은 방식) — 이 장소가
+    # naver_local_search의 카테고리 검색(맛집/카페/액티비티/문화시설) 중 어느
+    # 쿼리에서 나왔는지. 네이버 원본 category 문자열은 카페도 "음식점>카페,디저트"
+    # 로 묶여있어(실측 확인) "식사 가능한 곳"과 "디저트만 되는 곳"을 못 가르는데,
+    # 우리가 무슨 쿼리로 찾았는지는 확실한 근거다. Step3가 "점심/저녁 시간대에
+    # 맛집 카테고리 활동이 있는지"를 판단하는 데 쓴다(2026-08-11 설계).
+    source_category: str | None = None
 
 
 class CandidateDraft(BaseModel):
