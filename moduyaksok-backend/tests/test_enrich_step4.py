@@ -16,6 +16,11 @@
 #             Candidate로 바뀐 데 맞춰 헬퍼(_activity/_candidate)와 모든 단언을
 #             재작성. result.draft.activities -> result.activities로,
 #             Candidate.feasibility_warning이 유지되는지 검증하는 테스트 추가.
+# 2026-08-13, ODsay 일일 한도(reserve_daily_budget) 게이트 추가에 맞춰, 예산이
+#             바닥났을 때 ODsay 호출 자체를 안 하고 도보만 남기는 degrade 테스트
+#             추가. conftest.py의 autouse fixture가 기본은 항상 승인하므로, 이
+#             테스트만 별도로 0을 반환하게 덮어씀(tests/test_naver_local_search.py와
+#             같은 패턴).
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -220,6 +225,27 @@ async def test_enrich_routes_flags_warning_on_transit_failure_but_keeps_walk(mon
 
     assert [o.mode for o in result.routes[0].options] == ["walk"]
     assert "대중교통 정보를 가져오지 못했습니다" in result.feasibility_warning
+
+
+async def test_enrich_routes_skips_odsay_call_and_warns_when_daily_budget_exhausted(monkeypatch):
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(10))
+
+    async def should_not_be_called(*a):
+        raise AssertionError("일일 예산이 없으면 get_transit_options가 호출되면 안 된다")
+
+    async def zero_budget(resource: str, requested: int, daily_limit: int) -> int:
+        return 0
+
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", should_not_be_called)
+    monkeypatch.setattr("app.pipeline.enrich_step4.reserve_daily_budget", zero_budget)
+
+    candidate = _candidate(
+        [_activity(1, "A", "10:00", "10:30"), _activity(2, "B", "11:00", "11:30")]
+    )
+    result = await enrich_routes(candidate, _TIME_RANGE)
+
+    assert [o.mode for o in result.routes[0].options] == ["walk"]
+    assert "오늘 대중교통 조회 한도를 다 써서" in result.feasibility_warning
 
 
 async def test_enrich_routes_includes_car_option_when_available(monkeypatch):

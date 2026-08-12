@@ -16,6 +16,12 @@
 #               (전부 거부하지 않음) — 호출부(naver_local_search)가 그만큼만 쿼리를
 #               잘라 보내고 "place_candidates가 좀 적은 채로 진행"하는 쪽으로
 #               degrade한다(2026-08-11 결정, 하드 실패보다 부분 결과가 낫다는 판단).
+# 2026-08-13, reserve_daily_budget()에 resource/daily_limit 파라미터 추가 —
+#             원래 네이버 전용(설정값도 함수 내부에서 직접 읽음)이었는데, Step4가
+#             ODsay(일 1,000건, 네이버와 별개 한도)에도 같은 예약-후-초과분
+#             롤백 로직을 그대로 쓰게 되면서 리소스 이름을 Redis 키 네임스페이스로
+#             받고 한도를 인자로 받게 일반화했다 — INCRBY/DECRBY 동시성 로직을
+#             프로바이더마다 복붙하지 않기 위함(app/pipeline/enrich_step4.py).
 # 2026-08-11, 초당 제한을 순수 FIFO 토큰버킷(`_TokenBucket`)에서 세션(=한 번의
 #             `POST /schedules` 요청) 단위 라운드로빈(`_RoundRobinLimiter`)으로
 #             교체 — 한 요청이 콜을 잔뜩 큐에 넣어두면 다른 요청이 asyncio 스케줄링
@@ -131,16 +137,20 @@ async def acquire_call_slot(session_id: str) -> None:
     await _limiter.acquire(session_id)
 
 
-async def reserve_daily_budget(requested: int) -> int:
-    """오늘 쓸 수 있는 일일 예산에서 최대 requested개를 확보하고, 실제로 확보된
-    개수를 반환한다(0 <= 반환값 <= requested). 요청한 개수를 다 못 주면 호출부가
-    그만큼만 쿼리를 잘라 보내야 한다 — 여기서 예외를 던지지 않는 이유는
-    "일부만 검색해서 place_candidates가 적은 채로 진행"이 이 프로젝트의 degrade
+async def reserve_daily_budget(resource: str, requested: int, daily_limit: int) -> int:
+    """오늘 `resource`가 쓸 수 있는 일일 예산에서 최대 requested개를 확보하고,
+    실제로 확보된 개수를 반환한다(0 <= 반환값 <= requested). 요청한 개수를 다 못
+    주면 호출부가 그만큼만 쿼리를 잘라 보내야 한다 — 여기서 예외를 던지지 않는
+    이유는 "일부만 검색해서 결과가 적은 채로 진행"이 이 프로젝트의 degrade
     정책(2026-08-11 결정)이라 요청 자체를 막을 필요가 없기 때문이다.
+
+    resource는 Redis 키 네임스페이스다("naver_search", "odsay" 등) — 프로바이더마다
+    한도가 다르고 서로 무관하게 집계돼야 해서 호출부가 직접 넘긴다(2026-08-13,
+    원래 naver_search 전용이었다가 ODsay 추가하며 일반화).
     """
     if requested <= 0:
         return 0
-    key = f"naver_search:daily_count:{date.today().isoformat()}"
+    key = f"{resource}:daily_count:{date.today().isoformat()}"
     client = _get_redis()
 
     new_total = await client.incrby(key, requested)
@@ -153,10 +163,10 @@ async def reserve_daily_budget(requested: int) -> int:
         pass
     await client.expire(key, _DAILY_KEY_TTL_SECONDS, nx=True)
 
-    if new_total <= settings.naver_daily_call_limit:
+    if new_total <= daily_limit:
         return requested
 
-    overflow = new_total - settings.naver_daily_call_limit
+    overflow = new_total - daily_limit
     granted = max(0, requested - overflow)
     if overflow > 0:
         await client.decrby(key, overflow)

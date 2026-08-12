@@ -63,7 +63,7 @@ function updateExpandedCategory(groupLabel: string, event: Event) {
           <div class="space-y-5">
             <section v-if="store.placePool.groups.liked.length" class="space-y-2">
               <h2 class="font-hand text-base text-ink">좋아한다고 말한 조건으로 찾은 장소</h2>
-              <div class="grid gap-2 sm:grid-cols-2">
+              <div class="grid items-start gap-2 sm:grid-cols-2">
                 <details
                   v-for="group in store.placePool.groups.liked"
                   :key="group.label"
@@ -87,7 +87,7 @@ function updateExpandedCategory(groupLabel: string, event: Event) {
 
             <section v-if="store.placePool.groups.disliked.length" class="space-y-2">
               <h2 class="font-hand text-base text-ink">싫어한다고 말해 일정에서 제외한 장소</h2>
-              <div class="grid gap-2 sm:grid-cols-2">
+              <div class="grid items-start gap-2 sm:grid-cols-2">
                 <details
                   v-for="group in store.placePool.groups.disliked"
                   :key="group.label"
@@ -111,7 +111,7 @@ function updateExpandedCategory(groupLabel: string, event: Event) {
 
             <section v-if="store.placePool.groups.categories.length" class="space-y-2">
               <h2 class="font-hand text-base text-ink">카테고리별로 찾은 장소</h2>
-              <div class="grid gap-2 sm:grid-cols-2">
+              <div class="grid items-start gap-2 sm:grid-cols-2">
                 <details
                   v-for="(group, index) in store.placePool.groups.categories"
                   :key="group.label"

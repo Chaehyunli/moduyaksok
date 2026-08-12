@@ -55,6 +55,18 @@
 #             모으게 했다(사용자 결정 — start 페이지네이션이 막혀있으니 쿼리
 #             다양화로 대신한다). search_places_for_regions() ->
 #             search_places_for_region()으로 개명(단수 지역만 받게 됨).
+# 2026-08-13, reserve_daily_budget()이 resource/daily_limit을 인자로 받게
+#             일반화됨(Step4의 ODsay 일일 한도 추가와 함께, rate_limiter.py 참고)
+#             — 이 파일의 호출부만 "naver_search"/settings.naver_daily_call_limit을
+#             명시적으로 넘기게 갱신, 동작 자체는 그대로다.
+# 2026-08-12, 쿼리(카테고리·태그)마다 sort="comment"(리뷰순) 한 번만 부르던 걸
+#             sort="random"(정확도순, 네이버 지도 앱 기본 정렬에 더 가까움)까지
+#             같이 불러서 병합하도록 변경(사용자 결정) — 리뷰순만 쓰면 리뷰가
+#             적지만 관련도 높은 곳이 5개 상한에 밀려 아예 안 잡히는 문제가 있어,
+#             정렬 기준이 다른 두 결과를 모아 title로 dedup하면 커버리지가
+#             넓어진다는 판단. 쿼리 수가 그대로 2배가 돼 일일 호출 예산 소모도
+#             2배가 된다 — reserve_daily_budget() 예산이 부족하면 기존과 동일하게
+#             뒤쪽(태그 쿼리부터) 잘려서 부분 결과로 진행된다.
 # ------------------------------------------------------------------
 import asyncio
 import re
@@ -79,6 +91,13 @@ _SEARCH_URL = "https://naverapihub.apigw.ntruss.com/search/v1/local"
 # 번 호출해서 place_candidates를 채우는 구조가 되어야 한다(호출부 책임).
 _MAX_DISPLAY = 5
 
+# 쿼리마다 이 두 정렬로 각각 한 번씩 호출해서 병합한다 — "random"은 이름과 달리
+# 정확도순(네이버 공식 문서), "comment"는 리뷰 많은 순. 정렬 기준이 다른 결과를
+# 모으면 한쪽만 쓸 때보다 5개 상한에 안 걸리고 잡히는 장소가 늘어난다.
+_SORT_RANDOM = "random"
+_SORT_COMMENT = "comment"
+_SORTS = (_SORT_RANDOM, _SORT_COMMENT)
+
 
 class NaverSearchError(Exception):
     """네이버 지역검색 API 호출 실패(인증 오류, 타임아웃, 5xx 등)."""
@@ -102,7 +121,10 @@ class PlaceSearchResult(list[dict]):
 
 
 async def search_places(
-    query: str, display: int = _MAX_DISPLAY, session_id: str = ""
+    query: str,
+    display: int = _MAX_DISPLAY,
+    session_id: str = "",
+    sort: str = _SORT_COMMENT,
 ) -> list[dict]:
     """query로 네이버 지역검색을 호출해 장소 후보 목록을 반환한다.
 
@@ -120,7 +142,7 @@ async def search_places(
         "X-NCP-APIGW-API-KEY-ID": settings.naver_search_client_id,
         "X-NCP-APIGW-API-KEY": settings.naver_search_client_secret,
     }
-    params = {"query": query, "display": min(display, _MAX_DISPLAY), "sort": "comment"}
+    params = {"query": query, "display": min(display, _MAX_DISPLAY), "sort": sort}
 
     try:
         await acquire_call_slot(session_id)
@@ -182,32 +204,35 @@ def _build_queries(
     region: str,
     liked_tags: list[PreferenceTag],
     disliked_tags: list[PreferenceTag],
-) -> list[tuple[str, str, str | None]]:
-    """(query 문자열, kind, value) 리스트를 만든다. 카테고리 쿼리를 항상 먼저 두고
-    태그 쿼리를 뒤에 두는 순서가 중요하다 — 일일 예산이 부족해 뒤쪽이 잘려도
+) -> list[tuple[str, str, str | None, str]]:
+    """(query 문자열, kind, value, sort) 리스트를 만든다. 카테고리 쿼리를 항상 먼저
+    두고 태그 쿼리를 뒤에 두는 순서가 중요하다 — 일일 예산이 부족해 뒤쪽이 잘려도
     "일정의 뼈대"인 카테고리 검색이 먼저 살아남게 하기 위함(2026-08-11 결정,
-    태그 검색은 정밀도 보강일 뿐 필수 커버리지가 아니다).
+    태그 검색은 정밀도 보강일 뿐 필수 커버리지가 아니다). 같은 쿼리 문자열을
+    _SORTS 각각으로 바로 이어 붙여서, 예산이 중간에 잘려도 같은 쿼리의 두 정렬이
+    최대한 같이 살아남거나 같이 잘리게 한다(2026-08-12).
     """
     liked = [t.tag for t in liked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
     disliked = [t.tag for t in disliked_tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
 
-    queries: list[tuple[str, str, str | None]] = [
+    base: list[tuple[str, str, str | None]] = [
         (f"{region} {c}", _KIND_CATEGORY, c) for c in _PLACE_CATEGORIES
     ]
-    queries.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
-    queries.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
-    return queries
+    base.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
+    base.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
+    return [(query, kind, value, sort) for query, kind, value in base for sort in _SORTS]
 
 
 def _merge_results(
-    queries: list[tuple[str, str, str | None]],
+    queries: list[tuple[str, str, str | None, str]],
     results: list[list[dict] | BaseException],
 ) -> tuple[dict[str, dict], bool]:
     """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tag를, 카테고리 쿼리에서
     나온 장소엔 source_category를 부착한다. disliked 쿼리에서 나온 장소는
     (카테고리 검색에서도 같이 나왔더라도) 최종 결과에서 제거한다 — Step2 LLM이
     disliked 장소를 아예 볼 수 없게 하는 게 "category/title 텍스트로 사후
-    배제해라"는 프롬프트 지시보다 강한 보장이다.
+    배제해라"는 프롬프트 지시보다 강한 보장이다. 같은 쿼리를 sort만 다르게 두 번
+    부른 결과(2026-08-12)도 title이 같으면 여기서 자연히 하나로 합쳐진다.
     """
     merged: dict[str, dict] = {}
     liked_title_to_tag: dict[str, str] = {}
@@ -215,7 +240,7 @@ def _merge_results(
     disliked_titles: set[str] = set()
     any_failed = False
 
-    for (_, kind, value), result in zip(queries, results, strict=True):
+    for (_, kind, value, _sort), result in zip(queries, results, strict=True):
         if isinstance(result, BaseException):
             any_failed = True
             continue
@@ -253,7 +278,7 @@ def _to_snapshot_place(place: dict) -> dict:
 
 
 def _build_search_groups(
-    queries: list[tuple[str, str, str | None]],
+    queries: list[tuple[str, str, str | None, str]],
     results: list[list[dict] | BaseException],
     eligible_titles: set[str],
 ) -> dict:
@@ -261,21 +286,35 @@ def _build_search_groups(
 
     카테고리와 좋아요 그룹은 실제 Step2에 남긴 안전한 장소만 보여준다. 싫어요
     그룹만은 의도적으로 제외 전 원본을 남겨, 해당 검색이 어떤 장소를 차단했는지
-    투명하게 확인할 수 있게 한다.
+    투명하게 확인할 수 있게 한다. 같은 (kind, value)가 sort별로 두 번 나오므로
+    (2026-08-12) label별로 먼저 모아 title 기준 dedup한 뒤에 그룹을 만든다 —
+    안 그러면 같은 라벨("한식" 등)의 그룹이 두 번 생긴다.
     """
+    label_places: dict[tuple[str, str], dict[str, dict]] = {}
+    label_order: list[tuple[str, str]] = []
+
+    for (_, kind, value), result in zip(
+        ((q, k, v) for q, k, v, _sort in queries), results, strict=True
+    ):
+        if isinstance(result, BaseException) or value is None:
+            continue
+        key = (kind, value)
+        if key not in label_places:
+            label_places[key] = {}
+            label_order.append(key)
+        for place in result:
+            if kind != _KIND_DISLIKED and place.get("title") not in eligible_titles:
+                continue
+            snapshot = _to_snapshot_place(place)
+            label_places[key].setdefault(snapshot["name"], snapshot)
+
     grouped: dict[str, list[dict]] = {
         "liked": [],
         "disliked": [],
         "categories": [],
     }
-    for (_, kind, value), result in zip(queries, results, strict=True):
-        if isinstance(result, BaseException) or value is None:
-            continue
-        places = [
-            _to_snapshot_place(place)
-            for place in result
-            if kind == _KIND_DISLIKED or place.get("title") in eligible_titles
-        ]
+    for kind, value in label_order:
+        places = list(label_places[(kind, value)].values())
         if not places:
             continue
         group = {"label": value, "places": places}
@@ -314,7 +353,9 @@ async def search_places_for_region(
     "어느 요청에서 나온 호출들인지" 묶어서 다른 요청과 공평하게 나눠 갖는다.
     """
     queries = _build_queries(region, liked_tags or [], disliked_tags or [])
-    granted = await reserve_daily_budget(len(queries))
+    granted = await reserve_daily_budget(
+        "naver_search", len(queries), settings.naver_daily_call_limit
+    )
     queries = queries[:granted]
     if not queries:
         return PlaceSearchResult(
@@ -323,7 +364,7 @@ async def search_places_for_region(
         )
 
     results_per_query = await asyncio.gather(
-        *(search_places(query, session_id=session_id) for query, _, _ in queries),
+        *(search_places(query, session_id=session_id, sort=sort) for query, _, _, sort in queries),
         return_exceptions=True,
     )
     merged, any_failed = _merge_results(queries, results_per_query)

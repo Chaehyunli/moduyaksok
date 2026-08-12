@@ -5,6 +5,9 @@
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, /me/llm-credential/test 추가
+# 2026-08-12, 등록(save_credential) 시에도 저장 전에 ping_provider로 1회 테스트하고
+#             성공해야만 저장하도록 변경 — 형식만 맞고 실제로는 무효/만료된 키가
+#             그대로 등록되는 걸 막음
 # ------------------------------------------------------------------
 import re
 from datetime import datetime
@@ -70,16 +73,27 @@ def save_credential(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> CredentialOut:
+    try:
+        ping_provider(body.provider, body.api_key)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"API 키 테스트에 실패했어요: {exc}"
+        ) from exc
+
     existing = _get_credential(session, current_user.id)
     encrypted = encrypt_key(body.api_key)
+    verified_at = datetime.utcnow()
     if existing is None:
         existing = LLMCredential(
-            user_id=current_user.id, provider=body.provider, encrypted_key=encrypted
+            user_id=current_user.id,
+            provider=body.provider,
+            encrypted_key=encrypted,
+            verified_at=verified_at,
         )
     else:
         existing.provider = body.provider
         existing.encrypted_key = encrypted
-        existing.verified_at = None
+        existing.verified_at = verified_at
     session.add(existing)
     session.commit()
     return CredentialOut(provider=body.provider, masked_key=mask_key(body.api_key))

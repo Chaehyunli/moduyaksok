@@ -28,6 +28,7 @@ uvicorn app.main:app --reload
 | `NAVER_SEARCH_CLIENT_ID`/`SECRET` | Step2 `place_candidates` 조회용 (NAVER API HUB, 지도 API와 별개 상품) |
 | `ODSAY_API_KEY` | Step4 길찾기(lab.odsay.com, Basic 등급) |
 | `ODSAY_REFERER_URL` | lab.odsay.com에 등록한 서비스 URI와 정확히 일치해야 함(프로토콜 제외). 로컬은 `localhost:8000`, Render 배포본은 `moduyaksok.onrender.com` |
+| `ODSAY_DAILY_CALL_LIMIT` | ODsay Basic 무료 등급 일일 호출 한도(기본 1,000) — 네이버와 별개 Redis 카운터(`app/services/rate_limiter.py`)로 관리, `REDIS_URL` 필요 |
 | `NAVER_RATE_LIMIT_PER_SECOND`/`NAVER_DAILY_CALL_LIMIT` | 네이버 지역검색 호출량 제어(기본값 = 네이버 API HUB 공식 한도 10/sec, 25,000/day) |
 | `REDIS_URL` | 일일 호출 카운터 저장소. `../moduyaksok-db/docker-compose.yml`의 `redis` 서비스, 기본 `redis://localhost:6380/0` |
 

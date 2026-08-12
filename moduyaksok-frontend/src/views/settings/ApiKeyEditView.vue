@@ -13,6 +13,7 @@ const store = useAppStore()
 const key = ref('')
 const error = ref('')
 const loading = ref(false)
+const revealed = ref(false)
 
 const providerNames = { openai: 'GPT', anthropic: 'Claude', upstage: 'Solar' } as const
 const placeholders = { openai: 'sk-...', anthropic: 'sk-ant-...', upstage: 'up_...' } as const
@@ -40,8 +41,8 @@ async function save() {
     const { data } = await api.post('/me/llm-credential', { provider, api_key: trimmed })
     store.saveApiKey(data.masked_key)
     router.push({ name: 'api-key-saved', query: route.query })
-  } catch {
-    error.value = '저장에 실패했어요. 다시 시도해주세요.'
+  } catch (err: any) {
+    error.value = err.response?.data?.detail ?? '저장에 실패했어요. 다시 시도해주세요.'
   } finally {
     loading.value = false
   }
@@ -52,7 +53,22 @@ async function save() {
   <div class="notebook-bg flex min-h-dvh items-center justify-center px-6">
     <div class="w-full max-w-sm">
       <h1 class="mb-6 font-hand text-2xl text-ink">{{ providerName }} API 키 등록</h1>
-      <DoodleInput v-model="key" :placeholder="placeholder" label="API 키" :error="error" />
+      <div class="relative">
+        <DoodleInput
+          v-model="key"
+          :type="revealed ? 'text' : 'password'"
+          :placeholder="placeholder"
+          label="API 키"
+          :error="error"
+        />
+        <button
+          type="button"
+          class="absolute right-3 top-[2.4rem] font-hand text-sm text-ink/50 hover:text-ink"
+          @click="revealed = !revealed"
+        >
+          {{ revealed ? '숨기기' : '보기' }}
+        </button>
+      </div>
       <p class="mt-2 font-hand text-sm text-ink/50">발급받은 키를 붙여넣으세요. 저장 전 유효성을 확인해요.</p>
       <div class="mt-6 flex gap-3">
         <DoodleButton variant="ghost" :disabled="loading" @click="router.back()">이전</DoodleButton>

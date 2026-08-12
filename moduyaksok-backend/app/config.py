@@ -25,6 +25,14 @@
 #             (app/services/rate_limiter.py). 일일 카운터는 여러 워커/인스턴스에서도
 #             정확히 집계돼야 해서 REDIS_URL 추가 — in-memory로는 프로세스가
 #             여러 개면 전역 집계가 안 맞는다.
+# 2026-08-13, ODSAY_DAILY_CALL_LIMIT 추가 — Step4(enrich_step4.py)가 ODsay Basic
+#             무료 등급의 일일 한도(1,000건, docs/기술설계_2026-08-06.md Step4 절)를
+#             네이버와 같은 방식(reserve_daily_budget, 리소스별로 독립된 Redis
+#             카운터)으로 지키게 함. 참고: 네이버는 일일 25,000건 한도 외에
+#             월 775,000건 한도도 있는데, 25,000 × 31(월 최대 일수) = 775,000으로
+#             정확히 일치한다 — 일일 한도를 매일 안 넘기게만 지키면 월 한도는
+#             수학적으로 자동 보장되므로 별도 월간 카운터는 안 만들었다(단,
+#             NAVER_DAILY_CALL_LIMIT을 나중에 올리면 이 전제가 깨지니 재확인할 것).
 # ------------------------------------------------------------------
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -57,6 +65,9 @@ class Settings(BaseSettings):
     # 때문에 호출 시 Referer 헤더를 이 값과 맞춰줘야 한다.
     odsay_api_key: str = ""
     odsay_referer_url: str = "localhost:8000"
+    # ODsay Basic 무료 등급 공식 한도(일 1,000건). rate_limiter.reserve_daily_budget에
+    # "odsay" 리소스로 전달돼 네이버와 독립된 카운터로 집계된다.
+    odsay_daily_call_limit: int = 1000
 
     # Step4 자차 옵션용 (NCP Maps Directions 5, ncloud.com Application "moduyaksok"
     # 에서 발급). Directions/Geocoding 등 서버 REST 호출은 이 Secret까지 헤더에

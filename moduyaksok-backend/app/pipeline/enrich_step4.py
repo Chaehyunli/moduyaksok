@@ -31,6 +31,13 @@
 #             recommended_option_id/selected_option_id로 교체 — 초기 selected는
 #             recommended와 같게 채우고, 시간 재조정(reconcile_schedule)도
 #             recommended(=최초 selected) 기준 소요시간을 쓴다.
+# 2026-08-13, ODsay(대중교통) 호출 앞에 reserve_daily_budget("odsay", 1, ...) 게이트
+#             추가 — Basic 무료 등급의 일일 한도(1,000건)를 넘기지 않게 네이버와
+#             같은 방식(app/services/rate_limiter.py)으로 지킨다. 예산이 없으면
+#             그 구간은 ODsay 호출 자체를 안 하고 도보 옵션만 남긴 채 경고를 붙여
+#             degrade — 이 파일이 이미 쓰는 "프로바이더 하나 실패해도 나머지는
+#             그대로 진행" 패턴과 동일하게 맞춤. NCP Maps(자차)는 별도 한도 요청이
+#             없어 그대로 둠.
 # 2026-08-10, 자차(car) 옵션 추가 — naver_directions.get_car_option()(NCP Maps
 #             Directions 5)을 도보/대중교통과 나란히 조회. 콘솔에서 신규 이용
 #             신청이 실제로 열려 있는 걸 확인해 "프로바이더 미정으로 보류"였던
@@ -48,10 +55,12 @@
 import asyncio
 from datetime import datetime
 
+from app.config import settings
 from app.pipeline.schemas import Activity, Candidate, RouteOption, RouteSegment
 from app.pipeline.travel_estimate import reconcile_schedule
 from app.services.naver_directions import NaverDirectionsError, get_car_option
 from app.services.odsay_directions import OdsayError, get_transit_options, get_walk_option
+from app.services.rate_limiter import reserve_daily_budget
 
 # 이 단계는 LLM을 쓰지 않는다(ODsay API 호출) — 모델 티어 해당 없음.
 
@@ -70,7 +79,14 @@ async def _fetch_segment_options(a: Activity, b: Activity) -> tuple[list[RouteOp
     warnings: list[str] = []
 
     try:
-        options += await get_transit_options(a.lat, a.lng, b.lat, b.lng)
+        granted = await reserve_daily_budget("odsay", 1, settings.odsay_daily_call_limit)
+        if granted:
+            options += await get_transit_options(a.lat, a.lng, b.lat, b.lng)
+        else:
+            warnings.append(
+                f"{a.name} → {b.name} 구간은 오늘 대중교통 조회 한도를 다 써서 "
+                "도보 정보만 제공돼요."
+            )
     except OdsayError:
         warnings.append(f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다.")
 

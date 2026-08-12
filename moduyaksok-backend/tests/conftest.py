@@ -12,6 +12,11 @@
 #             연결이 필요해진다 — 둘 다 이 레이어의 로직(호출 조립/파싱)과 무관한
 #             테스트에 불필요한 의존성. rate limiter 자체의 동작은
 #             tests/test_rate_limiter.py가 이 패치 없이 별도로 검증한다.
+# 2026-08-13, reserve_daily_budget()이 (resource, requested, daily_limit) 3-인자로
+#             바뀌고 Step4(enrich_step4.py)도 독립적으로 import해서 쓰게 되면서
+#             _grant_all 시그니처를 맞추고, enrich_step4 쪽 참조도 같이 패치 —
+#             monkeypatch는 "가져다 쓰는 모듈의 네임스페이스"를 패치하는 거라
+#             import한 곳마다 따로 걸어야 한다.
 # ------------------------------------------------------------------
 import pytest
 from fastapi.testclient import TestClient
@@ -26,11 +31,12 @@ def _bypass_naver_rate_limit(monkeypatch):
     async def _no_wait(session_id: str = "") -> None:
         return None
 
-    async def _grant_all(requested: int) -> int:
+    async def _grant_all(resource: str, requested: int, daily_limit: int) -> int:
         return requested
 
     monkeypatch.setattr("app.services.naver_local_search.acquire_call_slot", _no_wait)
     monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", _grant_all)
+    monkeypatch.setattr("app.pipeline.enrich_step4.reserve_daily_budget", _grant_all)
 
 
 @pytest.fixture

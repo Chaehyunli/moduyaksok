@@ -350,7 +350,10 @@ async def test_search_places_for_region_caps_verifiable_tags_at_five(monkeypatch
     await search_places_for_region("서울 잠실", liked_tags=tags)
 
     tag_calls = [c for c in _RecordingFakeAsyncClient.calls if c.startswith("서울 잠실 태그")]
-    assert len(tag_calls) == 5
+    # 태그마다 sort=random/comment 두 번씩 부르므로(2026-08-12) 쿼리 문자열 기준
+    # 고유 태그 개수가 5개로 캡되는지 본다 — 호출 횟수 자체는 5*2=10.
+    assert len(set(tag_calls)) == 5
+    assert len(tag_calls) == 10
 
 
 async def test_search_places_for_region_truncates_queries_when_daily_budget_short(monkeypatch):
@@ -360,7 +363,7 @@ async def test_search_places_for_region_truncates_queries_when_daily_budget_shor
     fake = _RecordingFakeAsyncClient({})
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
 
-    async def limited_budget(requested: int) -> int:
+    async def limited_budget(resource: str, requested: int, daily_limit: int) -> int:
         return 2
 
     monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", limited_budget)
@@ -372,7 +375,7 @@ async def test_search_places_for_region_truncates_queries_when_daily_budget_shor
 
 
 async def test_search_places_for_region_returns_empty_when_daily_budget_exhausted(monkeypatch):
-    async def zero_budget(requested: int) -> int:
+    async def zero_budget(resource: str, requested: int, daily_limit: int) -> int:
         return 0
 
     monkeypatch.setattr("app.services.naver_local_search.reserve_daily_budget", zero_budget)
@@ -392,9 +395,48 @@ async def test_search_places_for_region_raises_when_every_query_fails(monkeypatc
         await search_places_for_region("서울 잠실")
 
 
+async def test_search_places_for_region_calls_each_query_with_both_sorts(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class _SortRecordingClient:
+        def __call__(self, *args, **kwargs):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            calls.append((params["query"], params["sort"]))
+            return _FakeResponse(200, {"items": []})
+
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", _SortRecordingClient())
+
+    await search_places_for_region("서울 잠실")
+
+    sorts = {sort for query, sort in calls if query == "서울 잠실 한식"}
+    assert sorts == {"random", "comment"}
+
+
+async def test_search_places_for_region_search_groups_dedupe_by_label(monkeypatch):
+    # 카테고리 쿼리 하나가 sort=random/comment로 두 번 불려도 같은 응답을 두 번
+    # 받을 뿐이니, search_groups에는 "한식" 그룹이 하나만 있어야 한다(2026-08-12).
+    fake = _RecordingFakeAsyncClient(
+        {"서울 잠실 한식": [{"title": "잠실집", "category": "한식", "address": "서울 잠실"}]}
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_region("서울 잠실")
+
+    labels = [g["label"] for g in results.search_groups["groups"]["categories"]]
+    assert labels.count("한식") == 1
+
+
 async def test_search_places_for_region_partial_failure_does_not_raise(monkeypatch):
     # 일부 쿼리만 실패했을 땐 성공한 결과가 있으므로 raise하지 않는다.
-    async def flaky_search_places(query, display=5, session_id=""):
+    async def flaky_search_places(query, display=5, session_id="", sort="comment"):
         if "카페" in query:
             raise NaverSearchError("일부러 실패")
         return [{"title": f"{query} 결과", "category": "한식", "address": "서울"}]

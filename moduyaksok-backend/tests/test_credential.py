@@ -5,14 +5,26 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, 테이블 전체를 select하던 assertion을 user_id로 스코프 —
 #             개발 DB에 이미 있던 실제 유저 데이터와 충돌해 테스트가 깨졌었음
+# 2026-08-12, save_credential이 저장 전 ping_provider를 호출하도록 바뀌어서,
+#             이 파일 전체 테스트가 실제 provider를 호출하지 않도록 autouse로
+#             기본 성공 mock을 깔아줌(프로젝트 관례: tests/*.py는 provider SDK를
+#             항상 monkeypatch). 실패 케이스를 보는 테스트는 개별적으로 덮어씀.
 # ------------------------------------------------------------------
 from uuid import UUID
 
+import pytest
 from sqlmodel import select
 
 from app.models.llm_credential import LLMCredential
 
 _VALID_ANTHROPIC_KEY = "sk-ant-abcdefghijklmnopqrstuvwx"
+
+
+@pytest.fixture(autouse=True)
+def _mock_ping_provider_success(monkeypatch):
+    monkeypatch.setattr(
+        "app.routers.credential.ping_provider", lambda _provider, _api_key: "안녕하세요!"
+    )
 
 
 def _login(client, monkeypatch) -> tuple[dict, UUID]:
@@ -85,6 +97,26 @@ def test_save_credential_upserts_single_row_per_user(client, session, monkeypatc
     assert response.json()["provider"] == "openai"
     rows = session.exec(select(LLMCredential).where(LLMCredential.user_id == user_id)).all()
     assert len(rows) == 1
+
+
+def test_save_credential_provider_failure_returns_400_and_does_not_persist(
+    client, session, monkeypatch
+):
+    headers, user_id = _login(client, monkeypatch)
+
+    def _raise(_provider, _api_key):
+        raise RuntimeError("invalid x-api-key")
+
+    monkeypatch.setattr("app.routers.credential.ping_provider", _raise)
+
+    response = client.post(
+        "/me/llm-credential",
+        json={"provider": "anthropic", "api_key": _VALID_ANTHROPIC_KEY},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert _credential_for(session, user_id) is None
 
 
 def test_read_credential_without_registration_returns_404(client, monkeypatch):

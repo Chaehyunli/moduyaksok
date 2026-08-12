@@ -9,6 +9,10 @@
 #             (_RoundRobinLimiter)으로 교체하면서 테스트도 갱신 — 단일 세션
 #             타이밍 테스트는 그대로 유지하고, 여러 세션이 동시에 요청할 때
 #             한쪽이 굶지 않고 번갈아 처리되는지 검증하는 공평성 테스트 추가.
+# 2026-08-13, reserve_daily_budget()이 (resource, requested, daily_limit) 인자를
+#             받게 일반화(ODsay 추가)되면서 settings monkeypatch 대신 daily_limit을
+#             직접 넘기게 테스트를 갱신 — resource별로 카운터가 독립되는지 검증하는
+#             테스트 추가.
 # ------------------------------------------------------------------
 import asyncio
 import time
@@ -78,42 +82,46 @@ def _fake_redis(monkeypatch):
     yield fake
 
 
-async def test_reserve_daily_budget_grants_full_amount_when_under_limit(monkeypatch):
-    monkeypatch.setattr(rate_limiter.settings, "naver_daily_call_limit", 100)
-
-    granted = await reserve_daily_budget(10)
+async def test_reserve_daily_budget_grants_full_amount_when_under_limit():
+    granted = await reserve_daily_budget("naver_search", 10, daily_limit=100)
 
     assert granted == 10
 
 
-async def test_reserve_daily_budget_grants_partial_amount_when_over_limit(monkeypatch):
-    monkeypatch.setattr(rate_limiter.settings, "naver_daily_call_limit", 5)
-
-    granted = await reserve_daily_budget(10)
+async def test_reserve_daily_budget_grants_partial_amount_when_over_limit():
+    granted = await reserve_daily_budget("naver_search", 10, daily_limit=5)
 
     assert granted == 5
 
 
-async def test_reserve_daily_budget_accumulates_across_calls(monkeypatch):
-    monkeypatch.setattr(rate_limiter.settings, "naver_daily_call_limit", 10)
-
-    first = await reserve_daily_budget(6)
-    second = await reserve_daily_budget(6)
+async def test_reserve_daily_budget_accumulates_across_calls():
+    first = await reserve_daily_budget("naver_search", 6, daily_limit=10)
+    second = await reserve_daily_budget("naver_search", 6, daily_limit=10)
 
     assert first == 6
     assert second == 4  # 6+6=12가 10을 넘으니 남은 4개만
 
 
-async def test_reserve_daily_budget_returns_zero_when_already_exhausted(monkeypatch):
-    monkeypatch.setattr(rate_limiter.settings, "naver_daily_call_limit", 5)
-
-    await reserve_daily_budget(5)
-    granted = await reserve_daily_budget(3)
+async def test_reserve_daily_budget_returns_zero_when_already_exhausted():
+    await reserve_daily_budget("naver_search", 5, daily_limit=5)
+    granted = await reserve_daily_budget("naver_search", 3, daily_limit=5)
 
     assert granted == 0
 
 
 async def test_reserve_daily_budget_of_zero_requested_returns_zero():
-    granted = await reserve_daily_budget(0)
+    granted = await reserve_daily_budget("naver_search", 0, daily_limit=5)
 
     assert granted == 0
+
+
+async def test_reserve_daily_budget_isolates_different_resources():
+    # naver_search 예산을 다 써도 odsay는 별개 카운터라 영향이 없어야 한다
+    # (2026-08-13, ODsay 일일 한도 추가하며 resource 인자 일반화).
+    await reserve_daily_budget("naver_search", 5, daily_limit=5)
+
+    naver_granted = await reserve_daily_budget("naver_search", 1, daily_limit=5)
+    odsay_granted = await reserve_daily_budget("odsay", 1, daily_limit=1000)
+
+    assert naver_granted == 0
+    assert odsay_granted == 1
