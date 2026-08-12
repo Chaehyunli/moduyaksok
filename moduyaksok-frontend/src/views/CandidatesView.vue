@@ -6,6 +6,8 @@ import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
+import { tagColorForLabel, tagColorStyle, type TagColorStyle } from '../lib/tagColors'
+import type { Activity } from '../stores/app'
 
 const router = useRouter()
 const store = useAppStore()
@@ -14,6 +16,13 @@ const rotates = ['-2deg', '1.5deg', '-1deg']
 const placePoolExpanded = ref(false)
 const expandedCategoryGroup = ref<string | null>(null)
 const scheduleRegion = computed(() => store.conditions?.region ?? '')
+// 코스 카드의 장소가 어느 liked 라벨에서 나왔는지 색으로 매칭하는 데 쓴다 —
+// pill 색과 같은 순서(index)를 공유해야 두 화면에서 색이 일치한다.
+const likedLabels = computed(() => store.placePool?.groups.liked.map((g) => g.label) ?? [])
+
+function activityTagColor(a: Activity): TagColorStyle | null {
+  return tagColorForLabel(a.matchedTag, likedLabels.value)
+}
 
 function openCandidate(id: string) {
   store.selectCandidate(id)
@@ -65,14 +74,21 @@ function updateExpandedCategory(groupLabel: string, event: Event) {
               <h2 class="font-hand text-base text-ink">좋아한다고 말한 조건으로 찾은 장소</h2>
               <div class="grid items-start gap-2 sm:grid-cols-2">
                 <details
-                  v-for="group in store.placePool.groups.liked"
+                  v-for="(group, index) in store.placePool.groups.liked"
                   :key="group.label"
-                  class="rounded-[2px] border-2 border-red/25 bg-red/5 px-3 py-2 font-hand"
+                  class="rounded-[2px] border-2 px-3 py-2 font-hand"
+                  :class="[tagColorStyle(index).border, tagColorStyle(index).bg]"
                 >
                   <summary class="cursor-pointer text-sm text-ink">{{ group.label }} · {{ group.places.length }}곳</summary>
                   <ul class="mt-2 space-y-2 text-sm text-ink/70">
                     <li v-for="place in group.places" :key="`${group.label}-${place.name}`">
-                      <a :href="place.mapUrl" target="_blank" rel="noopener" class="text-ink underline decoration-red/50 underline-offset-2">
+                      <a
+                        :href="place.mapUrl"
+                        target="_blank"
+                        rel="noopener"
+                        class="text-ink underline underline-offset-2"
+                        :class="tagColorStyle(index).decoration"
+                      >
                         {{ place.name }}
                       </a>
                       <p class="text-ink/50">
@@ -148,7 +164,17 @@ function updateExpandedCategory(groupLabel: string, event: Event) {
             <p class="font-hand text-xl text-ink">{{ c.title }}</p>
             <p class="mt-1 font-hand text-sm text-ink/60">{{ c.whyRecommended }}</p>
             <ul class="mt-3 space-y-1 font-hand text-base text-ink/80">
-              <li v-for="a in c.activities" :key="a.name">· {{ a.name }} ({{ a.time }})</li>
+              <li v-for="a in c.activities" :key="a.name">
+                ·
+                <span
+                  v-if="activityTagColor(a)"
+                  class="rounded-[2px] border px-1"
+                  :class="[activityTagColor(a)!.border, activityTagColor(a)!.bg]"
+                  >{{ a.name }}</span
+                >
+                <span v-else>{{ a.name }}</span>
+                ({{ a.time }})
+              </li>
             </ul>
           </StickyNote>
         </div>

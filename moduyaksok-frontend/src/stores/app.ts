@@ -13,6 +13,9 @@ export interface Activity {
   mapUrl: string
   lat: number | null
   lng: number | null
+  // 이 장소가 어느 "좋아하는 조건"에서 나왔는지(백엔드 matched_tag) — placePool의
+  // groups.liked 라벨과 매칭해 색으로 구분해 보여줄 때 쓴다(src/lib/tagColors.ts).
+  matchedTag: string | null
 }
 
 export interface RouteOption {
@@ -90,6 +93,7 @@ function mapApiActivity(raw: any): Activity {
     mapUrl: raw.map_url,
     lat: raw.lat ?? null,
     lng: raw.lng ?? null,
+    matchedTag: raw.matched_tag ?? null,
   }
 }
 

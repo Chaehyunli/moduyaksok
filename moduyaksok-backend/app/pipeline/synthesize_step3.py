@@ -70,6 +70,20 @@
 # 2026-08-11(3차), 사용자 관측상 30분 직선거리 기반 추정 상한도 실제 지도에서
 #             동선이 넓게 보였음. 후보군 반경 1.5km화와 함께 연속 구간 상한을
 #             15분으로 강화해, 실제 대중교통 이동이 약 30분인 구간도 미리 제외.
+# 2026-08-12, TIER를 HIGH -> MID로 내렸다가 바로 되돌림 — "step 로직에서는
+#             HIGH(opus급)를 쓰지 않는다"는 방향으로 MID(claude-sonnet-5)로
+#             내려서 golden_step3.py 4케이스를 재검증했더니 4개 중 3개가
+#             _JudgmentBatch 스키마 검증에서 크래시(ERROR, 평균 점수 0.20).
+#             원인은 Claude tool_use가 "judgments": [...] 자리에 리스트 대신
+#             그 리스트를 JSON 문자열로 이중 인코딩해서 반환하는 것 — HIGH(opus)
+#             에서도 드물게(2회 실행 중 0~1/4) 같은 증상이 있었지만 MID(sonnet)
+#             에서는 발생률이 75%로 훨씬 높았다. 이 단계는 판단 품질이 아니라
+#             "스키마를 지키는 신뢰성" 자체가 모델 크기에 비례해서 나빠지는
+#             것으로 보여 HIGH로 원복 — Step1/Step2와 달리 이 스텝은 아직 MID로
+#             못 내린다. 근본 수정은 call_structured()의 anthropic 분기가 list
+#             타입 필드에 문자열이 오면 json.loads()로 한 번 더 풀어보는 방어
+#             로직을 넣는 것일 텐데, 그건 아직 안 함 — 다음에 이 스텝을 다시
+#             내리려면 그 수정부터 하고 재검증할 것.
 # ------------------------------------------------------------------
 from datetime import datetime, time
 
@@ -90,9 +104,11 @@ from app.pipeline.travel_estimate import estimate_buffer_minutes
 from app.services.naver_map_url import build_naver_map_url
 from app.services.structured_llm import call_structured
 
-# 파이프라인에서 정확한 판단력이 품질을 가장 크게 좌우하는 단계 (예산/시간 위반
-# 재검증, 후보 드롭·재생성 판단, 최종 요약 작성) — 호출은 1회뿐이라 비용 부담도 적어
-# 가장 강한 모델을 쓴다. HIGH 티어.
+# 파이프라인에서 정확한 판단력이 품질을 가장 크게 좌우하는 단계(예산/시간 위반
+# 재검증, 후보 드롭·재생성 판단, 최종 요약 작성) — 호출은 1회뿐이라 비용 부담도
+# 적어 가장 강한 모델을 쓴다. HIGH 티어. 2026-08-12에 MID로 내렸다가 Claude에서
+# _JudgmentBatch 스키마 크래시가 75%까지 뛰어서 바로 원복(위 변경사항 내역 참고)
+# — 이 단계는 Step1/Step2와 달리 아직 HIGH가 필요하다.
 TIER = ModelTier.HIGH
 
 # 관용 범위 — "무엇이 엄격/관대인가"(docs/AI파이프라인_Step별_설계 Step3 절) 확정값.
@@ -291,6 +307,7 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
                 map_url=map_url,
                 lat=draft.lat,
                 lng=draft.lng,
+                matched_tag=draft.matched_tag,
             )
         )
     return activities

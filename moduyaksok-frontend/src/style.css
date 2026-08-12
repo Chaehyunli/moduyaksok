@@ -17,6 +17,12 @@
   --color-ink: #1f2937;
   --color-red: #ef4444;
   --color-rule: #c7d2e0;
+  /* 좋아하는 조건별 색 구분 전용 고정 팔레트(2026-08-12) — 다른 용도로 확장 금지,
+     CLAUDE.md "디자인 시스템 제약" 참고. 첫 조건은 --color-red를 그대로 쓴다. */
+  --color-tag-amber: #c9971f;
+  --color-tag-teal: #4f8a7b;
+  --color-tag-indigo: #6b6fa8;
+  --color-tag-rose: #b8637a;
   --font-hand: "Architects Daughter", "Gaegu", "Segoe Print", cursive;
 }
 

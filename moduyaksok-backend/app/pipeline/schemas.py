@@ -247,6 +247,10 @@ class Activity(BaseModel):
     # Step4가 좌표를 못 구해 라우터에서 다시 장소를 찾아야 하는 낭비가 생긴다.
     lat: float | None = None
     lng: float | None = None
+    # ActivityDraft.matched_tag를 그대로 복사(lat/lng와 같은 패턴, 2026-08-12) —
+    # 프런트가 좋아하는 조건별로 장소를 색으로 구분해 보여주려면(코스 카드·상세
+    # 일정) 이 장소가 어느 liked 태그에서 나왔는지가 최종 응답까지 필요하다.
+    matched_tag: str | None = None
 
 
 class Candidate(BaseModel):

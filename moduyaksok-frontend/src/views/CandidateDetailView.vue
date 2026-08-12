@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
-import type { RouteSegment } from '../stores/app'
+import type { Activity, RouteSegment } from '../stores/app'
+import { tagColorForLabel } from '../lib/tagColors'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleDivider from '../components/doodle/DoodleDivider.vue'
@@ -59,6 +60,15 @@ function selectedOptionSummary(segment: RouteSegment): string {
 
 const { mapMarkers, mapSegments } = useCandidateMapData(candidate)
 
+// 코스 목록(CandidatesView)과 같은 순서로 색을 매겨야 두 화면에서 같은 조건이
+// 같은 색으로 보인다.
+const likedLabels = computed(() => store.placePool?.groups.liked.map((g) => g.label) ?? [])
+
+function activityAccentStyle(a: Activity): Record<string, string> {
+  const style = tagColorForLabel(a.matchedTag, likedLabels.value)
+  return style ? { borderLeft: `6px solid ${style.cssVar}`, marginLeft: '-2px' } : {}
+}
+
 async function confirmSchedule() {
   if (!candidate.value) return
   confirming.value = true
@@ -90,7 +100,7 @@ async function confirmSchedule() {
 
       <div class="space-y-3">
         <template v-for="(a, i) in candidate.activities" :key="a.order">
-          <DoodleCard>
+          <DoodleCard :style="activityAccentStyle(a)">
             <img :src="placeholderImg" alt="" class="mb-3 h-24 w-full rounded-[2px] object-cover" />
             <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
             <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>

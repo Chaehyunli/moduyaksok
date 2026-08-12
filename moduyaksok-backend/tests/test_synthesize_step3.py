@@ -473,6 +473,17 @@ def test_synthesize_and_validate_routes_always_empty(monkeypatch):
     assert result.candidates[0].routes == []
 
 
+def test_synthesize_and_validate_passes_through_matched_tag(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices={0})
+    )
+    candidates = [_candidate("A", [_activity("가게1", matched_tag="와플")])]
+
+    result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, candidates)
+
+    assert result.candidates[0].activities[0].matched_tag == "와플"
+
+
 def test_synthesize_and_validate_builds_map_url_from_address(monkeypatch):
     monkeypatch.setattr(
         "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices={0})

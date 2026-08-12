@@ -25,16 +25,25 @@ Vite 모드별 env 파일을 씀 — `npm run dev`는 `.env.development`, `npm r
 |---|---|---|
 | `--color-paper` | `#FFFEF5` | 배경 (노트 종이) |
 | `--color-ink` | `#1F2937` | 기본 텍스트, 테두리 |
-| `--color-red` | `#EF4444` | 유일한 강조색 — CTA, 밑줄, 여백선, 에러/워닝 |
+| `--color-red` | `#EF4444` | 핵심 강조색 — CTA, 밑줄, 여백선, 에러/워닝 |
 | `--font-hand` | Architects Daughter → Gaegu → cursive | 손글씨 폰트 |
 
-Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-ink`, `border-red`, `font-hand` 같은 유틸리티로 바로 쓸 수 있다.
+**조건 태깅 전용 팔레트** (좋아하는 조건별 색 구분에만 사용, `src/lib/tagColors.ts`가 관리):
+
+| 토큰 | 값 |
+|---|---|
+| `--color-tag-amber` | `#C9971F` |
+| `--color-tag-teal` | `#4F8A7B` |
+| `--color-tag-indigo` | `#6B6FA8` |
+| `--color-tag-rose` | `#B8637A` |
+
+Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-ink`, `border-red`, `border-tag-amber`, `font-hand` 같은 유틸리티로 바로 쓸 수 있다.
 
 **폰트 관련 주의:** `Architects Daughter`는 라틴 전용 폰트라 한글 글리프가 없다. 실제 화면 텍스트는 대부분 한글이므로 자동으로 `Gaegu`(한글 손글씨 폰트)로 폴백된다. 새 화면 만들 때 영문 라벨만 쓰지 말고 한글 렌더링을 꼭 확인할 것.
 
 **다크모드 없음(의도적):** 노트 종이 질감은 색을 반전하면 메타포 자체가 깨지므로, 라이트 테마로 고정했다. 이 프로젝트에서 만드는 다른 화면들도 이 규칙을 따른다.
 
-**색은 이 3개뿐:** 새로운 강조색(초록/파랑 등)을 추가하지 않는다. 성공/실패 같은 상태도 색상이 아니라 아이콘(✓, !)이나 굵기로 구분한다 (`DoodleBadge`, `DoodleAlert` 참고).
+**색은 `ink`/`red`/`paper` + 조건 태깅 팔레트뿐:** 새로운 강조색(초록/파랑 등)을 임의로 추가하지 않는다. 성공/실패 같은 상태도 색상이 아니라 아이콘(✓, !)이나 굵기로 구분한다 (`DoodleBadge`, `DoodleAlert` 참고). 조건 태깅 팔레트(`--color-tag-*`)는 좋아하는 조건별 색 구분 용도로만 쓰고 다른 상태 표현으로 확장하지 않는다.
 
 ### 손그림 흔들림 효과
 
