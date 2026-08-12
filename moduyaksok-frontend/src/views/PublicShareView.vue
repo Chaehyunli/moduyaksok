@@ -2,9 +2,10 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '../stores/app'
+import type { RouteOption, RouteSegment } from '../stores/app'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
-import placeholderImg from '../assets/place-placeholder.svg'
+import { categoryImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
@@ -25,6 +26,31 @@ onMounted(async () => {
 })
 
 const { mapMarkers, mapSegments } = useCandidateMapData(candidate)
+
+const MODE_LABELS: Record<RouteOption['mode'], string> = {
+  walk: '도보',
+  transit: '대중교통',
+  car: '자차',
+}
+
+function segmentAfter(fromOrder: number, toOrder: number): RouteSegment | undefined {
+  return candidate.value?.routes.find((route) => route.fromOrder === fromOrder && route.toOrder === toOrder)
+}
+
+function selectedOption(segment: RouteSegment): RouteOption | undefined {
+  return segment.options.find((option) => option.optionId === segment.selectedOptionId)
+}
+
+function selectedRouteSummary(segment: RouteSegment): string {
+  const option = selectedOption(segment)
+  if (!option) return '이동 정보 없음'
+
+  const parts = [`${MODE_LABELS[option.mode]} ${option.durationMinutes}분`]
+  if (option.fareKrw > 0) parts.push(`${option.fareKrw.toLocaleString()}원`)
+  if (option.transferCount > 0) parts.push(`환승 ${option.transferCount}회`)
+  if (option.description) parts.push(option.description)
+  return parts.join(' · ')
+}
 </script>
 
 <template>
@@ -35,11 +61,33 @@ const { mapMarkers, mapSegments } = useCandidateMapData(candidate)
         <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>
         <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
         <div class="space-y-3">
-          <DoodleCard v-for="a in candidate.activities" :key="a.name">
-            <img :src="placeholderImg" alt="" class="mb-3 h-24 w-full rounded-[2px] object-cover" />
-            <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
-            <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }} · 1인 {{ a.priceRange }}</p>
-          </DoodleCard>
+          <template v-for="(a, index) in candidate.activities" :key="a.order">
+            <DoodleCard>
+              <img
+                :src="categoryImage(a.category, a.name).src"
+                :alt="categoryImage(a.category, a.name).alt"
+                class="mb-3 h-24 w-full rounded-[2px] object-cover"
+              />
+              <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
+              <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }} · 1인 {{ a.priceRange }}</p>
+              <a
+                v-if="a.mapUrl"
+                :href="a.mapUrl"
+                target="_blank"
+                rel="noopener"
+                class="mt-2 inline-block font-hand text-sm text-red underline underline-offset-2 hover:text-ink"
+              >
+                지도에서 확인하기 ↗
+              </a>
+            </DoodleCard>
+
+            <p
+              v-if="index < candidate.activities.length - 1 && segmentAfter(a.order, candidate.activities[index + 1].order)"
+              class="px-2 py-1 font-hand text-sm text-ink/65"
+            >
+              🚌 {{ selectedRouteSummary(segmentAfter(a.order, candidate.activities[index + 1].order)!) }}
+            </p>
+          </template>
         </div>
       </template>
       <p v-else-if="loading" class="font-hand text-ink/60">불러오는 중...</p>
