@@ -101,14 +101,18 @@ async function confirmSchedule() {
       <div class="space-y-3">
         <template v-for="(a, i) in candidate.activities" :key="a.order">
           <DoodleCard :style="activityAccentStyle(a)">
-            <img :src="placeholderImg" alt="" class="mb-3 h-24 w-full rounded-[2px] object-cover" />
-            <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
-            <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
-            <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
-            <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
-              영업시간은 자동으로 확인이 안 돼요 —
-              <a :href="a.mapUrl" target="_blank" rel="noopener" class="text-red underline">지도에서 직접 확인</a>
-            </p>
+            <div class="flex items-start gap-3">
+              <div class="min-w-0 flex-1">
+                <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
+                <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
+                <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
+                <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
+                  영업시간은 자동으로 확인이 안 돼요 —
+                  <a :href="a.mapUrl" target="_blank" rel="noopener" class="text-red underline">지도에서 직접 확인</a>
+                </p>
+              </div>
+              <img :src="placeholderImg" alt="" class="h-20 w-20 shrink-0 rounded-[2px] object-cover" />
+            </div>
           </DoodleCard>
 
           <div v-if="i < candidate.activities.length - 1" class="pl-2">
