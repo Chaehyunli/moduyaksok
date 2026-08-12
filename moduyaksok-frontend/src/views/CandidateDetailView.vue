@@ -10,7 +10,7 @@ import DoodleDivider from '../components/doodle/DoodleDivider.vue'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
-import placeholderImg from '../assets/place-placeholder.svg'
+import { categoryImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
@@ -111,7 +111,11 @@ async function confirmSchedule() {
                   <a :href="a.mapUrl" target="_blank" rel="noopener" class="text-red underline">지도에서 직접 확인</a>
                 </p>
               </div>
-              <img :src="placeholderImg" alt="" class="h-20 w-20 shrink-0 rounded-[2px] object-cover" />
+              <img
+                :src="categoryImage(a.category, a.name).src"
+                :alt="categoryImage(a.category, a.name).alt"
+                class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
+              />
             </div>
           </DoodleCard>
 
