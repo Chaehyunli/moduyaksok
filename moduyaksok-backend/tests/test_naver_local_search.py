@@ -230,6 +230,32 @@ async def test_search_places_for_region_searches_verifiable_liked_tags_and_marks
 
     matched = next(r for r in results if r["title"] == "와플가게")
     assert matched["matched_tag"] == "와플"
+    assert matched["matched_tags"] == ["와플"]
+
+
+async def test_search_places_for_region_preserves_all_liked_tag_matches(monkeypatch):
+    from app.pipeline.schemas import PreferenceTag
+
+    same_place = {"title": "와플커피집", "category": "카페", "address": "서울 잠실"}
+    fake = _RecordingFakeAsyncClient(
+        {
+            "서울 잠실 와플": [same_place],
+            "서울 잠실 커피": [same_place],
+        }
+    )
+    monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", fake)
+
+    results = await search_places_for_region(
+        "서울 잠실",
+        liked_tags=[
+            PreferenceTag(tag="와플", verifiable=True),
+            PreferenceTag(tag="커피", verifiable=True),
+        ],
+    )
+
+    matched = next(r for r in results if r["title"] == "와플커피집")
+    assert matched["matched_tags"] == ["와플", "커피"]
+    assert matched["matched_tag"] == "와플"
 
 
 async def test_search_places_for_region_attaches_source_category(monkeypatch):

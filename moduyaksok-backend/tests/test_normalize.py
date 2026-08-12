@@ -23,9 +23,9 @@ _RAW_INPUT = {
 }
 
 _SAMPLE_LIKED = [
-    PreferenceTag(tag="콩국수", verifiable=True),
-    PreferenceTag(tag="텐동", verifiable=True),
-    PreferenceTag(tag="와플", verifiable=True),
+    PreferenceTag(tag="콩국수", verifiable=True, is_meal=True),
+    PreferenceTag(tag="텐동", verifiable=True, is_meal=True),
+    PreferenceTag(tag="와플", verifiable=True, is_meal=False),
 ]
 _SAMPLE_DISLIKED = [PreferenceTag(tag="해산물", verifiable=True)]
 
@@ -71,6 +71,21 @@ def test_normalize_conditions_preserves_verifiable_flag(monkeypatch):
 
     assert result.disliked_tags[0].verifiable is True
     assert result.disliked_tags[1].verifiable is False
+
+
+def test_normalize_conditions_preserves_meal_classification(monkeypatch):
+    tagged = [
+        PreferenceTag(tag="스테이크", verifiable=True, is_meal=True),
+        PreferenceTag(tag="소금빵", verifiable=True, is_meal=False),
+    ]
+    monkeypatch.setattr(
+        "app.pipeline.normalize_step1.call_structured",
+        lambda **kwargs: _ExtractedTags(liked_tags=tagged, disliked_tags=[]),
+    )
+
+    result = normalize_conditions("anthropic", "sk-ant-fake", _RAW_INPUT)
+
+    assert [tag.is_meal for tag in result.liked_tags] == [True, False]
 
 
 def test_normalize_conditions_passes_correct_tier_model_and_provider(monkeypatch):
@@ -119,3 +134,9 @@ def test_system_prompt_instructs_capping_verifiable_tags_at_max():
     cap_text = f"최대 {MAX_VERIFIABLE_TAGS}개"
     assert cap_text in _SYSTEM_PROMPT
     assert "verifiable=false" in _SYSTEM_PROMPT.split(cap_text)[1][:200]
+
+
+def test_system_prompt_explains_meal_and_snack_classification():
+    assert "is_meal" in _SYSTEM_PROMPT
+    assert "와플" in _SYSTEM_PROMPT
+    assert "삼겹살" in _SYSTEM_PROMPT

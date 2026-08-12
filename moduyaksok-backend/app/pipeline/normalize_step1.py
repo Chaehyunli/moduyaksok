@@ -26,6 +26,10 @@
 #             비용 비교 작업 중 발견 — Step1이 실제로는 문서(models.py의 ModelTier
 #             docstring)가 말하는 것보다 한 단계 비싼 티어로 돌고 있었다. LOW/MID/
 #             HIGH 3사 실측 후 재변경.
+# 2026-08-12(2차), verifiable=true인 좋아요 태그에 is_meal을 추가 — "먹을 수
+#             있음"과 점심/저녁 한 끼를 채울 수 있음을 구분한다. 이후 Step2가
+#             시간대별 식사 슬롯 수만큼만 식사 태그를 고르고, 와플·소금빵 같은
+#             간식은 별도 활동 태그로 포함시킬 수 있는 근거다.
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -63,6 +67,12 @@ _SYSTEM_PROMPT = f"""\
 (예: "사람 많은 곳", "조용한 분위기", "힙한 곳")
 - "빼고", "못 먹어요", "싫어요" 같은 부정 표현의 대상은 disliked_tags로 분류해라 \
 — liked_tags에 넣으면 안 된다.
+- liked_tags의 verifiable=true 태그에는 is_meal도 표시해라:
+  - true: 점심 또는 저녁 한 끼로 먹을 수 있는 식사 메뉴(예: 삼겹살, 콩국수, \
+스테이크, 파스타, 텐동)
+  - false: 간식·디저트·음료·활동(예: 와플, 소금빵, 케이크, 커피, 보드게임). \
+먹을 수 있더라도 한 끼 식사를 뜻하지 않으면 false다.
+  - verifiable=false 태그와 disliked_tags의 is_meal은 항상 false다.
 - 원문에 없는 내용은 절대 추가하지 마라. 언급이 없거나("(없음)") 막연하면 \
 빈 배열을 반환해라 — 그럴듯한 예시를 지어내면 안 된다.
 - verifiable=true인 태그는 liked_tags/disliked_tags 각각 최대 {MAX_VERIFIABLE_TAGS}개까지만 \
@@ -72,31 +82,34 @@ _SYSTEM_PROMPT = f"""\
 무관하다 — 검색에 안 쓰이니 개수 제한 없이 다 추출해라.
 
 # Format
-liked_tags, disliked_tags 각각 {{tag, verifiable}} 객체 배열로 출력.
+liked_tags, disliked_tags 각각 {{tag, verifiable, is_meal}} 객체 배열로 출력.
 
 # Examples
 
 입력: 좋아하는 것: 콩국수나 텐동, 와플 먹고 싶어 / 싫어하는 것: (없음)
-출력: liked_tags=[{{tag: "콩국수", verifiable: true}}, {{tag: "텐동", verifiable: true}}, \
-{{tag: "와플", verifiable: true}}], disliked_tags=[]
+출력: liked_tags=[{{tag: "콩국수", verifiable: true, is_meal: true}}, \
+{{tag: "텐동", verifiable: true, is_meal: true}}, \
+{{tag: "와플", verifiable: true, is_meal: false}}], disliked_tags=[]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: 해산물 빼고 매운 것도 못 먹어요
-출력: liked_tags=[], disliked_tags=[{{tag: "해산물", verifiable: true}}, \
-{{tag: "매운 음식", verifiable: true}}]
+출력: liked_tags=[], disliked_tags=[{{tag: "해산물", verifiable: true, is_meal: false}}, \
+{{tag: "매운 음식", verifiable: true, is_meal: false}}]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: (없음)
 출력: liked_tags=[], disliked_tags=[]
 
 입력: 좋아하는 것: 조용하고 차분한 분위기가 좋아요 / 싫어하는 것: 사람 많은 곳은 싫어요
-출력: liked_tags=[{{tag: "조용한 분위기", verifiable: false}}], \
-disliked_tags=[{{tag: "사람 많은 곳", verifiable: false}}]
+출력: liked_tags=[{{tag: "조용한 분위기", verifiable: false, is_meal: false}}], \
+disliked_tags=[{{tag: "사람 많은 곳", verifiable: false, is_meal: false}}]
 
 입력: 좋아하는 것: 저는 무조건 파스타예요. 스시도 좋고, 마라탕도 자주 먹고, 초밥이랑 \
 라멘도 자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / \
 싫어하는 것: (없음)
-출력: liked_tags=[{{tag: "파스타", verifiable: true}}, {{tag: "스시", verifiable: true}}, \
-{{tag: "마라탕", verifiable: true}}, {{tag: "초밥", verifiable: true}}, \
-{{tag: "라멘", verifiable: true}}], disliked_tags=[] \
+출력: liked_tags=[{{tag: "파스타", verifiable: true, is_meal: true}}, \
+{{tag: "스시", verifiable: true, is_meal: true}}, \
+{{tag: "마라탕", verifiable: true, is_meal: true}}, \
+{{tag: "초밥", verifiable: true, is_meal: true}}, \
+{{tag: "라멘", verifiable: true, is_meal: true}}], disliked_tags=[] \
 (타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 \
 {MAX_VERIFIABLE_TAGS}번째 다음부터는 버린다 — 등장 순서가 아니라 사용자가 표현한 \
 중요도로 판단한 것)

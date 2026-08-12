@@ -21,8 +21,9 @@
 #               "{region} {tag}" 검색을 카테고리 검색과 별도로 추가 호출한다.
 #               지금까진 category/title 텍스트만 보고 LLM이 사후 추측했는데,
 #               "이 태그로 검색하면 실제로 뜨는 곳"이라는 더 강한 근거로 대체 —
-#               liked 매칭 결과는 place dict에 matched_tag를 부착해 "이 태그를
-#               만족하는 후보"로 인정(Step2가 참고, Step3가 같은 태그 중복 반영을
+#               liked 매칭 결과는 place dict에 matched_tags를 부착해 "이 태그들을
+#               만족하는 후보"로 인정한다. 하위 호환을 위해 첫 태그는 matched_tag로
+#               유지한다(Step2가 참고, Step3가 같은 태그 중복 반영을
 #               판단하는 근거), disliked 매칭 결과는 애초에 결과 목록에서 제거해
 #               Step2 LLM이 볼 수도 없게 한다(카테고리/제목 텍스트로 사후 배제하던
 #               것보다 강한 보장).
@@ -67,6 +68,9 @@
 #             넓어진다는 판단. 쿼리 수가 그대로 2배가 돼 일일 호출 예산 소모도
 #             2배가 된다 — reserve_daily_budget() 예산이 부족하면 기존과 동일하게
 #             뒤쪽(태그 쿼리부터) 잘려서 부분 결과로 진행된다.
+# 2026-08-12(2차), 같은 장소가 여러 liked 태그 검색 결과에 함께 나올 때 첫
+#             태그만 남기던 정보를 matched_tags 배열로 보존. 기존 API 소비자와
+#             저장된 세션 호환을 위해 matched_tag에는 첫 태그도 계속 제공한다.
 # ------------------------------------------------------------------
 import asyncio
 import re
@@ -227,7 +231,8 @@ def _merge_results(
     queries: list[tuple[str, str, str | None, str]],
     results: list[list[dict] | BaseException],
 ) -> tuple[dict[str, dict], bool]:
-    """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tag를, 카테고리 쿼리에서
+    """title 기준 병합. liked 쿼리에서 나온 장소엔 matched_tags와 하위 호환용
+    matched_tag를, 카테고리 쿼리에서
     나온 장소엔 source_category를 부착한다. disliked 쿼리에서 나온 장소는
     (카테고리 검색에서도 같이 나왔더라도) 최종 결과에서 제거한다 — Step2 LLM이
     disliked 장소를 아예 볼 수 없게 하는 게 "category/title 텍스트로 사후
@@ -235,7 +240,7 @@ def _merge_results(
     부른 결과(2026-08-12)도 title이 같으면 여기서 자연히 하나로 합쳐진다.
     """
     merged: dict[str, dict] = {}
-    liked_title_to_tag: dict[str, str] = {}
+    liked_title_to_tags: dict[str, list[str]] = {}
     category_title_to_bucket: dict[str, str] = {}
     disliked_titles: set[str] = set()
     any_failed = False
@@ -248,15 +253,19 @@ def _merge_results(
             title = place["title"]
             merged.setdefault(title, place)
             if kind == _KIND_LIKED and value is not None:
-                liked_title_to_tag.setdefault(title, value)
+                tags = liked_title_to_tags.setdefault(title, [])
+                if value not in tags:
+                    tags.append(value)
             elif kind == _KIND_DISLIKED:
                 disliked_titles.add(title)
             elif kind == _KIND_CATEGORY and value is not None:
                 category_title_to_bucket.setdefault(title, value)
 
-    for title, tag in liked_title_to_tag.items():
+    for title, tags in liked_title_to_tags.items():
         if title in merged:
-            merged[title]["matched_tag"] = tag
+            merged[title]["matched_tags"] = tags
+            # 기존 소비자는 단일 값만 읽고 있어 첫 태그도 계속 제공한다.
+            merged[title]["matched_tag"] = tags[0]
     for title, bucket in category_title_to_bucket.items():
         if title in merged:
             merged[title].setdefault("source_category", bucket)

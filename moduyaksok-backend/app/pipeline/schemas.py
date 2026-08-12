@@ -82,6 +82,10 @@
 #             (naver_local_search.py)으로 지역당 최소 50개 후보를 모으는 쪽으로
 #             방향 전환. 이 축소로 지역 확장(app.services.regions.expand_broad_region)
 #             호출량 여유가 생겨 verifiable 태그 상한도 함께 올렸다.
+# 2026-08-12, PreferenceTag.is_meal 추가 — verifiable은 "검색으로 확인 가능한가"만
+#             뜻하므로, 삼겹살·콩국수처럼 점심/저녁 슬롯을 채울 태그와 와플·소금빵
+#             처럼 간식인 태그를 분리할 수 없었다. Step1이 이 의미를 분류하고,
+#             Step2/3가 식사 태그 배정과 하드 검증에 사용한다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -110,6 +114,11 @@ class PreferenceTag(BaseModel):
     # 주관적 태그면 False (예: "사람 많은 곳", "조용한 분위기"). Step2가 이 값으로
     # "반드시 지킬 것"과 "참고만 할 것"을 구분한다.
     verifiable: bool
+    # 이 태그가 점심/저녁 슬롯을 자연스럽게 채울 식사인지. "음식인가"가 아니라
+    # 일정에서 한 끼로 삼을 수 있는지의 분류다 — 삼겹살/콩국수/스테이크는 True,
+    # 와플/소금빵/커피는 False. verifiable=False인 주관적 태그도 호환성을 위해
+    # False로 둔다. 기본값은 구버전 저장 세션·테스트 입력을 읽기 위한 것이다.
+    is_meal: bool = False
 
 
 class NormalizedConditions(BaseModel):
@@ -182,6 +191,10 @@ class ActivityDraft(BaseModel):
     # category/title 텍스트로 사후 추측하던 걸 검색 단계에서 이미 확정된 값으로
     # 대체.
     matched_tag: str | None = None
+    # 한 장소가 "스시"와 "초밥"처럼 여러 좋아요 태그 검색 결과에 동시에 나올 수
+    # 있으므로 모든 매칭을 보존한다. matched_tag는 기존 UI 호환용 첫 태그이고,
+    # Step3의 후보별 필수 태그 검증은 이 필드를 기준으로 한다.
+    matched_tags: list[str] = []
     # place_candidates에서 결정론적으로 부착(matched_tag와 같은 방식) — 이 장소가
     # naver_local_search의 카테고리 검색(맛집/카페/액티비티/문화시설) 중 어느
     # 쿼리에서 나왔는지. 네이버 원본 category 문자열은 카페도 "음식점>카페,디저트"
@@ -195,6 +208,11 @@ class CandidateDraft(BaseModel):
     title: str
     activities: list[ActivityDraft]
     rationale: str  # Step 3에서 랭킹 근거로 사용
+    # Step2가 단일 세부지역 안에서 만든 클러스터-태그 계획. LLM에게도 같은 요구를
+    # 주지만, Step3가 아래 값을 기준으로 실제 선택 결과를 하드 검증한다.
+    required_meal_tags: list[str] = []
+    required_non_meal_tags: list[str] = []
+    cluster_radius_meters: int = 0
 
 
 # generate_step2._call_all_perspectives_sync()가 LLM에서 받는 "1단계" 출력 —
@@ -251,6 +269,7 @@ class Activity(BaseModel):
     # 프런트가 좋아하는 조건별로 장소를 색으로 구분해 보여주려면(코스 카드·상세
     # 일정) 이 장소가 어느 liked 태그에서 나왔는지가 최종 응답까지 필요하다.
     matched_tag: str | None = None
+    matched_tags: list[str] = []
 
 
 class Candidate(BaseModel):
