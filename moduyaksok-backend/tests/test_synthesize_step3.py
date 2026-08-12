@@ -454,8 +454,8 @@ def test_rule_based_filter_drops_time_overlap_candidate():
 
 
 def test_rule_based_filter_drops_large_budget_overrun():
-    # 예산 50000원의 20% 초과 = 60000원 초과분부터 드롭
-    over = _candidate("초과", [_activity("가게1", price=(70000, 80000))])
+    # 가격은 추정치라 40%까지 허용하고, 그보다 큰 초과만 드롭한다.
+    over = _candidate("초과", [_activity("가게1", price=(71000, 80000))])
 
     survivors, _ = _rule_based_filter([over], _CONDITIONS)
 
@@ -469,6 +469,15 @@ def test_rule_based_filter_keeps_small_budget_overrun_with_warning():
 
     assert survivors == [slightly_over]
     assert "5000원" in warnings[0] or "5,000원" in warnings[0] or "원 더 필요" in warnings[0]
+
+
+def test_rule_based_filter_keeps_budget_overrun_at_forty_percent_boundary():
+    uncertain_estimate = _candidate("추정오차", [_activity("가게1", price=(70000, 80000))])
+
+    survivors, warnings = _rule_based_filter([uncertain_estimate], _CONDITIONS)
+
+    assert survivors == [uncertain_estimate]
+    assert warnings[0]
 
 
 def test_rule_based_filter_keeps_normal_candidate_with_no_warning():

@@ -123,7 +123,7 @@ TIER = ModelTier.HIGH
 
 # 관용 범위 — "무엇이 엄격/관대인가"(docs/AI파이프라인_Step별_설계 Step3 절) 확정값.
 _TIME_OVERRUN_TOLERANCE_MINUTES = 60
-_BUDGET_OVERRUN_TOLERANCE_RATIO = 0.2
+_BUDGET_OVERRUN_TOLERANCE_RATIO = 0.4
 # 한 지역 안에서도 30분은 "동선이 좋은 일정"으로 보기엔 너무 느슨하다. Step2가
 # 관점별 입력 자체를 1.5km 근거리 묶음으로 제한한 뒤, 여기서는 연속 구간이 15분을
 # 넘으면 하드 드롭한다. 선택 후보 하나에만 실제 길찾기를 하는 구조라 이 시점의
