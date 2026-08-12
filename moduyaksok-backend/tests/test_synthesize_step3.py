@@ -23,6 +23,7 @@ from app.pipeline.synthesize_step3 import (
     _has_excessive_travel,
     _has_hallucinated_activity,
     _has_missing_meal_slot,
+    _has_missing_required_tags,
     _has_time_overlap,
     _JudgmentBatch,
     _required_meal_windows,
@@ -63,6 +64,7 @@ def _activity(
     lat: float | None = 37.5,
     lng: float | None = 127.0,
     matched_tag: str | None = None,
+    matched_tags: list[str] | None = None,
     source_category: str | None = None,
 ) -> ActivityDraft:
     return ActivityDraft(
@@ -75,6 +77,7 @@ def _activity(
         lat=lat,
         lng=lng,
         matched_tag=matched_tag,
+        matched_tags=matched_tags or [],
         source_category=source_category,
     )
 
@@ -168,6 +171,17 @@ def test_has_duplicate_tag_match_false_when_different_tags():
 def test_has_duplicate_tag_match_false_when_no_tags_matched():
     c = _candidate("A", [_activity("가게1"), _activity("가게2")])
     assert _has_duplicate_tag_match(c) is False
+
+
+def test_has_duplicate_tag_match_uses_all_matched_tags():
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", matched_tags=["스시", "초밥"]),
+            _activity("가게2", matched_tags=["스시"]),
+        ],
+    )
+    assert _has_duplicate_tag_match(c) is True
 
 
 # ── _has_duplicate_place (2026-08-12(2차), 같은 장소 중복 방문 하드룰) ────────
@@ -285,6 +299,33 @@ def test_has_missing_meal_slot_true_when_dinner_missing_even_if_lunch_covered():
     c = _candidate("A", [_activity("식당1", source_category="한식", start="12:00", end="13:00")])
     # _MEAL_CONDITIONS(10:00~21:00)는 점심·저녁 둘 다 필요한데 저녁이 없음
     assert _has_missing_meal_slot(c, _MEAL_CONDITIONS) is True
+
+
+def test_required_tags_drop_candidate_when_non_meal_tag_is_not_selected():
+    candidate = _candidate(
+        "A",
+        [_activity("스테이크집", start="18:00", end="19:00", matched_tags=["스테이크"])],
+    ).model_copy(update={"required_meal_tags": ["스테이크"], "required_non_meal_tags": ["와플"]})
+    dinner_conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
+            "liked_tags": [PreferenceTag(tag="스테이크", verifiable=True, is_meal=True)],
+        }
+    )
+
+    assert _has_missing_required_tags(candidate, dinner_conditions) is True
+
+
+def test_required_meal_tag_must_be_in_its_meal_slot():
+    candidate = _candidate(
+        "A",
+        [_activity("스테이크집", start="15:00", end="16:00", matched_tags=["스테이크"])],
+    ).model_copy(update={"required_meal_tags": ["스테이크"]})
+    dinner_conditions = _CONDITIONS.model_copy(
+        update={"time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0))}
+    )
+
+    assert _has_missing_required_tags(candidate, dinner_conditions) is True
 
 
 def test_rule_based_filter_drops_candidate_missing_meal_slot():

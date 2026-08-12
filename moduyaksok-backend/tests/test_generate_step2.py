@@ -28,6 +28,7 @@ import pytest
 
 from app.pipeline.generate_step2 import (
     PERSPECTIVES,
+    _build_candidate_plans,
     _build_system_prompt,
     _build_user_prompt,
     _dedupe_places,
@@ -53,7 +54,7 @@ _CONDITIONS = NormalizedConditions(
     headcount=2,
     time_range=(datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 21, 0)),
     region="서울 잠실",
-    liked_tags=[PreferenceTag(tag="콩국수", verifiable=True)],
+    liked_tags=[PreferenceTag(tag="콩국수", verifiable=True, is_meal=True)],
     disliked_tags=[
         PreferenceTag(tag="해산물", verifiable=True),
         PreferenceTag(tag="사람 많은 곳", verifiable=False),
@@ -62,8 +63,31 @@ _CONDITIONS = NormalizedConditions(
 )
 
 _PLACE_CANDIDATES = [
-    {"title": "잠실장어와 한우", "category": "한식", "roadAddress": "서울 송파구 백제고분로7길"},
-    {"title": "OO카페", "category": "카페", "address": "서울 송파구 잠실동"},
+    {
+        "title": "잠실장어와 한우",
+        "category": "한식",
+        "roadAddress": "서울 송파구 백제고분로7길",
+        "source_category": "한식",
+        "matched_tags": ["콩국수"],
+        "mapx": "1270000000",
+        "mapy": "375000000",
+    },
+    {
+        "title": "OO카페",
+        "category": "카페",
+        "address": "서울 송파구 잠실동",
+        "source_category": "카페",
+        "mapx": "1270001000",
+        "mapy": "375000100",
+    },
+    {
+        "title": "석촌 파스타",
+        "category": "양식",
+        "roadAddress": "서울 송파구 잠실동",
+        "source_category": "양식",
+        "mapx": "1270002000",
+        "mapy": "375000200",
+    },
 ]
 
 
@@ -266,12 +290,12 @@ def test_build_user_prompt_injects_place_candidates_and_conditions():
     assert "50000" in prompt
 
 
-def test_build_user_prompt_formats_tags_with_verifiable_flag():
+def test_build_user_prompt_formats_tags_with_verifiable_and_meal_flags():
     prompt = _build_user_prompt(_CONDITIONS, _PLACE_CANDIDATES)
 
-    assert "콩국수(verifiable=True)" in prompt
-    assert "해산물(verifiable=True)" in prompt
-    assert "사람 많은 곳(verifiable=False)" in prompt
+    assert "콩국수(verifiable=True, is_meal=True)" in prompt
+    assert "해산물(verifiable=True, is_meal=False)" in prompt
+    assert "사람 많은 곳(verifiable=False, is_meal=False)" in prompt
 
 
 def test_build_user_prompt_handles_empty_place_candidates():
@@ -573,6 +597,77 @@ def test_schedule_places_anchors_lunch_and_dinner_in_a_long_window():
     assert activities[3].start_time == "18:00"
 
 
+# ── 클러스터·식사 태그 계획 (2026-08-12) ───────────────────────────────────
+
+
+def test_candidate_plans_make_one_dinner_alternative_per_meal_tag():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
+            "liked_tags": [
+                PreferenceTag(tag="삼겹살", verifiable=True, is_meal=True),
+                PreferenceTag(tag="콩국수", verifiable=True, is_meal=True),
+                PreferenceTag(tag="스테이크", verifiable=True, is_meal=True),
+                PreferenceTag(tag="와플", verifiable=True, is_meal=False),
+            ],
+        }
+    )
+    places = [
+        {
+            "title": tag,
+            "source_category": "한식" if tag != "스테이크" else "양식",
+            "matched_tags": [tag],
+            "mapx": str(1270000000 + index * 1000),
+            "mapy": str(375000000 + index * 1000),
+        }
+        for index, tag in enumerate(("삼겹살", "콩국수", "스테이크", "와플"))
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert {plan.required_meal_tags for plan in plans} == {
+        ("삼겹살",),
+        ("콩국수",),
+        ("스테이크",),
+    }
+    assert all(plan.required_non_meal_tags == ("와플",) for plan in plans)
+    assert all(plan.cluster_radius_meters == 1_000 for plan in plans)
+
+
+def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_tags():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
+            "liked_tags": [
+                PreferenceTag(tag="삼겹살", verifiable=True, is_meal=True),
+                PreferenceTag(tag="와플", verifiable=True, is_meal=False),
+            ],
+        }
+    )
+    # 남북 약 1.3km: 1km 묶음에는 함께 못 들어가지만 1.5km에서 하나의 생활권이 된다.
+    places = [
+        {
+            "title": "삼겹살집",
+            "source_category": "고깃집",
+            "matched_tags": ["삼겹살"],
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "title": "와플집",
+            "source_category": "카페",
+            "matched_tags": ["와플"],
+            "mapx": "1270000000",
+            "mapy": "375117000",
+        },
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert plans
+    assert all(plan.cluster_radius_meters == 1_500 for plan in plans)
+
+
 # ── _tag_bundles_by_perspective() (2026-08-11) ──────────────────────────────
 
 
@@ -800,7 +895,13 @@ async def test_generate_candidates_gives_each_perspective_a_different_tag_match(
         for i in range(2)
     ]
 
-    await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, [*nearby, *distant])
+    waffle_conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 17, 0)),
+            "liked_tags": [PreferenceTag(tag="와플", verifiable=True, is_meal=False)],
+        }
+    )
+    await generate_candidates("anthropic", "sk-ant-fake", waffle_conditions, [*nearby, *distant])
 
     assert len(captured_users) == 3
     # 한 프롬프트 안에 강남·홍대 후보가 섞이면 안 된다. 관점별 후보의 차이는
@@ -817,9 +918,15 @@ def test_generate_single_candidate_reuses_same_partition_as_full_run(monkeypatch
 
     monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
 
+    waffle_conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 17, 0)),
+            "liked_tags": [PreferenceTag(tag="와플", verifiable=True, is_meal=False)],
+        }
+    )
     label = PERSPECTIVES[1][0]
     index = 1
-    generate_single_candidate("anthropic", "sk-ant-fake", _CONDITIONS, _WAFFLE_MATCHES, label)
+    generate_single_candidate("anthropic", "sk-ant-fake", waffle_conditions, _WAFFLE_MATCHES, label)
 
     expected_bundle = _tag_bundles_by_perspective(_WAFFLE_MATCHES, len(PERSPECTIVES))[index]
     expected_title = next(p["title"] for p in expected_bundle if p.get("matched_tag") == "와플")

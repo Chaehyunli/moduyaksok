@@ -84,6 +84,12 @@
 #             타입 필드에 문자열이 오면 json.loads()로 한 번 더 풀어보는 방어
 #             로직을 넣는 것일 텐데, 그건 아직 안 함 — 다음에 이 스텝을 다시
 #             내리려면 그 수정부터 하고 재검증할 것.
+# 2026-08-12(2차), Step2가 후보별로 확정한 required_meal_tags/
+#             required_non_meal_tags를 Step3의 규칙 기반 필터에서도 재검증.
+#             간식·체험 태그는 어느 활동에서든 실제 검색 매칭이 있으면 되고,
+#             식사 태그는 서로 다른 식사 슬롯·활동에 배정돼야 한다. 여러 태그에
+#             함께 매칭된 장소도 ActivityDraft.matched_tags 전체를 보존·검사해
+#             LLM 프롬프트만으로 선호를 보장하던 빈틈을 제거했다.
 # ------------------------------------------------------------------
 from datetime import datetime, time
 
@@ -158,19 +164,26 @@ def _has_time_overlap(candidate: CandidateDraft) -> bool:
     return False
 
 
+def _activity_matched_tags(activity: ActivityDraft) -> set[str]:
+    """구버전 단일 matched_tag도 포함해 전체 검색 매칭 근거를 읽는다."""
+    tags = set(activity.matched_tags)
+    if activity.matched_tag:
+        tags.add(activity.matched_tag)
+    return tags
+
+
 def _has_duplicate_tag_match(candidate: CandidateDraft) -> bool:
-    """같은 verifiable liked_tags 태그(ActivityDraft.matched_tag)를 만족한 활동이
-    한 후보에 2곳 이상이면 하드 위반 — 태그 하나를 만족시키는 덴 한 곳이면
-    충분하다(2026-08-10 미해결 설계 질문 (a): "와플" 태그가 카페 2곳에 중복
-    반영되던 문제).
+    """같은 좋아요 태그를 만족하는 활동이 한 후보에 2곳 이상이면 하드 위반.
+
+    한 장소가 여러 검색 태그에 동시에 잡힌 경우도 모두 검사한다. 예를 들어 첫
+    장소가 스시/초밥이고 두 번째가 스시면, 스시를 중복 반영한 것으로 본다.
     """
     seen: set[str] = set()
     for activity in candidate.activities:
-        if activity.matched_tag is None:
-            continue
-        if activity.matched_tag in seen:
+        tags = _activity_matched_tags(activity)
+        if seen & tags:
             return True
-        seen.add(activity.matched_tag)
+        seen.update(tags)
     return False
 
 
@@ -223,9 +236,13 @@ def _has_missing_meal_slot(candidate: CandidateDraft, conditions: NormalizedCond
     카테고리 활동(ActivityDraft.source_category)이 없으면 하드 위반 — 강한
     liked_tag가 있을 때 디저트/카페만으로 일정이 채워지는 문제 대응.
     """
+    meal_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal}
     for slot_start, slot_end in _required_meal_windows(conditions.time_range):
         has_meal = any(
-            activity.source_category in _MEAL_CATEGORIES
+            (
+                activity.source_category in _MEAL_CATEGORIES
+                or bool(_activity_matched_tags(activity) & meal_tags)
+            )
             and datetime.strptime(activity.start_time, "%H:%M").time() < slot_end
             and datetime.strptime(activity.end_time, "%H:%M").time() > slot_start
             for activity in candidate.activities
@@ -233,6 +250,60 @@ def _has_missing_meal_slot(candidate: CandidateDraft, conditions: NormalizedCond
         if not has_meal:
             return True
     return False
+
+
+def _has_missing_required_tags(candidate: CandidateDraft, conditions: NormalizedConditions) -> bool:
+    """Step2가 후보마다 정한 태그 제약을 실제 선택 결과에서 다시 강제한다.
+
+    비식사 태그는 일정의 어느 활동에서든 한 번이면 충분하다. 식사 태그는 각기
+    다른 활동·식사 슬롯에 배정될 수 있어야 한다. 따라서 LLM이 프롬프트의 "반드시"
+    지시를 놓쳐도 Step3에서 통과하지 못한다.
+    """
+    matched_by_activity = [_activity_matched_tags(activity) for activity in candidate.activities]
+    if not set(candidate.required_non_meal_tags).issubset(
+        {tag for tags in matched_by_activity for tag in tags}
+    ):
+        return True
+
+    required_meal_tags = tuple(candidate.required_meal_tags)
+    if not required_meal_tags:
+        return False
+
+    # Step2의 시간 배정기가 식사 활동을 점심/저녁 창에 앵커링하므로, 실제 결과도
+    # 해당 태그가 서로 다른 식사 슬롯 안에 있는지만 결정론적으로 검사하면 된다.
+    slots = _required_meal_windows(conditions.time_range)
+    if len(required_meal_tags) > len(slots):
+        return True
+    options: list[list[tuple[int, int]]] = []
+    for tag in required_meal_tags:
+        matches: list[tuple[int, int]] = []
+        for activity_index, activity in enumerate(candidate.activities):
+            if tag not in matched_by_activity[activity_index]:
+                continue
+            start = datetime.strptime(activity.start_time, "%H:%M").time()
+            end = datetime.strptime(activity.end_time, "%H:%M").time()
+            for slot_index, (slot_start, slot_end) in enumerate(slots):
+                if start < slot_end and end > slot_start:
+                    matches.append((activity_index, slot_index))
+        if not matches:
+            return True
+        options.append(matches)
+
+    def assign(index: int, used_activities: set[int], used_slots: set[int]) -> bool:
+        if index == len(options):
+            return True
+        return any(
+            activity_index not in used_activities
+            and slot_index not in used_slots
+            and assign(
+                index + 1,
+                used_activities | {activity_index},
+                used_slots | {slot_index},
+            )
+            for activity_index, slot_index in options[index]
+        )
+
+    return not assign(0, set(), set())
 
 
 def _budget_overrun_ratio(candidate: CandidateDraft, budget_per_person: int) -> float:
@@ -272,6 +343,7 @@ def _rule_based_filter(
             or _has_duplicate_place(candidate)
             or _has_excessive_travel(candidate)
             or _has_missing_meal_slot(candidate, conditions)
+            or _has_missing_required_tags(candidate, conditions)
         ):
             continue
 
@@ -325,6 +397,7 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
                 lat=draft.lat,
                 lng=draft.lng,
                 matched_tag=draft.matched_tag,
+                matched_tags=draft.matched_tags,
             )
         )
     return activities
@@ -341,7 +414,7 @@ def _infeasible_response() -> InfeasibleResponse:
 def _format_tags(tags: list[PreferenceTag]) -> str:
     if not tags:
         return "(없음)"
-    return ", ".join(f"{t.tag}(verifiable={t.verifiable})" for t in tags)
+    return ", ".join(f"{t.tag}(verifiable={t.verifiable}, is_meal={t.is_meal})" for t in tags)
 
 
 _ROLE_TASK = """\
