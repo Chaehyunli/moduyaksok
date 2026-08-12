@@ -1,7 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
   <rect x="4" y="4" width="92" height="92" rx="3" fill="#fffef5" stroke="#1f2937" stroke-width="4"/>
-  <path d="M20 48 Q20 74 50 74 Q80 74 80 48Z" fill="#ef4444" stroke="#1f2937" stroke-width="4" stroke-linejoin="round"/>
-  <rect x="32" y="34" width="10" height="34" rx="5" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
-  <rect x="46" y="28" width="10" height="40" rx="5" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
-  <rect x="60" y="36" width="10" height="32" rx="5" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
+  <circle cx="50" cy="50" r="31" fill="#fffef5" stroke="#1f2937" stroke-width="4"/>
+  <circle cx="50" cy="50" r="24" fill="#ef4444" stroke="#1f2937" stroke-width="3"/>
+  <rect x="27" y="36" width="30" height="10" rx="5" transform="rotate(-18 42 41)" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
+  <rect x="50" y="31" width="27" height="10" rx="5" transform="rotate(14 63.5 36)" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
+  <rect x="31" y="57" width="29" height="10" rx="5" transform="rotate(18 45.5 62)" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
+  <rect x="51" y="53" width="27" height="10" rx="5" transform="rotate(-15 64.5 58)" fill="#fffef5" stroke="#1f2937" stroke-width="3"/>
+  <path d="M36 40 L49 36" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <path d="M58 36 L69 39" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <path d="M39 61 L51 65" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
+  <path d="M59 58 L70 55" stroke="#ef4444" stroke-width="2" stroke-linecap="round"/>
 </svg>
