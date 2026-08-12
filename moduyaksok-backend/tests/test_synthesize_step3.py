@@ -18,6 +18,7 @@ from app.pipeline.schemas import (
 from app.pipeline.synthesize_step3 import (
     _budget_overrun_ratio,
     _CandidateJudgment,
+    _has_duplicate_place,
     _has_duplicate_tag_match,
     _has_excessive_travel,
     _has_hallucinated_activity,
@@ -167,6 +168,38 @@ def test_has_duplicate_tag_match_false_when_different_tags():
 def test_has_duplicate_tag_match_false_when_no_tags_matched():
     c = _candidate("A", [_activity("가게1"), _activity("가게2")])
     assert _has_duplicate_tag_match(c) is False
+
+
+# ── _has_duplicate_place (2026-08-12(2차), 같은 장소 중복 방문 하드룰) ────────
+
+
+def test_has_duplicate_place_true_when_same_name_twice():
+    c = _candidate(
+        "A",
+        [
+            _activity("성수 브런치카페", start="10:00", end="11:00"),
+            _activity("성수 브런치카페", start="14:00", end="15:00"),
+        ],
+    )
+    assert _has_duplicate_place(c) is True
+
+
+def test_has_duplicate_place_false_when_different_places():
+    c = _candidate("A", [_activity("가게1"), _activity("가게2")])
+    assert _has_duplicate_place(c) is False
+
+
+def test_has_duplicate_place_true_even_without_matched_tag():
+    # matched_tag가 둘 다 None이라 _has_duplicate_tag_match는 못 잡는 경우도
+    # _has_duplicate_place는 이름만 보고 잡아야 한다.
+    c = _candidate(
+        "A",
+        [
+            _activity("가게1", matched_tag=None),
+            _activity("가게1", matched_tag=None),
+        ],
+    )
+    assert _has_duplicate_place(c) is True
 
 
 # ── _has_excessive_travel (2026-08-11, 이동거리 하드룰) ────────────────────
@@ -347,6 +380,20 @@ def test_rule_based_filter_drops_candidate_with_duplicate_tag_match():
         [
             _activity("가게1", matched_tag="와플"),
             _activity("가게2", matched_tag="와플"),
+        ],
+    )
+
+    survivors, _ = _rule_based_filter([dup], _CONDITIONS)
+
+    assert survivors == []
+
+
+def test_rule_based_filter_drops_candidate_with_duplicate_place():
+    dup = _candidate(
+        "중복방문",
+        [
+            _activity("성수 브런치카페", start="10:00", end="11:00"),
+            _activity("성수 브런치카페", start="14:00", end="15:00"),
         ],
     )
 

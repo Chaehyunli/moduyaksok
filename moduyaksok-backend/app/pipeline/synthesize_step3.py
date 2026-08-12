@@ -174,6 +174,21 @@ def _has_duplicate_tag_match(candidate: CandidateDraft) -> bool:
     return False
 
 
+def _has_duplicate_place(candidate: CandidateDraft) -> bool:
+    """같은 장소(activity.name)가 한 후보에 2번 이상 등장하면 하드 위반
+    (2026-08-12(2차)). generate_step2._dedupe_places()가 1차로 걸러내지만,
+    "프롬프트만 믿지 말고 결정 가능한 건 코드로 2차 강제"라는 이 프로젝트
+    원칙(_has_duplicate_tag_match와 같은 결)을 그대로 적용 — matched_tag가
+    없는(태그 매칭 없이 카테고리로만 고른) 장소가 중복되는 경우까지 잡는다.
+    """
+    seen: set[str] = set()
+    for activity in candidate.activities:
+        if activity.name in seen:
+            return True
+        seen.add(activity.name)
+    return False
+
+
 def _has_excessive_travel(candidate: CandidateDraft) -> bool:
     """연속된 두 활동 사이 추정 이동시간이 임계값을 넘으면 하드 위반 — 여러
     지역을 입력했을 때 서로 먼 지역끼리(예: 서울 강남 + 경기 수원) 하루 코스로
@@ -240,11 +255,12 @@ def _rule_based_filter(
     candidates: list[CandidateDraft], conditions: NormalizedConditions
 ) -> tuple[list[CandidateDraft], list[str]]:
     """LLM 호출 전에 결정론적으로 판단 가능한 하드 위반만 걸러낸다 — 장소 환각,
-    활동 간 시간 겹침, 같은 태그 중복 반영, 과도한 이동거리, 식사 슬롯 누락
-    (다섯 다 예외 없이 드롭), 예산/시간 대폭 초과(관용 범위 초과분만 드롭).
-    관용 범위 이내의 예산/시간 초과는 드롭하지 않고 경고 문구를 만들어 survivors와
-    같은 순서로 돌려준다(경고 없으면 빈 문자열) — synthesize_and_validate가 LLM의
-    feasibility_note와 합쳐 최종 feasibility_warning을 만든다.
+    활동 간 시간 겹침, 같은 태그 중복 반영, 같은 장소 중복 방문, 과도한 이동거리,
+    식사 슬롯 누락(여섯 다 예외 없이 드롭), 예산/시간 대폭 초과(관용 범위
+    초과분만 드롭). 관용 범위 이내의 예산/시간 초과는 드롭하지 않고 경고 문구를
+    만들어 survivors와 같은 순서로 돌려준다(경고 없으면 빈 문자열) —
+    synthesize_and_validate가 LLM의 feasibility_note와 합쳐 최종
+    feasibility_warning을 만든다.
     """
     survivors: list[CandidateDraft] = []
     warnings: list[str] = []
@@ -253,6 +269,7 @@ def _rule_based_filter(
             _has_hallucinated_activity(candidate)
             or _has_time_overlap(candidate)
             or _has_duplicate_tag_match(candidate)
+            or _has_duplicate_place(candidate)
             or _has_excessive_travel(candidate)
             or _has_missing_meal_slot(candidate, conditions)
         ):

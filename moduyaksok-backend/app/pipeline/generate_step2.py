@@ -126,6 +126,29 @@
 # 2026-08-11(3차), 사용자 관측상 2.5km 후보 반경과 30분 추정 이동 상한은 도심
 #             일정에도 동선이 넓게 퍼져 보였음. 후보군 반경을 1.5km로, Step3의
 #             연속 구간 추정 상한을 15분으로 함께 좁힘.
+# 2026-08-12, TIER를 HIGH -> MID로 내림 — "step 로직에서는 HIGH(opus급)를 쓰지
+#             않는다, HIGH는 DeepEval judge 전용으로만 남긴다"는 방향으로 결정
+#             (provider 비용 비교 중 Claude가 Step2에서 opus를 쓰고 있어 비용이
+#             크게 나온 걸 발견한 게 계기). 주의: 위 2026-08-09 기록에
+#             "MID->HIGH로도" 실패 사례가 있었다는 내용이 있는데, 그건 "장소
+#             선택"과 "시간 배정"을 분리하기 *전* 얘기이고, 분리 이후 골든셋
+#             재검증은 HIGH로만 했지 MID로 다시 돌려본 적은 없다 — 즉 지금
+#             내리는 MID가 분리된 책임 범위(장소 선택·예산·취향 판단만)에서도
+#             통하는지는 아직 실측 전이다. 코드 변경과 별개로 골든셋
+#             재검증(pytest -m eval 또는 scripts/compare_providers_eval.py)을
+#             해서 확인할 것 — 특히 budget_conscious_selection처럼 과거 MID가
+#             약했던 케이스 위주로.
+# 2026-08-12(2차), 위에서 언급한 재검증을 실제로 해보니 MID 자체는 무사히
+#             통과했는데, golden_step2.py의 soft_signal_crowdedness_needs_hedge/
+#             no_hallucinated_places_small_candidate_list 두 케이스가 여전히
+#             (MID 전환과 무관하게, HIGH일 때도 있었던) 낮은 점수로 실패 —
+#             judge reason을 뜯어보니 공통 원인이 "같은 장소가 한 후보 안에
+#             두 번 선택됨"이었다. "같은 곳은 최대 1번만"이 지금까지 프롬프트
+#             지시뿐이라(_build_user_prompt) LLM이 가끔 못 지켰던 것 — 이
+#             프로젝트가 반복해온 "결정론적으로 계산 가능한 건 코드로 2차
+#             강제" 원칙을 그대로 적용해 _dedupe_places() 추가, _draft_from_selection
+#             에서 시간 배정 전에 걸러 애초에 중복 방문이 스케줄에 못 들어가게
+#             함. synthesize_step3.py에도 같은 검증을 하드 룰로 추가(2차 방어).
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -143,10 +166,10 @@ from app.pipeline.schemas import (
 from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
 from app.services.structured_llm import call_structured
 
-# MID -> HIGH로 격상(2026-08-09, 장소선택/시간배정 분리 이전). 예산 합산·중복
-# 방문 금지 지시를 추가하자 MID(solar-pro)가 하드 제약들을 동시에 못 버티는 걸
-# 실측 확인. 분리 이후에도 LLM이 여전히 예산·취향 등 여러 판단을 하므로 HIGH 유지.
-TIER = ModelTier.HIGH
+# HIGH -> MID로 하향(2026-08-12) — 파이프라인 step 로직에서는 HIGH(opus급)를
+# 안 쓰기로 함(HIGH는 DeepEval judge 전용). 위쪽 변경사항 내역 2026-08-12 항목에
+# 재검증 필요성 기록해둠.
+TIER = ModelTier.MID
 
 # 관점을 다르게 줘서 후보 간 실질적 차별성을 확보한다 (기술설계 §4 Step 2).
 # (라벨, 상세 지시문) 쌍 — 라벨만 주면 관점별로 뭘 다르게 판단해야 하는지 모델이
@@ -628,15 +651,33 @@ def _find_perspective(label: str) -> tuple[str, str]:
     raise ValueError(f"알 수 없는 관점: {label}")
 
 
+def _dedupe_places(places: list[PlaceSelectionDraft]) -> list[PlaceSelectionDraft]:
+    """같은 장소(name)가 한 후보 안에 두 번 이상 선택되면 처음 것만 남기고
+    나머지는 버린다(2026-08-12(2차)). "같은 곳은 최대 1번만"이 지금까지
+    프롬프트 지시뿐이라 LLM이 시간을 채우려고 같은 곳을 반복 방문시키는 걸
+    golden_step2.py 재검증에서 실측 확인 — 시간 배정(_schedule_places) 전에
+    걸러서 애초에 중복 방문이 스케줄에 들어갈 수 없게 한다.
+    """
+    seen: set[str] = set()
+    deduped = []
+    for place in places:
+        if place.name in seen:
+            continue
+        seen.add(place.name)
+        deduped.append(place)
+    return deduped
+
+
 def _draft_from_selection(
     selection: CandidateSelectionDraft,
     conditions: NormalizedConditions,
     place_candidates: list[dict],
 ) -> CandidateDraft:
     corrected = _correct_categories(selection, place_candidates)
+    deduped_places = _dedupe_places(corrected.places)
     return CandidateDraft(
         title=corrected.title,
-        activities=_schedule_places(corrected.places, conditions.time_range, place_candidates),
+        activities=_schedule_places(deduped_places, conditions.time_range, place_candidates),
         rationale=corrected.rationale,
     )
 

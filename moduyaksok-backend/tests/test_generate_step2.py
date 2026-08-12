@@ -30,6 +30,7 @@ from app.pipeline.generate_step2 import (
     PERSPECTIVES,
     _build_system_prompt,
     _build_user_prompt,
+    _dedupe_places,
     _format_place_candidates,
     _meal_slot_instruction,
     _required_meal_windows,
@@ -208,6 +209,52 @@ async def test_generate_candidates_leaves_category_unchanged_when_name_not_in_pl
 
     for draft in drafts:
         assert draft.activities[0].category == "아무 카테고리"
+
+
+async def test_generate_candidates_dedupes_repeated_place_in_same_selection(monkeypatch):
+    """LLM이 같은 장소를 시간 채우려고 두 번 선택해도(golden_step2.py
+    no_hallucinated_places_small_candidate_list에서 실측 재현) 최종 활동에는
+    한 번만 남아야 한다(2026-08-12(2차))."""
+
+    def fake_call_structured(**kwargs):
+        return CandidateSelectionDraft(
+            title="초안",
+            places=[
+                PlaceSelectionDraft(
+                    name="잠실장어와 한우", category="한식", price_range_per_person=(20000, 30000)
+                ),
+                PlaceSelectionDraft(
+                    name="OO카페", category="카페", price_range_per_person=(5000, 8000)
+                ),
+                PlaceSelectionDraft(
+                    name="잠실장어와 한우", category="한식", price_range_per_person=(20000, 30000)
+                ),
+            ],
+            rationale="반영",
+        )
+
+    monkeypatch.setattr("app.pipeline.generate_step2.call_structured", fake_call_structured)
+
+    drafts = await generate_candidates("anthropic", "sk-ant-fake", _CONDITIONS, _PLACE_CANDIDATES)
+
+    for draft in drafts:
+        names = [a.name for a in draft.activities]
+        assert names.count("잠실장어와 한우") == 1
+        assert names == ["잠실장어와 한우", "OO카페"]
+
+
+def test_dedupe_places_keeps_first_occurrence_only():
+    places = [_place("가게1"), _place("가게2"), _place("가게1")]
+
+    result = _dedupe_places(places)
+
+    assert [p.name for p in result] == ["가게1", "가게2"]
+
+
+def test_dedupe_places_no_duplicates_returns_unchanged():
+    places = [_place("가게1"), _place("가게2")]
+
+    assert _dedupe_places(places) == places
 
 
 def test_build_user_prompt_injects_place_candidates_and_conditions():
