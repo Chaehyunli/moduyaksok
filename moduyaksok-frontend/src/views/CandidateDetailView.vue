@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
-import type { Activity, RouteSegment } from '../stores/app'
+import { useScheduleStore } from '../stores/schedule'
+import type { Activity, RouteSegment } from '../stores/schedule'
 import { tagColorForLabel } from '../lib/tagColors'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
@@ -15,7 +15,7 @@ import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
+const store = useScheduleStore()
 
 const candidate = computed(() => store.candidates.find((c) => c.id === route.params.id))
 
@@ -103,7 +103,10 @@ async function confirmSchedule() {
           <DoodleCard :style="activityAccentStyle(a)">
             <div class="flex items-start gap-3">
               <div class="min-w-0 flex-1">
-                <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
+                <p class="flex items-center gap-2 font-hand text-lg text-ink">
+                  <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-ink bg-red text-sm text-paper">{{ a.order }}</span>
+                  {{ a.name }}
+                </p>
                 <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
                 <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
                 <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
@@ -164,7 +167,6 @@ async function confirmSchedule() {
       <DoodleDivider class="my-8" />
 
       <div class="flex flex-wrap gap-3">
-        <DoodleButton @click="router.push(`/schedules/${candidate.id}/feedback`)">피드백으로 수정하기</DoodleButton>
         <DoodleButton variant="ghost" :disabled="confirming" @click="confirmSchedule">
           {{ confirming ? '확정하는 중...' : '이 일정 확정하기' }}
         </DoodleButton>

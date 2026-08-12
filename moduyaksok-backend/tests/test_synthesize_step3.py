@@ -22,6 +22,7 @@ from app.pipeline.synthesize_step3 import (
     _has_duplicate_tag_match,
     _has_excessive_travel,
     _has_hallucinated_activity,
+    _has_insufficient_preference_coverage,
     _has_missing_meal_slot,
     _has_missing_required_anchors,
     _has_missing_required_places,
@@ -330,6 +331,30 @@ def test_required_meal_tag_must_be_in_its_meal_slot():
     )
 
     assert _has_missing_required_tags(candidate, dinner_conditions) is True
+
+
+def test_preference_coverage_requires_two_of_five_verified_tags():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(tag=tag, verifiable=True)
+                for tag in ("와플", "파스타", "전시", "보드게임", "커피")
+            ]
+        }
+    )
+    one_match = _candidate("A", [_activity("와플집", matched_tags=["와플"])]).model_copy(
+        update={"required_non_meal_tags": ["와플"]}
+    )
+    two_matches = _candidate(
+        "B",
+        [
+            _activity("와플집", matched_tags=["와플"]),
+            _activity("전시장", matched_tags=["전시"]),
+        ],
+    ).model_copy(update={"required_non_meal_tags": ["와플"]})
+
+    assert _has_insufficient_preference_coverage(one_match, conditions) is True
+    assert _has_insufficient_preference_coverage(two_matches, conditions) is False
 
 
 def test_required_anchor_drops_candidate_when_llm_uses_another_same_tag_place():

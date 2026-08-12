@@ -320,6 +320,32 @@ def _has_missing_required_tags(candidate: CandidateDraft, conditions: Normalized
     return not assign(0, set(), set())
 
 
+def _has_insufficient_preference_coverage(
+    candidate: CandidateDraft, conditions: NormalizedConditions
+) -> bool:
+    """검증 가능한 좋아요 태그는 절반 이상 반영해야 한다.
+
+    태그를 1~5개까지 받을 수 있으므로 최소 반영 수는 각각 1, 1, 1, 2, 2개다.
+    식사 태그의 시간대·서로 다른 슬롯 배정 규칙은 _has_missing_required_tags()가
+    별도로 계속 강제한다. 여기서는 식사/비식사를 합친 전체 선호 충족률만 본다.
+    """
+    liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
+    minimum_coverage = max(1, len(liked_tags) // 2)
+    if minimum_coverage == 0:
+        return False
+
+    # 구버전 저장 세션·단위 테스트처럼 Step2 계획 정보가 전혀 없는 초안에는
+    # 새 규칙을 소급 적용할 근거가 없다. 새 생성 흐름은 최소 태그 앵커를 반드시
+    # 넣으므로 이 분기 없이 아래 검증을 탄다.
+    if not candidate.required_meal_tags and not candidate.required_non_meal_tags:
+        return False
+
+    matched_tags = {
+        tag for activity in candidate.activities for tag in _activity_matched_tags(activity)
+    }
+    return len(liked_tags & matched_tags) < minimum_coverage
+
+
 def _has_missing_required_anchors(candidate: CandidateDraft) -> bool:
     """후보별로 고정한 실제 태그 장소가 LLM 선택에 남아 있는지 확인한다.
 
@@ -381,6 +407,7 @@ def _rule_based_filter(
             or _has_excessive_travel(candidate)
             or _has_missing_meal_slot(candidate, conditions)
             or _has_missing_required_tags(candidate, conditions)
+            or _has_insufficient_preference_coverage(candidate, conditions)
             or _has_missing_required_anchors(candidate)
             or _has_missing_required_places(candidate)
         ):

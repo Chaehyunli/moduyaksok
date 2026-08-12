@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../../stores/app'
+import { useAuthStore } from '../../stores/auth'
 import { api } from '../../lib/api'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleInput from '../../components/doodle/DoodleInput.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 const key = ref('')
 const error = ref('')

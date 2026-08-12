@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { useAppStore } from '../stores/app'
-import type { RouteOption, RouteSegment } from '../stores/app'
+import { useScheduleStore } from '../stores/schedule'
+import type { RouteOption, RouteSegment } from '../stores/schedule'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import { categoryImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
-const store = useAppStore()
+const store = useScheduleStore()
 const loading = ref(true)
 const notFound = ref(false)
 

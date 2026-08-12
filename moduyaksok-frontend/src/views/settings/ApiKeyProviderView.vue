@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../../stores/app'
+import { useAuthStore } from '../../stores/auth'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleSelectCard from '../../components/doodle/DoodleSelectCard.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 const provider = ref<'anthropic' | 'openai' | 'upstage'>(store.apiKeyProvider ?? 'anthropic')
 

@@ -189,26 +189,8 @@ function buildTimeRange(startTime: string, endTime: string): [string, string] {
   return [`${dateStr}T${startTime}:00`, `${dateStr}T${endTime}:00`]
 }
 
-export interface AuthUser {
-  id: string
-  email: string
-  name: string | null
-}
-
-export const useAppStore = defineStore('app', {
+export const useScheduleStore = defineStore('schedule', {
   state: () => ({
-    loggedIn: !!localStorage.getItem('access_token'),
-    userName: localStorage.getItem('user_name') ?? '',
-    apiKeyRegistered: !!localStorage.getItem('api_key_masked'),
-    apiKeyProvider: (localStorage.getItem('api_key_provider') || null) as
-      | 'anthropic'
-      | 'openai'
-      | 'upstage'
-      | null,
-    apiKeyMasked: localStorage.getItem('api_key_masked') ?? '',
-    // 로그인 세션당 한 번만 서버에 물어보고 캐시 — localStorage 상태가 이 브라우저에서
-    // 등록 안 했거나(다른 기기에서 등록) 지워진 경우 서버 진실과 동기화한다.
-    apiKeySynced: false,
     conditions: null as Conditions | null,
     sessionId: null as string | null,
     candidates: [] as Candidate[],
@@ -229,56 +211,6 @@ export const useAppStore = defineStore('app', {
     },
   },
   actions: {
-    login(accessToken: string, user: AuthUser) {
-      localStorage.setItem('access_token', accessToken)
-      localStorage.setItem('user_name', user.name ?? user.email)
-      this.loggedIn = true
-      this.userName = user.name ?? user.email
-    },
-    logout() {
-      localStorage.removeItem('access_token')
-      localStorage.removeItem('user_name')
-      localStorage.removeItem('api_key_masked')
-      localStorage.removeItem('api_key_provider')
-      this.loggedIn = false
-      this.userName = ''
-      this.apiKeyRegistered = false
-      this.apiKeyProvider = null
-      this.apiKeyMasked = ''
-      this.apiKeySynced = false
-    },
-    async syncApiKey() {
-      if (this.apiKeySynced) return
-      this.apiKeySynced = true
-      try {
-        const { data } = await api.get('/me/llm-credential')
-        localStorage.setItem('api_key_masked', data.masked_key)
-        localStorage.setItem('api_key_provider', data.provider)
-        this.apiKeyRegistered = true
-        this.apiKeyProvider = data.provider
-        this.apiKeyMasked = data.masked_key
-      } catch (err: any) {
-        if (err.response?.status === 404) {
-          this.clearApiKey()
-        }
-      }
-    },
-    selectProvider(provider: 'anthropic' | 'openai' | 'upstage') {
-      this.apiKeyProvider = provider
-    },
-    saveApiKey(maskedKey: string) {
-      localStorage.setItem('api_key_masked', maskedKey)
-      localStorage.setItem('api_key_provider', this.apiKeyProvider ?? '')
-      this.apiKeyRegistered = true
-      this.apiKeyMasked = maskedKey
-    },
-    clearApiKey() {
-      localStorage.removeItem('api_key_masked')
-      localStorage.removeItem('api_key_provider')
-      this.apiKeyRegistered = false
-      this.apiKeyProvider = null
-      this.apiKeyMasked = ''
-    },
     async submitConditions(conditions: Conditions) {
       this.conditions = conditions
       this.selectedCandidateId = null

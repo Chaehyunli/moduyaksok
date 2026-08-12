@@ -493,6 +493,12 @@ def _non_meal_tag_names(conditions: NormalizedConditions) -> tuple[str, ...]:
     return tuple(tag.tag for tag in conditions.liked_tags if tag.verifiable and not tag.is_meal)
 
 
+def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
+    """검증 가능한 좋아요 태그 1~5개에 대해 최소 1, 1, 1, 2, 2개를 요구한다."""
+    verified_count = len(_meal_tag_names(conditions)) + len(_non_meal_tag_names(conditions))
+    return max(1, verified_count // 2) if verified_count else 0
+
+
 def _is_eligible_tag_anchor(place: dict, tag: str, required_meal_tags: tuple[str, ...]) -> bool:
     """식사 태그 앵커에 검색어와 무관한 카페 등이 섞이는 것을 막는다.
 
@@ -747,10 +753,6 @@ def _plans_for_cluster(
     if not set(required_place_ids).issubset({_place_id(place) for place in places}):
         return []
 
-    # 비식사 태그(와플·소금빵·체험 등)는 식사 횟수와 무관하게 모두 실제 검색
-    # 근거가 있는 장소로 충족해야 한다.
-    if not _has_all_tags(non_meal_tags, places):
-        return []
     if sum(_is_meal_place(place, meal_tags) for place in places) < meal_slots:
         return []
 
@@ -762,18 +764,28 @@ def _plans_for_cluster(
     for required_meal_tags in meal_tag_choices:
         if not _can_assign_distinct_tags(required_meal_tags, places):
             continue
-        for anchors in _tag_anchor_variants(places, required_meal_tags, non_meal_tags):
-            plans.append(
-                _CandidatePlan(
-                    perspective_label="",
-                    place_candidates=places,
-                    required_meal_tags=required_meal_tags,
-                    required_non_meal_tags=non_meal_tags,
-                    required_tag_anchors=anchors,
-                    required_place_ids=required_place_ids,
-                    cluster_radius_meters=cluster.radius_meters,
-                )
-            )
+        minimum_non_meal_count = max(
+            0, _minimum_preference_coverage(conditions) - len(required_meal_tags)
+        )
+        # 최소 반영 수부터 가능한 많이 포함하는 조합까지 모두 만든다. 계획 선택
+        # 점수는 앵커 수가 많은 쪽을 우선해, 좋아요를 더 많이 담은 코스가 상위로
+        # 오르되 모든 태그를 못 담는 지역도 최소 기준만 충족하면 후보가 남는다.
+        for count in range(minimum_non_meal_count, len(non_meal_tags) + 1):
+            for required_non_meal_tags in combinations(non_meal_tags, count):
+                for anchors in _tag_anchor_variants(
+                    places, required_meal_tags, required_non_meal_tags
+                ):
+                    plans.append(
+                        _CandidatePlan(
+                            perspective_label="",
+                            place_candidates=places,
+                            required_meal_tags=required_meal_tags,
+                            required_non_meal_tags=required_non_meal_tags,
+                            required_tag_anchors=anchors,
+                            required_place_ids=required_place_ids,
+                            cluster_radius_meters=cluster.radius_meters,
+                        )
+                    )
     return plans
 
 
@@ -793,7 +805,7 @@ def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]
     used_anchor_names: set[str] = set()
     while remaining and len(selected) < _MAX_CANDIDATE_PLANS:
 
-        def score(plan: _CandidatePlan) -> tuple[int, int, int, int, int, int, int]:
+        def score(plan: _CandidatePlan) -> tuple[int, int, int, int, int, int, int, int]:
             titles = _plan_titles(plan)
             anchor_names = _plan_anchor_names(plan)
             max_overlap = max(
@@ -811,6 +823,7 @@ def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]
                 }
             )
             return (
+                len(anchor_names),
                 len(set(plan.required_meal_tags) - covered_meal_tags),
                 len(anchor_names - used_anchor_names),
                 -max_anchor_overlap,

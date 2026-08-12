@@ -1,12 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
 import KitchenSinkView from '../views/KitchenSinkView.vue'
 import LoginView from '../views/LoginView.vue'
 import ConditionWizardView from '../views/ConditionWizardView.vue'
 import CandidatesView from '../views/CandidatesView.vue'
 import CandidateDetailView from '../views/CandidateDetailView.vue'
-import FeedbackView from '../views/FeedbackView.vue'
 import ShareView from '../views/ShareView.vue'
 import PublicShareView from '../views/PublicShareView.vue'
 import SettingsView from '../views/SettingsView.vue'
@@ -25,7 +24,6 @@ export const router = createRouter({
     { path: '/new', name: 'new-schedule', component: ConditionWizardView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules', name: 'candidates', component: CandidatesView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules/:id', name: 'candidate-detail', component: CandidateDetailView, meta: { requiresAuth: true, requiresApiKey: true } },
-    { path: '/schedules/:id/feedback', name: 'candidate-feedback', component: FeedbackView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules/:id/share', name: 'candidate-share', component: ShareView, meta: { requiresAuth: true, requiresApiKey: true } },
 
     { path: '/share/:slug', name: 'public-share', component: PublicShareView },
@@ -39,7 +37,7 @@ export const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
-  const store = useAppStore()
+  const store = useAuthStore()
   if (to.meta.requiresAuth && !store.loggedIn) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }

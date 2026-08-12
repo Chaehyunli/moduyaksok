@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleBadge from '../components/doodle/DoodleBadge.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 function handleLogout() {
   store.logout()

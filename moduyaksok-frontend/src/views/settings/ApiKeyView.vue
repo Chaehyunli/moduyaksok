@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '../../stores/app'
+import { useAuthStore } from '../../stores/auth'
 import { api } from '../../lib/api'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleCard from '../../components/doodle/DoodleCard.vue'
@@ -9,7 +9,7 @@ import DoodleBadge from '../../components/doodle/DoodleBadge.vue'
 import DoodleDivider from '../../components/doodle/DoodleDivider.vue'
 
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar' } as const
 

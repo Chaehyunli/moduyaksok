@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useScheduleStore } from '../stores/schedule'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
+const store = useScheduleStore()
 const copied = ref(false)
 
 const candidate = computed(() => store.candidates.find((c) => c.id === route.params.id))

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import { api } from '../lib/api'
 
 declare global {
@@ -19,7 +19,7 @@ declare global {
 
 const router = useRouter()
 const route = useRoute()
-const store = useAppStore()
+const store = useAuthStore()
 const loading = ref(false)
 const error = ref('')
 const buttonEl = ref<HTMLElement | null>(null)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useScheduleStore } from '../stores/schedule'
 import { PROVINCES, REGIONS } from '../lib/regions'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleInput from '../components/doodle/DoodleInput.vue'
@@ -12,7 +12,7 @@ import DoodleStepper from '../components/doodle/DoodleStepper.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 
 const router = useRouter()
-const store = useAppStore()
+const store = useScheduleStore()
 
 const PURPOSES = [
   { value: 'date', title: '데이트', subtitle: '연인과의 만남' },

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from 'vue-router'
-import { useAppStore } from '../../stores/app'
+import { useAuthStore } from '../../stores/auth'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleCard from '../../components/doodle/DoodleCard.vue'
 
 const route = useRoute()
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 function proceed() {
   // 홈에서 로그인 직후 API 키가 없어서 여기로 왔다면 redirect는 보통 '/new'.

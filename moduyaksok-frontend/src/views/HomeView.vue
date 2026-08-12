@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useAuthStore } from '../stores/auth'
 import DoodleArrow from '../components/doodle/DoodleArrow.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleStar from '../components/doodle/DoodleStar.vue'
@@ -8,7 +8,7 @@ import DoodleUnderline from '../components/doodle/DoodleUnderline.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
 
 const router = useRouter()
-const store = useAppStore()
+const store = useAuthStore()
 
 const steps = [
   {

@@ -719,7 +719,7 @@ def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():
     assert all(dict(plan.required_tag_anchors)["햄버거"] == "실제 버거집" for plan in plans)
 
 
-def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_tags():
+def test_candidate_plans_prefer_more_liked_tags_even_when_minimum_coverage_is_met():
     conditions = _CONDITIONS.model_copy(
         update={
             "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
@@ -729,7 +729,8 @@ def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_
             ],
         }
     )
-    # 남북 약 1.3km: 1km 묶음에는 함께 못 들어가지만 1.5km에서 하나의 생활권이 된다.
+    # 남북 약 1.3km: 1km 묶음은 최소 기준(식사 태그 1개)을 충족하지만,
+    # 두 태그를 모두 담는 1.5km 계획이 더 높은 선호 점수로 우선 선택된다.
     places = [
         {
             "title": "삼겹살집",
@@ -750,7 +751,8 @@ def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_
     plans = _build_candidate_plans(conditions, places)
 
     assert plans
-    assert all(plan.cluster_radius_meters == 1_500 for plan in plans)
+    assert any(plan.cluster_radius_meters == 1_500 for plan in plans)
+    assert any(len(plan.required_tag_anchors) >= 2 for plan in plans)
 
 
 def test_required_place_reclusters_around_selected_place_and_keeps_it_in_every_plan():

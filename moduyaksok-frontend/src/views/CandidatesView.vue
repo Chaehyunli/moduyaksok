@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '../stores/app'
+import { useScheduleStore } from '../stores/schedule'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
 import { tagColorForLabel, tagColorStyle, type TagColorStyle } from '../lib/tagColors'
-import type { Activity, PlacePoolItem } from '../stores/app'
+import type { Activity, PlacePoolItem } from '../stores/schedule'
 
 const router = useRouter()
-const store = useAppStore()
+const store = useScheduleStore()
 
 const rotates = ['-2deg', '1.5deg', '-1deg']
 const placePoolExpanded = ref(false)
@@ -162,7 +162,7 @@ async function regenerateSchedule() {
                   <summary class="cursor-pointer text-sm text-ink">{{ group.label }} · {{ group.places.length }}곳</summary>
                   <ul class="mt-2 space-y-2 text-sm text-ink/70">
                     <li v-for="place in group.places" :key="`${group.label}-${place.placeId}`">
-                      <div class="flex items-start justify-between gap-2">
+                      <div class="flex min-h-16 items-center justify-between gap-2">
                         <div class="min-w-0">
                           <a
                             :href="place.mapUrl"
@@ -181,10 +181,12 @@ async function regenerateSchedule() {
                         <DoodleButton
                           size="sm"
                           variant="ghost"
+                          class="h-16 w-32 shrink-0 px-2 text-center leading-5"
                           :disabled="isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >
-                          {{ isRequiredPlace(place) ? '추가됨' : '일정에 추가하기' }}
+                          <template v-if="isRequiredPlace(place)">추가됨</template>
+                          <template v-else>일정에<br />추가하기</template>
                         </DoodleButton>
                       </div>
                     </li>
@@ -230,7 +232,7 @@ async function regenerateSchedule() {
                   <summary class="cursor-pointer text-sm text-ink">{{ group.label }} · {{ group.places.length }}곳</summary>
                   <ul class="mt-2 space-y-2 text-sm text-ink/70">
                     <li v-for="place in group.places" :key="`${group.label}-${place.placeId}`">
-                      <div class="flex items-start justify-between gap-2">
+                      <div class="flex min-h-16 items-center justify-between gap-2">
                         <div class="min-w-0">
                           <a :href="place.mapUrl" target="_blank" rel="noopener" class="text-ink underline decoration-red/40 underline-offset-2">
                             {{ place.name }}
@@ -243,10 +245,12 @@ async function regenerateSchedule() {
                         <DoodleButton
                           size="sm"
                           variant="ghost"
+                          class="h-16 w-32 shrink-0 px-2 text-center leading-5"
                           :disabled="isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >
-                          {{ isRequiredPlace(place) ? '추가됨' : '일정에 추가하기' }}
+                          <template v-if="isRequiredPlace(place)">추가됨</template>
+                          <template v-else>일정에<br />추가하기</template>
                         </DoodleButton>
                       </div>
                     </li>
