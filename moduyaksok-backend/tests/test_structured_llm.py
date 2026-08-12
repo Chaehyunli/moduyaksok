@@ -25,9 +25,18 @@ class _FakeToolUseBlock:
         self.input = input_data
 
 
+class _FakeUsage:
+    def __init__(self, a: int, b: int):
+        # anthropic은 input_tokens/output_tokens, openai는 prompt_tokens/
+        # completion_tokens로 필드명이 달라서 둘 다 얹어 하나로 재사용한다.
+        self.input_tokens = self.prompt_tokens = a
+        self.output_tokens = self.completion_tokens = b
+
+
 class _FakeAnthropicResponse:
     def __init__(self, input_data: dict):
         self.content = [_FakeToolUseBlock(input_data)]
+        self.usage = _FakeUsage(10, 5)
 
 
 class _FakeAnthropicMessages:
@@ -77,6 +86,7 @@ class _FakeParsedMessage:
 class _FakeOpenAIResponse:
     def __init__(self, parsed):
         self.choices = [type("Choice", (), {"message": _FakeParsedMessage(parsed)})()]
+        self.usage = _FakeUsage(20, 8)
 
 
 class _FakeOpenAICompletions:
@@ -148,6 +158,96 @@ def test_call_structured_upstage_uses_same_path_as_openai_with_custom_base_url(m
 
     assert result is parsed
     assert init_kwargs["base_url"] == "https://api.upstage.ai/v1/solar"
+
+
+class _Judgment(BaseModel):
+    candidate_index: int
+    keep: bool
+
+
+class _JudgmentBatch(BaseModel):
+    judgments: list[_Judgment]
+
+
+def test_call_structured_anthropic_repairs_stringified_list_field(monkeypatch):
+    # 실측 형태 (1): list여야 할 필드가 JSON 문자열로 이중 인코딩됨.
+    input_data = {"judgments": '[{"candidate_index": 0, "keep": true}]'}
+    monkeypatch.setattr(
+        "app.services.structured_llm.Anthropic",
+        lambda api_key: _FakeAnthropicClient({}, input_data),
+    )
+
+    result = call_structured(
+        provider="anthropic",
+        api_key="sk-ant-fake",
+        model="claude-sonnet-5",
+        system="s",
+        user="u",
+        schema=_JudgmentBatch,
+    )
+
+    assert result == _JudgmentBatch(judgments=[_Judgment(candidate_index=0, keep=True)])
+
+
+def test_call_structured_anthropic_repairs_self_wrapped_stringified_list_field(monkeypatch):
+    # 실측 형태 (1)의 변형 — 문자열 안에 필드명까지 한 번 더 감싸져 있음.
+    input_data = {"judgments": '{"judgments": [{"candidate_index": 0, "keep": false}]}'}
+    monkeypatch.setattr(
+        "app.services.structured_llm.Anthropic",
+        lambda api_key: _FakeAnthropicClient({}, input_data),
+    )
+
+    result = call_structured(
+        provider="anthropic",
+        api_key="sk-ant-fake",
+        model="claude-sonnet-5",
+        system="s",
+        user="u",
+        schema=_JudgmentBatch,
+    )
+
+    assert result == _JudgmentBatch(judgments=[_Judgment(candidate_index=0, keep=False)])
+
+
+def test_call_structured_anthropic_repairs_flattened_single_item(monkeypatch):
+    # 실측 형태 (2): 항목이 하나뿐일 때 리스트로 안 감싸고 최상위에 그대로 반환.
+    input_data = {"candidate_index": 1, "keep": True}
+    monkeypatch.setattr(
+        "app.services.structured_llm.Anthropic",
+        lambda api_key: _FakeAnthropicClient({}, input_data),
+    )
+
+    result = call_structured(
+        provider="anthropic",
+        api_key="sk-ant-fake",
+        model="claude-sonnet-5",
+        system="s",
+        user="u",
+        schema=_JudgmentBatch,
+    )
+
+    assert result == _JudgmentBatch(judgments=[_Judgment(candidate_index=1, keep=True)])
+
+
+def test_call_structured_logs_token_usage(monkeypatch, caplog):
+    input_data = {"liked_tags": [], "disliked_tags": []}
+    monkeypatch.setattr(
+        "app.services.structured_llm.Anthropic",
+        lambda api_key: _FakeAnthropicClient({}, input_data),
+    )
+
+    with caplog.at_level("INFO", logger="app.services.structured_llm"):
+        call_structured(
+            provider="anthropic",
+            api_key="sk-ant-fake",
+            model="claude-haiku-4-5-20251001",
+            system="시스템 프롬프트",
+            user="유저 프롬프트",
+            schema=_Schema,
+        )
+
+    assert "input_tokens=10" in caplog.text
+    assert "output_tokens=5" in caplog.text
 
 
 def test_call_structured_unknown_provider_raises():
