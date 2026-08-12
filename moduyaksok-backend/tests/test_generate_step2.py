@@ -298,6 +298,17 @@ def test_build_user_prompt_formats_tags_with_verifiable_and_meal_flags():
     assert "사람 많은 곳(verifiable=False, is_meal=False)" in prompt
 
 
+def test_build_user_prompt_includes_fixed_tag_anchors():
+    prompt = _build_user_prompt(
+        _CONDITIONS,
+        _PLACE_CANDIDATES,
+        required_tag_anchors=(("콩국수", "잠실장어와 한우"),),
+    )
+
+    assert "고정 장소 앵커" in prompt
+    assert "콩국수 → 잠실장어와 한우" in prompt
+
+
 def test_build_user_prompt_handles_empty_place_candidates():
     prompt = _build_user_prompt(_CONDITIONS, [])
 
@@ -634,6 +645,80 @@ def test_candidate_plans_make_one_dinner_alternative_per_meal_tag():
     assert all(plan.cluster_radius_meters == 1_000 for plan in plans)
 
 
+def test_candidate_plans_assign_different_real_meal_anchors_to_each_option():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(tag="햄버거", verifiable=True, is_meal=True),
+                PreferenceTag(tag="콩국수", verifiable=True, is_meal=True),
+                PreferenceTag(tag="와플", verifiable=True, is_meal=False),
+            ],
+        }
+    )
+    places = [
+        {
+            "title": name,
+            "source_category": category,
+            "matched_tags": tags,
+            "mapx": str(1270000000 + index * 1000),
+            "mapy": str(375000000 + index * 1000),
+        }
+        for index, (name, category, tags) in enumerate(
+            (
+                ("버거1", "양식", ["햄버거"]),
+                ("버거2", "양식", ["햄버거"]),
+                ("버거3", "양식", ["햄버거"]),
+                ("콩국수집", "한식", ["콩국수"]),
+                ("와플집", "카페", ["와플"]),
+            )
+        )
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert len(plans) == 3
+    assert {dict(plan.required_tag_anchors)["햄버거"] for plan in plans} == {
+        "버거1",
+        "버거2",
+        "버거3",
+    }
+    assert all(dict(plan.required_tag_anchors)["콩국수"] == "콩국수집" for plan in plans)
+    assert all(dict(plan.required_tag_anchors)["와플"] == "와플집" for plan in plans)
+
+
+def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():
+    conditions = _CONDITIONS.model_copy(
+        update={"liked_tags": [PreferenceTag(tag="햄버거", verifiable=True, is_meal=True)]}
+    )
+    places = [
+        {
+            "title": "햄버거 검색에 섞인 카페",
+            "category": "카페,디저트>카페",
+            "matched_tags": ["햄버거"],
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "title": "실제 버거집",
+            "category": "음식점>햄버거",
+            "matched_tags": ["햄버거"],
+            "mapx": "1270001000",
+            "mapy": "375000100",
+        },
+        {
+            "title": "일반 식당",
+            "source_category": "한식",
+            "mapx": "1270002000",
+            "mapy": "375000200",
+        },
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert plans
+    assert all(dict(plan.required_tag_anchors)["햄버거"] == "실제 버거집" for plan in plans)
+
+
 def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_tags():
     conditions = _CONDITIONS.model_copy(
         update={
@@ -666,6 +751,49 @@ def test_candidate_plans_expand_radius_only_when_compact_cluster_cannot_satisfy_
 
     assert plans
     assert all(plan.cluster_radius_meters == 1_500 for plan in plans)
+
+
+def test_required_place_reclusters_around_selected_place_and_keeps_it_in_every_plan():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0)),
+            "liked_tags": [],
+        }
+    )
+    places = [
+        {
+            "place_id": "must-cafe",
+            "title": "선택한 카페",
+            "source_category": "카페",
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "place_id": "near-activity",
+            "title": "가까운 전시",
+            "source_category": "전시",
+            "mapx": "1270001000",
+            "mapy": "375000100",
+        },
+        {
+            "place_id": "far-cafe",
+            "title": "먼 카페",
+            "source_category": "카페",
+            "mapx": "1270300000",
+            "mapy": "375000000",
+        },
+    ]
+
+    plans = _build_candidate_plans(conditions, places, ("must-cafe",))
+
+    assert plans
+    assert all(plan.required_place_ids == ("must-cafe",) for plan in plans)
+    assert all(
+        "must-cafe" in {place["place_id"] for place in plan.place_candidates} for plan in plans
+    )
+    assert all(
+        "far-cafe" not in {place["place_id"] for place in plan.place_candidates} for plan in plans
+    )
 
 
 # ── _tag_bundles_by_perspective() (2026-08-11) ──────────────────────────────

@@ -57,14 +57,26 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
-from app.models.schedule import SchedulePlacePool, ScheduleSession, ShareLink
+from app.models.schedule import (
+    SchedulePlacePool,
+    ScheduleRequiredPlace,
+    ScheduleSession,
+    ShareLink,
+)
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
-from app.pipeline.orchestrate import generate_schedule_candidates
-from app.pipeline.schemas import Candidate, InfeasibleResponse, ScheduleResponse
+from app.pipeline.orchestrate import generate_schedule_candidates, regenerate_schedule_candidates
+from app.pipeline.schemas import (
+    Candidate,
+    InfeasibleResponse,
+    NormalizedConditions,
+    RequiredPlace,
+    ScheduleResponse,
+)
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
-from app.services.naver_local_search import NaverSearchError
+from app.services.naver_local_search import NaverSearchError, place_id_for
+from app.services.naver_map_url import build_naver_map_url
 
 router = APIRouter()
 
@@ -99,6 +111,10 @@ class ConfirmResponse(BaseModel):
     session_id: UUID
     status: str
     share_slug: str
+
+
+class RequiredPlaceRequest(BaseModel):
+    place_id: str
 
 
 # ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
@@ -151,6 +167,76 @@ def _empty_place_pool() -> dict:
     return {"candidate_count": 0, "groups": {"liked": [], "disliked": [], "categories": []}}
 
 
+def _place_pool_for_response(place_pool: dict) -> dict:
+    """신규·레거시 검색 스냅샷 모두에 선택용 place_id를 제공한다."""
+    groups = place_pool.get("groups", {})
+    return {
+        **place_pool,
+        "groups": {
+            kind: [
+                {
+                    **group,
+                    "places": [
+                        {
+                            **place,
+                            "place_id": place.get("place_id") or place_id_for(place),
+                        }
+                        for place in group.get("places", [])
+                    ],
+                }
+                for group in groups.get(kind, [])
+            ]
+            for kind in ("liked", "disliked", "categories")
+        },
+    }
+
+
+def _place_with_id(place: dict) -> dict:
+    """저장 전/레거시 후보 풀에도 필수 장소용 안정 ID를 붙인다."""
+    return {**place, "place_id": place.get("place_id") or place_id_for(place)}
+
+
+def _find_place_in_pool(place_pool: SchedulePlacePool, place_id: str) -> dict | None:
+    for raw_place in place_pool.places.get("places", []):
+        place = _place_with_id(raw_place)
+        if place["place_id"] == place_id:
+            return place
+    return None
+
+
+def _required_place_from_raw(place: dict) -> RequiredPlace:
+    return RequiredPlace(
+        place_id=place["place_id"],
+        name=place.get("title", ""),
+        category=place.get("category", ""),
+        address=place.get("roadAddress") or place.get("address", ""),
+        map_url=build_naver_map_url(place),
+    )
+
+
+def _required_places_for_session(session: Session, session_id: UUID) -> list[RequiredPlace]:
+    rows = session.exec(
+        select(ScheduleRequiredPlace)
+        .where(ScheduleRequiredPlace.session_id == session_id)
+        .order_by(ScheduleRequiredPlace.created_at)
+    ).all()
+    return [
+        RequiredPlace(
+            place_id=row.place_id,
+            name=row.name,
+            category=row.category,
+            address=row.address,
+            map_url=row.map_url,
+        )
+        for row in rows
+    ]
+
+
+def _ensure_draft(schedule_session: ScheduleSession) -> None:
+    if schedule_session.status == "confirmed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정은 다시 생성할 수 없습니다.")
+
+
 @router.post("/schedules", response_model=ScheduleResponse)
 async def create_schedule(
     body: ScheduleCreateRequest,
@@ -185,11 +271,14 @@ async def create_schedule(
     if isinstance(result, InfeasibleResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=result.model_dump())
 
-    place_pool = getattr(place_candidates, "search_groups", _empty_place_pool())
+    place_pool = _place_pool_for_response(
+        getattr(place_candidates, "search_groups", _empty_place_pool())
+    )
     schedule_session = ScheduleSession(
         id=session_id,
         user_id=current_user.id,
         conditions=body.model_dump(mode="json"),
+        normalized_conditions=conditions.model_dump(mode="json"),
         candidates={"candidates": [c.model_dump(mode="json") for c in result.candidates]},
     )
     session.add(schedule_session)
@@ -200,7 +289,7 @@ async def create_schedule(
     session.add(
         SchedulePlacePool(
             session_id=session_id,
-            places={"places": place_candidates},
+            places={"places": [_place_with_id(place) for place in place_candidates]},
             search_groups=place_pool,
             searched_liked_tags=[t.tag for t in conditions.liked_tags if t.verifiable],
             searched_disliked_tags=[t.tag for t in conditions.disliked_tags if t.verifiable],
@@ -209,7 +298,10 @@ async def create_schedule(
     session.commit()
 
     return ScheduleResponse(
-        session_id=str(session_id), candidates=result.candidates, place_pool=place_pool
+        session_id=str(session_id),
+        candidates=result.candidates,
+        place_pool=place_pool,
+        required_places=[],
     )
 
 
@@ -261,8 +353,163 @@ def get_schedule(
     return ScheduleResponse(
         session_id=str(schedule_session.id),
         candidates=candidates,
-        place_pool=place_pool.search_groups if place_pool else _empty_place_pool(),
+        place_pool=_place_pool_for_response(place_pool.search_groups)
+        if place_pool
+        else _empty_place_pool(),
+        required_places=_required_places_for_session(session, schedule_session.id),
         share_slug=share_link.slug if share_link else None,
+    )
+
+
+@router.post("/schedules/{session_id}/required-places", response_model=RequiredPlace)
+def add_required_place(
+    session_id: UUID,
+    body: RequiredPlaceRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """후보 풀의 장소 하나를 이후 모든 재생성에 반드시 포함할 제약으로 저장한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    _ensure_draft(schedule_session)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == session_id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "저장된 장소 후보가 없어 추가할 수 없습니다.")
+
+    place = _find_place_in_pool(place_pool, body.place_id)
+    if place is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "검색한 후보 목록에 없는 장소입니다.")
+
+    existing = session.exec(
+        select(ScheduleRequiredPlace).where(
+            ScheduleRequiredPlace.session_id == session_id,
+            ScheduleRequiredPlace.place_id == body.place_id,
+        )
+    ).first()
+    if existing is not None:
+        return RequiredPlace(
+            place_id=existing.place_id,
+            name=existing.name,
+            category=existing.category,
+            address=existing.address,
+            map_url=existing.map_url,
+        )
+
+    selected = _required_place_from_raw(place)
+    session.add(
+        ScheduleRequiredPlace(
+            session_id=session_id,
+            place_id=selected.place_id,
+            name=selected.name,
+            category=selected.category,
+            address=selected.address,
+            map_url=selected.map_url,
+        )
+    )
+    session.commit()
+    return selected
+
+
+@router.delete(
+    "/schedules/{session_id}/required-places/{place_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def remove_required_place(
+    session_id: UUID,
+    place_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """필수 장소 제약만 해제한다. 표시 중인 기존 일정은 재생성 전까지 유지한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    _ensure_draft(schedule_session)
+    row = session.exec(
+        select(ScheduleRequiredPlace).where(
+            ScheduleRequiredPlace.session_id == session_id,
+            ScheduleRequiredPlace.place_id == place_id,
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "필수 장소 목록에 없는 장소입니다.")
+    session.delete(row)
+    session.commit()
+
+
+@router.post("/schedules/{session_id}/regenerate", response_model=ScheduleResponse)
+async def regenerate_schedule(
+    session_id: UUID,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """저장된 후보 풀에서 필수 장소를 모두 포함하는 새 일정 후보를 만든다.
+
+    성공할 때만 기존 후보를 교체한다. 조건 충족이 불가능하면 409를 반환하되 기존
+    후보는 보존하므로, 사용자는 필수 장소를 하나 해제한 뒤 다시 시도할 수 있다.
+    """
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    _ensure_draft(schedule_session)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == session_id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "저장된 장소 후보가 없어 다시 생성할 수 없습니다."
+        )
+
+    required_places = _required_places_for_session(session, session_id)
+    required_place_ids = tuple(place.place_id for place in required_places)
+    place_candidates = [_place_with_id(place) for place in place_pool.places.get("places", [])]
+    if not required_place_ids:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "필수로 추가한 장소를 먼저 선택해주세요."
+        )
+    if any(_find_place_in_pool(place_pool, place_id) is None for place_id in required_place_ids):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "필수 장소가 저장된 후보 풀에서 사라졌습니다."
+        )
+
+    credential = _get_user_credential(session, current_user.id)
+    api_key = decrypt_key(credential.encrypted_key)
+    if schedule_session.normalized_conditions:
+        conditions = NormalizedConditions.model_validate(schedule_session.normalized_conditions)
+    else:
+        # 이 필드는 추가 전 이미 만들어진 세션에는 없다. 그런 레거시 세션만 한 번
+        # 정규화해 스냅샷을 채우고, 이후 반복 재생성은 항상 같은 값을 사용한다.
+        from asyncio import get_running_loop
+
+        from app.pipeline.normalize_step1 import normalize_conditions
+
+        loop = get_running_loop()
+        conditions = await loop.run_in_executor(
+            None,
+            normalize_conditions,
+            credential.provider,
+            api_key,
+            schedule_session.conditions,
+        )
+        schedule_session.normalized_conditions = conditions.model_dump(mode="json")
+
+    result = await regenerate_schedule_candidates(
+        credential.provider,
+        api_key,
+        str(session_id),
+        conditions,
+        place_candidates,
+        required_place_ids,
+    )
+    if isinstance(result, InfeasibleResponse):
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=result.model_dump())
+
+    schedule_session.candidates = {
+        "candidates": [candidate.model_dump(mode="json") for candidate in result.candidates]
+    }
+    session.add(schedule_session)
+    session.commit()
+    return ScheduleResponse(
+        session_id=str(session_id),
+        candidates=result.candidates,
+        place_pool=_place_pool_for_response(place_pool.search_groups),
+        required_places=required_places,
     )
 
 

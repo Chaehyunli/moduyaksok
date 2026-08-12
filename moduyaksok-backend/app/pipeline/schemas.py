@@ -86,6 +86,9 @@
 #             뜻하므로, 삼겹살·콩국수처럼 점심/저녁 슬롯을 채울 태그와 와플·소금빵
 #             처럼 간식인 태그를 분리할 수 없었다. Step1이 이 의미를 분류하고,
 #             Step2/3가 식사 태그 배정과 하드 검증에 사용한다.
+# 2026-08-12(2차), CandidateDraft.required_tag_anchors 추가 — 후보마다 태그별
+#             구체 장소를 고정해 "햄버거"라는 같은 태그 안에서 세 후보가 같은
+#             가게로 수렴하는 것을 막고, Step3가 실제 선택 여부를 검증한다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -202,6 +205,9 @@ class ActivityDraft(BaseModel):
     # 우리가 무슨 쿼리로 찾았는지는 확실한 근거다. Step3가 "점심/저녁 시간대에
     # 맛집 카테고리 활동이 있는지"를 판단하는 데 쓴다(2026-08-11 설계).
     source_category: str | None = None
+    # 검색 결과의 이름+주소에서 만든 안정 식별자. 필수 포함 장소는 이름이 아니라
+    # 이 값을 기준으로 Step3에서 실제 포함 여부를 확인한다.
+    place_id: str | None = None
 
 
 class CandidateDraft(BaseModel):
@@ -212,6 +218,13 @@ class CandidateDraft(BaseModel):
     # 주지만, Step3가 아래 값을 기준으로 실제 선택 결과를 하드 검증한다.
     required_meal_tags: list[str] = []
     required_non_meal_tags: list[str] = []
+    # 후보 간 주요 장소가 같은 곳으로 수렴하지 않게 Step2가 태그 또는 보조 다양화
+    # 장소의 실제 검색 결과 하나를 앵커로 배정한다. Step3는 LLM이 이 정확한 장소를
+    # 선택했는지 검증한다. {"햄버거": "가게명", "와플": "가게명"} 형태다.
+    required_tag_anchors: dict[str, str] = {}
+    # 사용자가 후보 목록에서 직접 고른 필수 장소. 빈 목록이면 최초 생성과 동일하게
+    # 동작하고, 값이 있으면 Step3가 각 후보에 이 ID 전부가 실제 포함됐는지 강제한다.
+    required_place_ids: list[str] = []
     cluster_radius_meters: int = 0
 
 
@@ -281,6 +294,16 @@ class Candidate(BaseModel):
     feasibility_warning: str | None = None
 
 
+class RequiredPlace(BaseModel):
+    """후보 풀에서 사용자가 고른, 재생성 시 반드시 포함할 장소 스냅샷."""
+
+    place_id: str
+    name: str
+    category: str = ""
+    address: str = ""
+    map_url: str = ""
+
+
 class ScheduleResponse(BaseModel):
     session_id: str
     candidates: list[Candidate]
@@ -288,6 +311,9 @@ class ScheduleResponse(BaseModel):
     # 후보와 달리 "일정을 만들기 위해 무엇을 검색했는지"를 보여주는 보조 정보다.
     # 파이프라인 순수 함수 단독 호출에서는 만들지 않으므로 기본값은 None이다.
     place_pool: dict | None = None
+    # 확정 전 사용자가 고른 장소 제약. 후보 풀과 분리해 저장되므로, 후보 목록이
+    # 갱신돼도 사용자는 자신이 고정한 장소를 계속 확인·해제할 수 있다.
+    required_places: list[RequiredPlace] = []
     # 확정된 뒤 생긴 공유 링크가 있으면 같이 돌려준다 — GET /schedules/{id}가
     # 새로고침 후에도 공유 slug를 복구할 수 있게 한다(2026-08-10, Finding 1).
     share_slug: str | None = None

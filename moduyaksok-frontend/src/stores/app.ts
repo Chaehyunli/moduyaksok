@@ -46,6 +46,15 @@ export interface Candidate {
 }
 
 export interface PlacePoolItem {
+  placeId: string
+  name: string
+  category: string
+  address: string
+  mapUrl: string
+}
+
+export interface RequiredPlace {
+  placeId: string
   name: string
   category: string
   address: string
@@ -139,6 +148,7 @@ function mapApiPlacePool(raw: any): PlacePool | null {
   const mapGroup = (group: any): PlacePoolGroup => ({
     label: group.label,
     places: (group.places ?? []).map((place: any): PlacePoolItem => ({
+      placeId: place.place_id,
       name: place.name,
       category: place.category,
       address: place.address,
@@ -153,6 +163,17 @@ function mapApiPlacePool(raw: any): PlacePool | null {
       disliked: (groups.disliked ?? []).map(mapGroup),
       categories: (groups.categories ?? []).map(mapGroup),
     },
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiRequiredPlace(raw: any): RequiredPlace {
+  return {
+    placeId: raw.place_id,
+    name: raw.name,
+    category: raw.category ?? '',
+    address: raw.address ?? '',
+    mapUrl: raw.map_url ?? '',
   }
 }
 
@@ -192,6 +213,9 @@ export const useAppStore = defineStore('app', {
     sessionId: null as string | null,
     candidates: [] as Candidate[],
     placePool: null as PlacePool | null,
+    // 후보 풀과 별개로 서버에 영속되는 하드 제약. 다시 일정 생성하기 전까지는
+    // 현재 카드가 그대로 남지만, 다음 재생성의 모든 일정안에는 이 장소가 들어가야 한다.
+    requiredPlaces: [] as RequiredPlace[],
     selectedCandidateId: null as string | null,
     // 409(조건 불만족) 사유든 그 외 네트워크/서버 오류든, 후보를 못 만든 이유를
     // CandidatesView가 그대로 보여준다.
@@ -262,6 +286,7 @@ export const useAppStore = defineStore('app', {
       this.sessionId = null
       this.candidates = []
       this.placePool = null
+      this.requiredPlaces = []
 
       const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
       try {
@@ -277,6 +302,7 @@ export const useAppStore = defineStore('app', {
         this.sessionId = data.session_id
         this.candidates = data.candidates.map(mapApiCandidate)
         this.placePool = mapApiPlacePool(data.place_pool)
+        this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError =
@@ -328,9 +354,45 @@ export const useAppStore = defineStore('app', {
     // 영속화해야 하는데 이번 픽스 범위 밖).
     async fetchSchedule(sessionId: string) {
       const { data } = await api.get(`/schedules/${sessionId}`)
+      this.sessionId = data.session_id
       this.candidates = data.candidates.map(mapApiCandidate)
       this.placePool = mapApiPlacePool(data.place_pool)
+      this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
       this.shareSlug = data.share_slug ?? ''
+    },
+    async addRequiredPlace(place: PlacePoolItem) {
+      if (!this.sessionId || this.requiredPlaces.some((item) => item.placeId === place.placeId)) {
+        return
+      }
+      const { data } = await api.post(`/schedules/${this.sessionId}/required-places`, {
+        place_id: place.placeId,
+      })
+      this.requiredPlaces.push(mapApiRequiredPlace(data))
+    },
+    async removeRequiredPlace(placeId: string) {
+      if (!this.sessionId) return
+      await api.delete(`/schedules/${this.sessionId}/required-places/${placeId}`)
+      this.requiredPlaces = this.requiredPlaces.filter((place) => place.placeId !== placeId)
+    },
+    async regenerateSchedule() {
+      if (!this.sessionId) return
+      this.scheduleError = null
+      try {
+        const { data } = await api.post(`/schedules/${this.sessionId}/regenerate`)
+        this.selectedCandidateId = null
+        this.candidates = data.candidates.map(mapApiCandidate)
+        this.placePool = mapApiPlacePool(data.place_pool)
+        this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
+      } catch (err: any) {
+        if (err.response?.status === 409) {
+          this.scheduleError = err.response.data?.reason ?? '필수 장소를 포함한 일정을 만들지 못했어요.'
+        } else if (err.response?.status === 422) {
+          this.scheduleError = err.response.data?.detail ?? '필수 장소를 먼저 선택해주세요.'
+        } else {
+          this.scheduleError = '일정을 다시 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
+        }
+        throw err
+      }
     },
     async fetchSharedSchedule(slug: string) {
       // 이전 slug 조회 결과가 남아있으면, 새 slug가 실패했을 때 화면이 옛 데이터를

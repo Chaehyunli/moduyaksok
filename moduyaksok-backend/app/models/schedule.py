@@ -34,7 +34,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column
+from sqlalchemy import Column, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -47,6 +47,10 @@ class ScheduleSession(SQLModel, table=True):
     id: UUID = Field(primary_key=True, default_factory=uuid4)
     user_id: UUID = Field(foreign_key="user.id")
     conditions: dict = Field(default_factory=dict, sa_column=Column(JSONB))
+    # Step1이 한 번 정규화한 조건을 그대로 보관한다. 필수 장소를 추가해 다시
+    # 생성할 때 Step1을 재호출하면 같은 원문에서도 태그가 달라질 수 있으므로,
+    # 재생성은 이 스냅샷을 써서 기존 조건을 정확히 유지한다.
+    normalized_conditions: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     candidates: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     status: str = "draft"  # 허용값은 ScheduleStatus 참고, 실제 제약은 DB CHECK가 건다
     # confirm된 후보의 candidate_id("A"/"B"/"C"). draft 상태에선 항상 None —
@@ -76,6 +80,31 @@ class SchedulePlacePool(SQLModel, table=True):
     searched_liked_tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
     searched_disliked_tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ScheduleRequiredPlace(SQLModel, table=True):
+    """사용자가 확정 전 일정에 반드시 넣어달라고 고른 장소.
+
+    검색 후보 풀의 장소 ID만 저장하면 이후 검색 결과를 누적할 때 원래 표시 정보가
+    사라질 수 있다. 그래서 선택 시점의 최소 스냅샷도 함께 보관해, 재방문/새로고침
+    뒤에도 사용자가 무엇을 고정했는지 항상 확인할 수 있게 한다.
+    """
+
+    __tablename__ = "schedule_required_place"
+    __table_args__ = (
+        UniqueConstraint("session_id", "place_id", name="uq_schedule_required_place_session_place"),
+    )
+
+    id: UUID = Field(primary_key=True, default_factory=uuid4)
+    session_id: UUID = Field(foreign_key="schedule_session.id")
+    # 네이버 place id가 모든 검색 결과에 안정적으로 오지 않으므로, 이름+도로명
+    # 주소에서 만든 결정론적 SHA-256 식별자(services.naver_local_search.place_id_for).
+    place_id: str = Field(index=True)
+    name: str
+    category: str = ""
+    address: str = ""
+    map_url: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class FeedbackMessage(SQLModel, table=True):

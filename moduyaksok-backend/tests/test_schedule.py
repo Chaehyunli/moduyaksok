@@ -186,7 +186,8 @@ def test_create_schedule_success_persists_place_pool(client, session, monkeypatc
         select(SchedulePlacePool).where(SchedulePlacePool.session_id == UUID(session_id))
     ).first()
     assert pool is not None
-    assert pool.places["places"] == [{"title": "가게1"}]
+    assert pool.places["places"][0]["title"] == "가게1"
+    assert pool.places["places"][0]["place_id"]
     assert pool.search_groups["groups"]["liked"][0]["label"] == "와플"
     assert pool.searched_liked_tags == []
     assert pool.searched_disliked_tags == []
@@ -334,6 +335,132 @@ def test_get_schedule_after_confirm_returns_matching_share_slug(client, session,
 
     assert response.status_code == 200
     assert response.json()["share_slug"] == slug
+
+
+# ── 필수 장소 선택·재생성 ─────────────────────────────────────────────────
+
+
+def _pool_place_id(client, session_id: str, headers: dict) -> str:
+    response = client.get(f"/schedules/{session_id}", headers=headers)
+    return response.json()["place_pool"]["groups"]["categories"][0]["places"][0]["place_id"]
+
+
+def test_add_required_place_persists_and_get_schedule_returns_it(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+
+    response = client.post(
+        f"/schedules/{session_id}/required-places",
+        json={"place_id": place_id},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["place_id"] == place_id
+    assert response.json()["name"] == "가게1"
+
+    schedule = client.get(f"/schedules/{session_id}", headers=headers).json()
+    selected = schedule["required_places"][0]
+    assert selected["place_id"] == place_id
+    assert selected["name"] == "가게1"
+    assert selected["map_url"].startswith("https://map.naver.com/p/search/")
+
+
+def test_add_same_required_place_is_idempotent(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+
+    for _ in range(2):
+        response = client.post(
+            f"/schedules/{session_id}/required-places",
+            json={"place_id": place_id},
+            headers=headers,
+        )
+        assert response.status_code == 200
+
+    from sqlmodel import select
+
+    from app.models.schedule import ScheduleRequiredPlace
+
+    rows = session.exec(
+        select(ScheduleRequiredPlace).where(ScheduleRequiredPlace.session_id == UUID(session_id))
+    ).all()
+    assert len(rows) == 1
+
+
+def test_remove_required_place_deletes_only_the_constraint(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+    client.post(
+        f"/schedules/{session_id}/required-places",
+        json={"place_id": place_id},
+        headers=headers,
+    )
+
+    response = client.delete(f"/schedules/{session_id}/required-places/{place_id}", headers=headers)
+
+    assert response.status_code == 204
+    schedule = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert schedule["required_places"] == []
+    # 해제만 했으므로 아직 재생성하지 않은 기존 일정 카드는 보존된다.
+    assert schedule["candidates"][0]["candidate_id"] == "A"
+
+
+def test_regenerate_passes_persisted_required_place_and_replaces_candidates(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+    client.post(
+        f"/schedules/{session_id}/required-places",
+        json={"place_id": place_id},
+        headers=headers,
+    )
+
+    async def fake_regenerate(
+        provider, api_key, actual_session_id, conditions, places, required_ids
+    ):
+        assert actual_session_id == session_id
+        assert required_ids == (place_id,)
+        assert places[0]["place_id"] == place_id
+        return ScheduleResponse(session_id=session_id, candidates=[_candidate("B")])
+
+    monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
+
+    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["candidates"][0]["candidate_id"] == "B"
+    assert response.json()["required_places"][0]["place_id"] == place_id
+    from app.models.schedule import ScheduleSession
+
+    stored = session.get(ScheduleSession, UUID(session_id))
+    assert stored.candidates["candidates"][0]["candidate_id"] == "B"
+
+
+def test_regenerate_failure_keeps_existing_candidates(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+    client.post(
+        f"/schedules/{session_id}/required-places",
+        json={"place_id": place_id},
+        headers=headers,
+    )
+
+    async def fake_regenerate(*_args):
+        return InfeasibleResponse(
+            detail="d", reason="필수 장소 주변 후보가 부족합니다.", adjustable_conditions=[]
+        )
+
+    monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
+
+    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == "필수 장소 주변 후보가 부족합니다."
+    schedule = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert schedule["candidates"][0]["candidate_id"] == "A"
+    assert schedule["required_places"][0]["place_id"] == place_id
 
 
 # ── POST /schedules/{id}/confirm ────────────────────────────────────────

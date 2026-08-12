@@ -52,7 +52,7 @@ app/
   main.py        FastAPI 앱 진입점, 라우터 등록
   config.py      환경변수 기반 설정 (Settings)
   db.py          DB 엔진/세션 의존성
-  models/        SQLModel 테이블 정의 (User, LLMCredential, ScheduleSession, SchedulePlacePool, FeedbackMessage, ShareLink)
+  models/        SQLModel 테이블 정의 (User, LLMCredential, ScheduleSession, SchedulePlacePool, ScheduleRequiredPlace, FeedbackMessage, ShareLink)
   routers/       API 라우터 (엔드포인트)
   services/      라우터가 쓰는 비즈니스 로직 (인증, 자격증명 암복호화 등)
   pipeline/      AI 일정 추천 파이프라인 (조건 정규화 → 후보 생성 → 동선 보강 → 검증/병합, 랭킹 없음)
@@ -67,7 +67,7 @@ tests/           pytest
 | `health.py` | `GET /health` | 서버 상태 확인 | - |
 | `auth.py` | `POST /auth/google`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>현재 로그인 사용자 조회 | `services/auth.py`, `models/user.py` |
 | `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
-| `schedule.py` | `POST /schedules`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3(`orchestrate.generate_schedule_candidates`) 실행해 경로 없는 후보(최대 3개) 생성, 성공 시에만 `ScheduleSession`+`SchedulePlacePool`을 저장(실패 케이스는 롤백 코드 없이 애초에 안 만듦; `SchedulePlacePool`은 Step2용 안전한 `place_candidates`뿐 아니라 좋아요·싫어요·카테고리 검색 결과를 `search_groups` 스냅샷으로 같이 저장해 후보 화면에 노출하고 추후 피드백 검색이 재사용할 수 있게 함, 2026-08-11(3차))<br>사용자가 고른 후보 1개에 Step4(`enrich_routes`) 실행해 이동 옵션 채움, 결과를 후보 목록에 반영해 재저장<br>저장된 세션 조회(본인 소유만)<br>후보 확정(`draft`→`confirmed`, 이미 확정된 세션 재확정 방지) — 동시에 `confirmed_candidate_id`를 기록하고 `ShareLink`(8자 base62 slug)를 만들어 응답에 `share_slug`로 실어 보냄(별도 "링크 생성" 엔드포인트 없이 확정과 동시에 발급, 2026-08-10) | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
+| `schedule.py` | `POST /schedules`<br>`POST`/`DELETE /schedules/{id}/required-places`<br>`POST /schedules/{id}/regenerate`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3 실행해 경로 없는 후보 생성, 검색 풀과 정규화 조건을 저장<br>후보 풀의 장소를 `ScheduleRequiredPlace` 제약으로 추가·해제하고, 새 검색 없이 그 장소를 모두 포함하는 후보로 재생성(성공할 때만 기존 후보 교체)<br>사용자가 고른 후보 1개에 Step4 실행해 이동 옵션 저장<br>세션 조회·후보 확정과 공유 링크 발급 | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
 | `share.py` | `GET /share/{slug}` | slug로 확정된 후보 하나만 공개 조회(로그인 불필요) — 다른 후보·조건·사용자 정보는 노출 안 함. `schedule._find_candidate()` 재사용, 응답은 기존 `Candidate` 스키마 그대로(새 응답 모델 안 만듦). confirm 이전엔 `ShareLink` 자체가 없어 자동 404 (2026-08-10) | `routers/schedule.py`(`_find_candidate`), `models/schedule.py` |
 
 ## 서비스 (`app/services/`)
@@ -106,7 +106,7 @@ tests/           pytest
 |---|---|---|
 | `user.py` | `user` | Google 계정 기반 사용자 |
 | `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키(암호화 저장), `user_id` unique — 사용자당 1개 |
-| `schedule.py` | `schedule_session`, `schedule_place_pool`, `feedback_message`, `share_link` | 일정 세션, 검색된 장소 풀, 피드백 기록, 공유 링크. `schedule_session`/`schedule_place_pool`/`share_link`는 `app/routers/schedule.py`가 실제로 씀(생성 시 세션+장소풀 같이 저장, 확정 시 `ShareLink` row 생성) — `schedule_place_pool`은 `schedule_session`과 1:1(FK unique)로, 피드백이 올 때마다 갱신될 검색 결과·태그(`places`, `searched_liked_tags`, `searched_disliked_tags`)를 별도 테이블로 분리해둔 것(2026-08-11(2차) — `schedule_session`은 상태 전이 시점에만 바뀌는 핵심 엔티티라 갱신 빈도가 다른 이 데이터를 같이 두지 않기로 함). `feedback_message`는 피드백 라우터가 아직 없어서 미사용 |
+| `schedule.py` | `schedule_session`, `schedule_place_pool`, `schedule_required_place`, `feedback_message`, `share_link` | 일정 세션, 검색된 장소 풀, 사용자가 고른 필수 장소, 피드백 기록, 공유 링크. `schedule_required_place`는 세션·장소 ID 조합을 unique로 보장하고 선택 시점 스냅샷을 보관해, 재생성 반복·새로고침 뒤에도 고정한 장소를 확인·해제할 수 있게 한다. 자유 텍스트 피드백용 `feedback_message`는 아직 미사용 |
 
 라우터/서비스/모델 표는 새 엔드포인트나 파일을 추가할 때 같이 갱신할 것 — 프런트 [`../moduyaksok-frontend/README.md`](../moduyaksok-frontend/README.md)의 화면·컴포넌트 표와 같은 역할.
 

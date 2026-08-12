@@ -107,9 +107,46 @@ async def generate_schedule_candidates(
         conditions.region, conditions.liked_tags, conditions.disliked_tags, session_id=session_id
     )
 
-    labeled_drafts = await generate_candidates_with_perspectives(
-        provider, api_key, conditions, place_candidates
+    result = await regenerate_schedule_candidates(
+        provider,
+        api_key,
+        session_id,
+        conditions,
+        place_candidates,
     )
+    return result, conditions, place_candidates
+
+
+async def regenerate_schedule_candidates(
+    provider: str,
+    api_key: str,
+    session_id: str,
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+    required_place_ids: tuple[str, ...] = (),
+) -> ScheduleResponse | InfeasibleResponse:
+    """저장된 조건·후보 풀로 일정 후보를 다시 만든다.
+
+    필수 장소 피드백은 Step1·네이버 검색을 다시 실행하지 않는다. 최초 생성 때
+    저장한 ``NormalizedConditions``와 ``SchedulePlacePool.places``를 그대로 써야
+    사용자가 처음 입력한 선호·비선호 조건이 흔들리지 않고, 이미 검색한 장소를
+    재사용할 수 있다. ``required_place_ids``는 Step2와 Step3 양쪽에서 하드 제약으로
+    전달돼 모든 결과에 실제 포함될 때만 반환된다.
+    """
+    loop = asyncio.get_running_loop()
+    labeled_drafts = await (
+        generate_candidates_with_perspectives(
+            provider, api_key, conditions, place_candidates, required_place_ids
+        )
+        if required_place_ids
+        else generate_candidates_with_perspectives(provider, api_key, conditions, place_candidates)
+    )
+    if not labeled_drafts:
+        return InfeasibleResponse(
+            detail="필수 장소를 포함한 일정 후보를 만들 수 없어요.",
+            reason="선택한 장소 주변에서 기존 시간·식사·동선 조건을 함께 만족하지 못했습니다.",
+            adjustable_conditions=["required_places", "time_range", "region"],
+        )
 
     result = await loop.run_in_executor(
         None,
@@ -123,26 +160,23 @@ async def generate_schedule_candidates(
 
     missing = _missing_perspectives(labeled_drafts, result)
     if not missing:
-        return result, conditions, place_candidates
+        return result
 
     regenerated: list[CandidateDraft] = []
     for label in missing:
         try:
-            draft = await loop.run_in_executor(
-                None,
-                generate_single_candidate,
-                provider,
-                api_key,
-                conditions,
-                place_candidates,
-                label,
+            args = (
+                (provider, api_key, conditions, place_candidates, label, required_place_ids)
+                if required_place_ids
+                else (provider, api_key, conditions, place_candidates, label)
             )
+            draft = await loop.run_in_executor(None, generate_single_candidate, *args)
             regenerated.append(draft)
         except Exception:
             continue  # 재시도도 실패하면 그 관점은 포기 — 최대 1회 원칙
 
     if not regenerated:
-        return result, conditions, place_candidates
+        return result
 
     surviving_drafts = [draft for label, draft in labeled_drafts if label not in missing]
     final_result = await loop.run_in_executor(
@@ -154,4 +188,4 @@ async def generate_schedule_candidates(
         conditions,
         surviving_drafts + regenerated,
     )
-    return final_result, conditions, place_candidates
+    return final_result

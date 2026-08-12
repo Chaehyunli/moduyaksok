@@ -90,6 +90,10 @@
 #             식사 태그는 서로 다른 식사 슬롯·활동에 배정돼야 한다. 여러 태그에
 #             함께 매칭된 장소도 ActivityDraft.matched_tags 전체를 보존·검사해
 #             LLM 프롬프트만으로 선호를 보장하던 빈틈을 제거했다.
+# 2026-08-12(3차), Step2의 후보별 실제 장소 앵커(required_tag_anchors)를 하드
+#             검증에 추가. 태그만 같고 다른 가게를 선택하면 해당 후보를 드롭한다.
+#             식사 슬롯도 새 후보에는 앵커 장소를 우선 근거로 삼아, "햄버거" 검색
+#             결과에 섞여 들어온 카페가 식사로 오인되는 것을 막는다.
 # ------------------------------------------------------------------
 from datetime import datetime, time
 
@@ -237,11 +241,21 @@ def _has_missing_meal_slot(candidate: CandidateDraft, conditions: NormalizedCond
     liked_tag가 있을 때 디저트/카페만으로 일정이 채워지는 문제 대응.
     """
     meal_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal}
+    required_meal_anchors = {
+        candidate.required_tag_anchors[tag]
+        for tag in candidate.required_meal_tags
+        if tag in candidate.required_tag_anchors
+    }
     for slot_start, slot_end in _required_meal_windows(conditions.time_range):
         has_meal = any(
             (
                 activity.source_category in _MEAL_CATEGORIES
-                or bool(_activity_matched_tags(activity) & meal_tags)
+                or activity.name in required_meal_anchors
+                # 구버전 CandidateDraft에는 구체 앵커가 없으므로 기존 태그 매칭
+                # 기준으로 폴백한다.
+                or (
+                    not required_meal_anchors and bool(_activity_matched_tags(activity) & meal_tags)
+                )
             )
             and datetime.strptime(activity.start_time, "%H:%M").time() < slot_end
             and datetime.strptime(activity.end_time, "%H:%M").time() > slot_start
@@ -306,6 +320,29 @@ def _has_missing_required_tags(candidate: CandidateDraft, conditions: Normalized
     return not assign(0, set(), set())
 
 
+def _has_missing_required_anchors(candidate: CandidateDraft) -> bool:
+    """후보별로 고정한 실제 태그 장소가 LLM 선택에 남아 있는지 확인한다.
+
+    태그만 같은 다른 가게로 바꾸는 것은 각 후보의 다양성을 다시 무너뜨린다. 예를
+    들어 후보 A에 햄버거→데일리픽스, B에 햄버거→위트앤미트가 배정됐다면 둘 다
+    해당 정확한 장소를 포함해야 한다.
+    """
+    return not set(candidate.required_tag_anchors.values()).issubset(
+        {activity.name for activity in candidate.activities}
+    )
+
+
+def _has_missing_required_places(candidate: CandidateDraft) -> bool:
+    """사용자가 고른 장소가 실제 결과에 빠지면 후보를 무조건 드롭한다.
+
+    후보 풀에 추가되기만 하고 LLM 선택에서 빠지는 것을 막는 마지막 방어선이다.
+    이름은 동명 지점이 있을 수 있어 ``ActivityDraft.place_id``로 비교한다.
+    """
+    return not set(candidate.required_place_ids).issubset(
+        {activity.place_id for activity in candidate.activities if activity.place_id}
+    )
+
+
 def _budget_overrun_ratio(candidate: CandidateDraft, budget_per_person: int) -> float:
     total = sum(a.price_range_per_person[0] for a in candidate.activities)
     if budget_per_person <= 0:
@@ -344,6 +381,8 @@ def _rule_based_filter(
             or _has_excessive_travel(candidate)
             or _has_missing_meal_slot(candidate, conditions)
             or _has_missing_required_tags(candidate, conditions)
+            or _has_missing_required_anchors(candidate)
+            or _has_missing_required_places(candidate)
         ):
             continue
 

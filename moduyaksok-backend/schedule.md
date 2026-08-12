@@ -36,6 +36,7 @@
 | 후보 선택 후 경로 조회 API (`POST /schedules/{id}/routes`) | ✅ | 2026-08-10 | 🔴 | 사용자가 3개 중 1개를 고르면 그 후보에 한해 `enrich_routes()` 호출, 결과를 `ScheduleSession.candidates`에 반영해 재저장. Step4는 LLM을 안 써서 BYOK 크리덴셜 조회 없음 |
 | 일정 조회 API (`GET /schedules/{id}`) | ✅ | 2026-08-10 | 🟡 | 본인 소유 확인 (403), 존재하지 않으면 404 |
 | 피드백 반영 (`POST /schedules/{id}/feedback`, `apply_feedback`) | ⬜ | | 🔴 | 부분 재실행으로 토큰 절약 |
+| 필수 장소 선택·재생성 (`POST`/`DELETE /schedules/{id}/required-places`, `POST /schedules/{id}/regenerate`) | ✅ | 2026-08-12 | 🔴 | 후보 풀에서 고른 장소를 `ScheduleRequiredPlace`에 영속화하고, `ScheduleSession.normalized_conditions`와 기존 `SchedulePlacePool`만 재사용해 검색/Step1 없이 재생성. Step2는 필수 장소 중심 생활권만 만들고 Step3는 `place_id`가 실제 활동에 전부 포함되지 않으면 하드 드롭하므로 후보 풀에 넣기만 하고 빠지는 일을 막음. 실패 시 기존 후보는 보존하고 409 사유만 반환 |
 | `schedule_session.status` DB CHECK 제약 (`draft`/`confirmed`만 허용) | ✅ | 2026-08-07 | 🟡 | 마이그레이션 `f4f8459f626b`. "이미 confirmed면 재확정 불가" 같은 전이 규칙은 라우터 로직 몫 — 아래 항목에서 구현 |
 | 일정 확정 (`POST /schedules/{id}/confirm`) | ✅ | 2026-08-10 | 🟡 | status draft→confirmed 갱신, `confirmed_candidate_id` 기록. 이미 confirmed인 세션 재확정 시 409 |
 | 공유 링크 생성 (confirm과 통합) | ✅ | 2026-08-10 | 🟡 | 별도 `POST /share` 엔드포인트 없이 confirm 응답에 `share_slug`(8자 base62)를 바로 실어 보냄 — Task 12(프런트 ShareView)가 추가 호출 없이 그대로 씀 |

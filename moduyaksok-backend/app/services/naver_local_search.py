@@ -73,6 +73,7 @@
 #             저장된 세션 호환을 위해 matched_tag에는 첫 태그도 계속 제공한다.
 # ------------------------------------------------------------------
 import asyncio
+import hashlib
 import re
 from dataclasses import dataclass
 
@@ -279,11 +280,25 @@ def _to_snapshot_place(place: dict) -> dict:
     """검색 이력 화면에 필요한 공개 가능한 최소 장소 정보만 남긴다."""
     address = place.get("roadAddress") or place.get("address", "")
     return {
+        "place_id": place_id_for(place),
         "name": place.get("title", ""),
         "category": place.get("category", ""),
         "address": address,
         "map_url": build_naver_map_url(place),
     }
+
+
+def place_id_for(place: dict) -> str:
+    """검색 결과 안에서 장소를 안정적으로 가리키는 식별자를 만든다.
+
+    지역검색 응답의 ``link``/지도 place id는 항상 제공되지 않아 믿을 수 없다. 반면
+    제목과 도로명 주소는 후보 목록·지도 링크 모두에 쓰이는 값이므로, 두 값을 정규화
+    해 SHA-256으로 만든 ID를 선택·해제 API의 공개 식별자로 쓴다. 원본 제목은 같은
+    이름의 지점이 있을 수 있어 주소 없이 쓰지 않는다.
+    """
+    title = " ".join(str(place.get("title") or place.get("name", "")).split())
+    address = " ".join(str(place.get("roadAddress") or place.get("address", "")).split())
+    return hashlib.sha256(f"{title}\x1f{address}".encode()).hexdigest()
 
 
 def _build_search_groups(

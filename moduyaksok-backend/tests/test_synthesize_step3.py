@@ -23,6 +23,8 @@ from app.pipeline.synthesize_step3 import (
     _has_excessive_travel,
     _has_hallucinated_activity,
     _has_missing_meal_slot,
+    _has_missing_required_anchors,
+    _has_missing_required_places,
     _has_missing_required_tags,
     _has_time_overlap,
     _JudgmentBatch,
@@ -66,6 +68,7 @@ def _activity(
     matched_tag: str | None = None,
     matched_tags: list[str] | None = None,
     source_category: str | None = None,
+    place_id: str | None = None,
 ) -> ActivityDraft:
     return ActivityDraft(
         name=name,
@@ -79,6 +82,7 @@ def _activity(
         matched_tag=matched_tag,
         matched_tags=matched_tags or [],
         source_category=source_category,
+        place_id=place_id,
     )
 
 
@@ -326,6 +330,42 @@ def test_required_meal_tag_must_be_in_its_meal_slot():
     )
 
     assert _has_missing_required_tags(candidate, dinner_conditions) is True
+
+
+def test_required_anchor_drops_candidate_when_llm_uses_another_same_tag_place():
+    candidate = _candidate(
+        "A", [_activity("버거2", start="12:00", end="13:00", matched_tags=["햄버거"])]
+    ).model_copy(update={"required_tag_anchors": {"햄버거": "버거1"}})
+
+    assert _has_missing_required_anchors(candidate) is True
+
+
+def test_required_anchor_allows_candidate_that_keeps_every_fixed_place():
+    candidate = _candidate(
+        "A",
+        [
+            _activity("버거1", matched_tags=["햄버거"]),
+            _activity("와플집", matched_tags=["와플"]),
+        ],
+    ).model_copy(update={"required_tag_anchors": {"햄버거": "버거1", "와플": "와플집"}})
+
+    assert _has_missing_required_anchors(candidate) is False
+
+
+def test_required_place_drops_candidate_when_exact_selected_place_is_missing():
+    candidate = _candidate("A", [_activity("다른 카페", place_id="other-cafe")]).model_copy(
+        update={"required_place_ids": ["selected-cafe"]}
+    )
+
+    assert _has_missing_required_places(candidate) is True
+
+
+def test_required_place_allows_candidate_when_exact_place_id_is_included():
+    candidate = _candidate("A", [_activity("선택한 카페", place_id="selected-cafe")]).model_copy(
+        update={"required_place_ids": ["selected-cafe"]}
+    )
+
+    assert _has_missing_required_places(candidate) is False
 
 
 def test_rule_based_filter_drops_candidate_missing_meal_slot():

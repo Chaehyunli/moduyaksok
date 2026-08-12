@@ -4,11 +4,15 @@
 
 > **현재 상태**: 손그림 낙서 노트 컨셉의 디자인 시스템 위에서 일정 생성 핵심 플로우 —
 > 로그인 → BYOK API 키 등록 → 조건 입력 → AI가 후보 3개 생성 → 하나 선택 후 이동 경로
+> 후보 목록에서 장소를 고정 → 그 장소를 포함하도록 다시 생성 → 하나 선택 후 이동 경로
 > (도보·대중교통·자차) 조회 → 확정 — 까지 프런트-백엔드가 실제로 연동되어 동작합니다
 > (`POST /schedules`, `POST /schedules/{id}/routes`, `POST /schedules/{id}/confirm`,
-> `GET /schedules/{id}`, 2026-08-10). 공유 링크 화면(`GET /share/{slug}`)도 실제
-> 백엔드와 연동되어 동작합니다(2026-08-10) — 피드백 반영 화면은 아직 목업
-> 데이터입니다. AI 파이프라인(Step1~4)은 유닛테스트·(Step1~3은) DeepEval
+> `GET /schedules/{id}`, `POST`/`DELETE /schedules/{id}/required-places`,
+> `POST /schedules/{id}/regenerate`, 2026-08-12). 필수 장소 재생성은 최초 검색 풀과
+> 정규화 조건을 재사용하고, 결과에 선택 장소가 실제 포함됐는지 하드 검증합니다.
+> 공유 링크 화면(`GET /share/{slug}`)도 실제
+> 백엔드와 연동되어 동작합니다(2026-08-10) — 자유 텍스트 피드백 반영 화면만 아직
+> 목업 데이터입니다. AI 파이프라인(Step1~4)은 유닛테스트·(Step1~3은) DeepEval
 > 골든셋까지 완료돼 있고, Step3가 후보를 드롭하면 그 관점만 다시 생성해 재검증하는
 > 재시도 로직(`pipeline/orchestrate.py`)도 구현 완료 — 관점별 최대 1회, 사용자에게는
 > 안 보임. 이동 경로 도보·대중교통(ODsay)·자차(NCP Maps Directions 5) 전부 실제
