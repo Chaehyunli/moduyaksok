@@ -32,6 +32,28 @@
   DeepEval 골든셋으로 실측 확인됨. MID(`solar-pro`)로 올리자 같은 골든셋에서
   9/9 통과(0.80~1.00)로 즉시 해결(2026-08-07). "간단해 보이는 작업"이라도 출력
   스키마가 복잡해지면 티어를 다시 확인할 것.
+- HIGH는 파이프라인 step 로직에서 "최대한" 피한다 — DeepEval judge
+  (`ProviderJudgeModel`)는 항상 HIGH를 쓰지만, step 쪽은 비용 때문에 내릴 수
+  있으면 내린다(2026-08-12 방향 결정). 단, 강제 원칙은 아니다 — 실제로 Step1은
+  LOW, Step2는 MID로 안전하게 내려갔지만 Step3는 MID(claude-sonnet-5)로 내리자
+  `_JudgmentBatch`(judgments를 리스트로 감싼 스키마) tool_use 응답이 75%
+  확률로 리스트 대신 JSON 문자열을 반환해 pydantic 검증에서 크래시 — 판단
+  품질이 아니라 "스키마를 지키는 신뢰성" 자체가 모델 크기에 비례해 나빠지는
+  경우라 HIGH로 되돌렸다. 티어를 내릴 땐 반드시 골든셋으로 재검증하고, 검증
+  없이 "이론상 되겠지"로 내리지 말 것.
+- **티어를 올렸으면 "다시 내릴 조건"도 같이 기록해둘 것.** Step1이 2026-08-07에
+  LOW→MID로 격상된 근거(당시 LOW=`solar-mini`가 부실)는 그 뒤 LOW 자체의 upstage
+  매핑이 `solar-pro`로 바뀌면서(2026-08-12) 사라졌는데, TIER 상수는 그대로 MID에
+  머물러 있었다. Step2도 비슷하게 MID→HIGH로 올라간 뒤 안 내려간 채였다. 둘 다
+  `scripts/compare_providers_eval.py`로 provider별 실비용을 실측하다가 우연히
+  발견(2026-08-12) — `app/pipeline/models.py`의 `ModelTier` docstring이 말하는
+  "어느 step이 어느 티어"와 각 step 파일의 실제 `TIER` 상수가 조용히 어긋날 수
+  있다는 뜻이니, 티어를 올릴 근거가 된 상황(모델 교체 등)이 바뀌면 내리는 것도
+  같이 재확인할 것 — 안 그러면 실제 배정이 문서화된 설계와 계속 벌어진다.
+- provider별 "일정 하나 생성" 실비용은 감으로 판단하지 말고
+  `scripts/compare_providers_eval.py`(`tests/eval/`의 골든셋·judge를 그대로 재사용,
+  pytest 코드는 안 건드림)로 실측할 것 — `call_structured()`가 호출마다 provider/
+  모델/입출력 토큰 수를 INFO로 로깅한다(2026-08-12).
 
 ## Structured output — provider 늘어난다고 분기부터 늘리지 말고 먼저 실측
 - `app/services/structured_llm.py`의 `call_structured()`가 provider별 구조화 출력

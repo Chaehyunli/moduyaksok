@@ -19,6 +19,13 @@
 #             고르라고 지시(예시 5번 추가). NormalizedConditions.cap_verifiable_tags()
 #             가 방어용 하한선으로 한 번 더 자른다(schemas.py 참고) — 이 지시를
 #             LLM이 못 지켜도 호출량은 항상 보장됨.
+# 2026-08-12, TIER를 MID -> LOW로 되돌림 — MID로 올렸던 이유(2026-08-07, LOW=
+#             solar-mini가 few-shot 베끼기 문제)가 그 이후 LOW 자체가 solar-mini
+#             에서 solar-pro로 교체되면서(app/pipeline/models.py 2026-08-12) 이미
+#             해소됐다. 그 근거가 사라졌는데도 TIER는 안 내려가 있었던 걸 provider
+#             비용 비교 작업 중 발견 — Step1이 실제로는 문서(models.py의 ModelTier
+#             docstring)가 말하는 것보다 한 단계 비싼 티어로 돌고 있었다. LOW/MID/
+#             HIGH 3사 실측 후 재변경.
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -26,11 +33,11 @@ from app.pipeline.models import ModelTier, get_model
 from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, NormalizedConditions, PreferenceTag
 from app.services.structured_llm import call_structured
 
-# 구조화 추출/분류 작업이라 창의성은 필요 없지만, PreferenceTag(verifiable 포함)로
-# 스키마가 복잡해진 뒤 LOW 티어(solar-mini)가 disliked_text가 비었을 때 few-shot
-# 예시 내용을 베끼거나 liked 항목을 disliked에 중복 삽입하는 문제가 실측으로
-# 확인됨(2026-08-07, DeepEval 골든셋). MID로 격상해서 재검증 중.
-TIER = ModelTier.MID
+# 구조화 추출/분류 작업이라 창의성은 필요 없음 — LOW 티어면 충분하다는 게 원래
+# 설계 의도(ModelTier docstring 참고). 2026-08-07엔 LOW=solar-mini가 few-shot
+# 베끼기 문제를 겪어 MID로 격상했었는데, 그 뒤 LOW 자체의 upstage 매핑이
+# solar-pro로 교체돼(2026-08-12) 문제가 해소됐다 — LOW로 되돌림(2026-08-12).
+TIER = ModelTier.LOW
 
 # RTF(Role/Task/Format) 뼈대 + few-shot. 예시 5개는 각각:
 #   1. 기본 — 명시된 항목만 추출, verifiable=True
