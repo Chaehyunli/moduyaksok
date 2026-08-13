@@ -13,6 +13,7 @@ import ApiKeyView from '../views/settings/ApiKeyView.vue'
 import ApiKeyProviderView from '../views/settings/ApiKeyProviderView.vue'
 import ApiKeyEditView from '../views/settings/ApiKeyEditView.vue'
 import ApiKeySavedView from '../views/settings/ApiKeySavedView.vue'
+import ConfirmedSchedulesView from '../views/ConfirmedSchedulesView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -25,6 +26,7 @@ export const router = createRouter({
     { path: '/schedules', name: 'candidates', component: CandidatesView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules/:id', name: 'candidate-detail', component: CandidateDetailView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules/:id/share', name: 'candidate-share', component: ShareView, meta: { requiresAuth: true, requiresApiKey: true } },
+    { path: '/confirmed-schedules', name: 'confirmed-schedules', component: ConfirmedSchedulesView, meta: { requiresAuth: true, requiresApiKey: true } },
 
     { path: '/share/:slug', name: 'public-share', component: PublicShareView },
 

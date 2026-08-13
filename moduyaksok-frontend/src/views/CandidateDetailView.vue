@@ -22,6 +22,7 @@ const candidate = computed(() => store.candidates.find((c) => c.id === route.par
 const loadingRoutes = ref(false)
 const routesError = ref('')
 const confirming = ref(false)
+const hasExistingShare = computed(() => Boolean(store.shareSlug))
 // 아코디언은 한 번에 하나만 펼쳐진다 — 열려있는 구간의 fromOrder, 없으면 null.
 const expandedSegment = ref<number | null>(null)
 
@@ -115,8 +116,8 @@ async function confirmSchedule() {
                 </p>
               </div>
               <img
-                :src="categoryImage(a.category, a.name).src"
-                :alt="categoryImage(a.category, a.name).alt"
+                :src="categoryImage(a.sourceCategory).src"
+                :alt="categoryImage(a.sourceCategory).alt"
                 class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
               />
             </div>
@@ -168,7 +169,7 @@ async function confirmSchedule() {
 
       <div class="flex flex-wrap gap-3">
         <DoodleButton variant="ghost" :disabled="confirming" @click="confirmSchedule">
-          {{ confirming ? '확정하는 중...' : '이 일정 확정하기' }}
+          {{ confirming ? '저장하는 중...' : hasExistingShare ? '수정한 일정 다시 확정하기' : '이 일정 확정하기' }}
         </DoodleButton>
       </div>
     </div>

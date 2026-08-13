@@ -16,6 +16,7 @@ export interface Activity {
   // 이 장소가 어느 "좋아하는 조건"에서 나왔는지(백엔드 matched_tag) — placePool의
   // groups.liked 라벨과 매칭해 색으로 구분해 보여줄 때 쓴다(src/lib/tagColors.ts).
   matchedTag: string | null
+  sourceCategory: string | null
 }
 
 export interface RouteOption {
@@ -88,6 +89,14 @@ export interface Conditions {
   dislikedText: string
 }
 
+export interface ConfirmedScheduleSummary {
+  sessionId: string
+  title: string
+  region: string
+  candidateTitle: string
+  createdAt: string
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapApiActivity(raw: any): Activity {
   return {
@@ -103,6 +112,7 @@ function mapApiActivity(raw: any): Activity {
     lat: raw.lat ?? null,
     lng: raw.lng ?? null,
     matchedTag: raw.matched_tag ?? null,
+    sourceCategory: raw.source_category ?? null,
   }
 }
 
@@ -291,6 +301,29 @@ export const useScheduleStore = defineStore('schedule', {
       this.placePool = mapApiPlacePool(data.place_pool)
       this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
       this.shareSlug = data.share_slug ?? ''
+    },
+    async fetchConfirmedSchedules(): Promise<ConfirmedScheduleSummary[]> {
+      const { data } = await api.get('/confirmed-schedules')
+      return data.map((item: any) => ({
+        sessionId: item.session_id,
+        title: item.title,
+        region: item.region,
+        candidateTitle: item.candidate_title,
+        createdAt: item.created_at,
+      }))
+    },
+    async updateConfirmedScheduleTitle(sessionId: string, title: string): Promise<ConfirmedScheduleSummary> {
+      const { data } = await api.patch(`/schedules/${sessionId}/title`, { title })
+      return {
+        sessionId: data.session_id,
+        title: data.title,
+        region: data.region,
+        candidateTitle: data.candidate_title,
+        createdAt: data.created_at,
+      }
+    },
+    async deleteConfirmedSchedule(sessionId: string) {
+      await api.delete(`/schedules/${sessionId}`)
     },
     async addRequiredPlace(place: PlacePoolItem) {
       if (!this.sessionId || this.requiredPlaces.some((item) => item.placeId === place.placeId)) {

@@ -63,22 +63,26 @@ function selectedRouteSummary(segment: RouteSegment): string {
         <div class="space-y-3">
           <template v-for="(a, index) in candidate.activities" :key="a.order">
             <DoodleCard>
-              <img
-                :src="categoryImage(a.category, a.name).src"
-                :alt="categoryImage(a.category, a.name).alt"
-                class="mb-3 h-24 w-full rounded-[2px] object-cover"
-              />
-              <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
-              <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }} · 1인 {{ a.priceRange }}</p>
-              <a
-                v-if="a.mapUrl"
-                :href="a.mapUrl"
-                target="_blank"
-                rel="noopener"
-                class="mt-2 inline-block font-hand text-sm text-red underline underline-offset-2 hover:text-ink"
-              >
-                지도에서 확인하기 ↗
-              </a>
+              <div class="flex items-start gap-3">
+                <div class="min-w-0 flex-1">
+                  <p class="font-hand text-lg text-ink">📍 {{ a.name }}</p>
+                  <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }} · 1인 {{ a.priceRange }}</p>
+                  <a
+                    v-if="a.mapUrl"
+                    :href="a.mapUrl"
+                    target="_blank"
+                    rel="noopener"
+                    class="mt-2 inline-block font-hand text-sm text-red underline underline-offset-2 hover:text-ink"
+                  >
+                    지도에서 확인하기 ↗
+                  </a>
+                </div>
+                <img
+                  :src="categoryImage(a.sourceCategory).src"
+                  :alt="categoryImage(a.sourceCategory).alt"
+                  class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
+                />
+              </div>
             </DoodleCard>
 
             <p

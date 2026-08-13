@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
 import DoodleArrow from '../components/doodle/DoodleArrow.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleStar from '../components/doodle/DoodleStar.vue'
@@ -8,7 +7,6 @@ import DoodleUnderline from '../components/doodle/DoodleUnderline.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
 
 const router = useRouter()
-const store = useAuthStore()
 
 const steps = [
   {
@@ -32,14 +30,8 @@ const steps = [
 <template>
   <div class="notebook-bg min-h-dvh">
     <div class="mx-auto max-w-5xl px-6">
-      <!-- 네비게이션 (로고는 전역 고정 헤더에 있음) -->
-      <header class="flex h-16 items-center justify-end">
-        <DoodleButton v-if="store.loggedIn" variant="ghost" size="sm" @click="router.push('/settings')">설정</DoodleButton>
-        <DoodleButton v-else variant="ghost" size="sm" @click="router.push('/new')">시작하기</DoodleButton>
-      </header>
-
       <!-- 히어로 -->
-      <section class="relative pt-16 pb-24 text-center">
+      <section class="relative pt-24 pb-24 text-center">
         <DoodleStar class="pointer-events-none absolute left-2 top-8 h-8 w-8 -rotate-12 text-red md:left-10" />
 
         <h1 class="text-balance font-hand text-4xl font-bold leading-tight text-ink md:text-6xl">

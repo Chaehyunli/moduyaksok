@@ -58,6 +58,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
 from app.models.schedule import (
+    FeedbackMessage,
     SchedulePlacePool,
     ScheduleRequiredPlace,
     ScheduleSession,
@@ -117,6 +118,18 @@ class RequiredPlaceRequest(BaseModel):
     place_id: str
 
 
+class ScheduleTitleRequest(BaseModel):
+    title: str
+
+
+class ConfirmedScheduleSummary(BaseModel):
+    session_id: UUID
+    title: str
+    region: str
+    candidate_title: str
+    created_at: datetime
+
+
 # ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
 # 재시도 로직은 이 규모에서 과함. 실제로 충돌하면 DB unique 제약이 막고
 # IntegrityError로 500이 나는데, 그 정도로 자주 일어날 확률이 아니다.
@@ -148,6 +161,26 @@ def _find_candidate(schedule_session: ScheduleSession, candidate_id: str) -> Can
         if item["candidate_id"] == candidate_id:
             return Candidate.model_validate(item)
     raise HTTPException(status.HTTP_404_NOT_FOUND, "존재하지 않는 후보입니다.")
+
+
+def candidate_with_source_categories(
+    session: Session, schedule_session: ScheduleSession, candidate: Candidate
+) -> Candidate:
+    """구버전 저장 일정에도 후보 풀의 원래 15개 검색 카테고리를 복구한다."""
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == schedule_session.id)
+    ).first()
+    if place_pool is None:
+        return candidate
+    source_by_name = {
+        str(place.get("title")): str(place.get("source_category"))
+        for place in place_pool.places.get("places", [])
+        if place.get("title") and place.get("source_category")
+    }
+    enriched = candidate.model_copy(deep=True)
+    for activity in enriched.activities:
+        activity.source_category = activity.source_category or source_by_name.get(activity.name)
+    return enriched
 
 
 def _replace_candidate(schedule_session: ScheduleSession, updated: Candidate) -> None:
@@ -233,8 +266,21 @@ def _required_places_for_session(session: Session, session_id: UUID) -> list[Req
 
 
 def _ensure_draft(schedule_session: ScheduleSession) -> None:
-    if schedule_session.status == "confirmed":
-        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정은 다시 생성할 수 없습니다.")
+    # 확정된 일정도 목록에서 다시 열어 필수 장소·후보를 조정할 수 있다. 재확정하면
+    # 기존 공유 링크는 유지되고, 링크가 가리키는 확정 후보만 최신 내용으로 바뀐다.
+    return None
+
+
+def _automatic_confirmed_titles(items: list[ScheduleSession]) -> dict[UUID, str]:
+    """같은 지역의 확정 일정은 생성 순서로만 (1), (2)를 붙인다."""
+    counts: dict[str, int] = {}
+    titles: dict[UUID, str] = {}
+    for item in sorted(items, key=lambda schedule: schedule.created_at):
+        region = str(item.conditions.get("region", "지역 미정")).strip() or "지역 미정"
+        occurrence = counts.get(region, 0)
+        titles[item.id] = region if occurrence == 0 else f"{region} ({occurrence})"
+        counts[region] = occurrence + 1
+    return titles
 
 
 @router.post("/schedules", response_model=ScheduleResponse)
@@ -342,7 +388,8 @@ def get_schedule(
     """
     schedule_session = _get_owned_session(session, session_id, current_user)
     candidates = [
-        Candidate.model_validate(item) for item in schedule_session.candidates.get("candidates", [])
+        candidate_with_source_categories(session, schedule_session, Candidate.model_validate(item))
+        for item in schedule_session.candidates.get("candidates", [])
     ]
     share_link = session.exec(
         select(ShareLink).where(ShareLink.session_id == schedule_session.id)
@@ -359,6 +406,92 @@ def get_schedule(
         required_places=_required_places_for_session(session, schedule_session.id),
         share_slug=share_link.slug if share_link else None,
     )
+
+
+@router.get("/confirmed-schedules", response_model=list[ConfirmedScheduleSummary])
+def list_confirmed_schedules(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """내가 확정한 일정만, 목록에 필요한 가벼운 정보로 반환한다."""
+    schedules = session.exec(
+        select(ScheduleSession)
+        .where(ScheduleSession.user_id == current_user.id, ScheduleSession.status == "confirmed")
+        .order_by(ScheduleSession.created_at)
+    ).all()
+    automatic_titles = _automatic_confirmed_titles(schedules)
+    result = []
+    for schedule in reversed(schedules):
+        candidate = (
+            _find_candidate(schedule, schedule.confirmed_candidate_id)
+            if schedule.confirmed_candidate_id
+            else None
+        )
+        result.append(
+            ConfirmedScheduleSummary(
+                session_id=schedule.id,
+                title=str(
+                    schedule.conditions.get("display_title") or automatic_titles[schedule.id]
+                ),
+                region=str(schedule.conditions.get("region", "지역 미정")),
+                candidate_title=candidate.title if candidate else "확정 일정",
+                created_at=schedule.created_at,
+            )
+        )
+    return result
+
+
+@router.patch("/schedules/{session_id}/title", response_model=ConfirmedScheduleSummary)
+def update_confirmed_schedule_title(
+    session_id: UUID,
+    body: ScheduleTitleRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    schedule = _get_owned_session(session, session_id, current_user)
+    if schedule.status != "confirmed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정의 이름만 수정할 수 있습니다.")
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "일정 이름을 입력해주세요.")
+    if len(title) > 80:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "일정 이름은 80자 이내로 입력해주세요."
+        )
+    # conditions는 이미 세션과 함께 JSONB로 영속된다. 새 컬럼을 요구하지 않아
+    # 아직 마이그레이션하지 않은 배포 DB에서도 제목 수정이 바로 동작한다.
+    schedule.conditions = {**schedule.conditions, "display_title": title}
+    session.add(schedule)
+    session.commit()
+    candidate = (
+        _find_candidate(schedule, schedule.confirmed_candidate_id)
+        if schedule.confirmed_candidate_id
+        else None
+    )
+    return ConfirmedScheduleSummary(
+        session_id=schedule.id,
+        title=title,
+        region=str(schedule.conditions.get("region", "지역 미정")),
+        candidate_title=candidate.title if candidate else "확정 일정",
+        created_at=schedule.created_at,
+    )
+
+
+@router.delete("/schedules/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_confirmed_schedule(
+    session_id: UUID,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """일정과 이 일정에 딸린 공유 링크·대화·생성 데이터까지 함께 제거한다."""
+    schedule = _get_owned_session(session, session_id, current_user)
+    if schedule.status != "confirmed":
+        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정만 목록에서 삭제할 수 있습니다.")
+    for model in (ShareLink, FeedbackMessage, ScheduleRequiredPlace, SchedulePlacePool):
+        for row in session.exec(select(model).where(model.session_id == session_id)).all():
+            session.delete(row)
+    session.delete(schedule)
+    session.commit()
 
 
 @router.post("/schedules/{session_id}/required-places", response_model=RequiredPlace)
@@ -503,6 +636,11 @@ async def regenerate_schedule(
     schedule_session.candidates = {
         "candidates": [candidate.model_dump(mode="json") for candidate in result.candidates]
     }
+    # 확정된 일정에서 다시 생성했다면 새 후보를 확인한 뒤 다시 확정하게 한다.
+    # 이때 기존 공유 링크는 지우지 않고, 재확정 시 같은 링크를 이어서 사용한다.
+    if schedule_session.status == "confirmed":
+        schedule_session.status = "draft"
+        schedule_session.confirmed_candidate_id = None
     session.add(schedule_session)
     session.commit()
     return ScheduleResponse(
@@ -544,8 +682,12 @@ def confirm_schedule(
     schedule_session.confirmed_candidate_id = body.candidate_id
     session.add(schedule_session)
 
-    share_link = ShareLink(session_id=schedule_session.id, slug=_generate_slug())
-    session.add(share_link)
+    share_link = session.exec(
+        select(ShareLink).where(ShareLink.session_id == schedule_session.id)
+    ).first()
+    if share_link is None:
+        share_link = ShareLink(session_id=schedule_session.id, slug=_generate_slug())
+        session.add(share_link)
     session.commit()
 
     return ConfirmResponse(

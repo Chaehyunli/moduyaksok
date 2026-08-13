@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models.schedule import ScheduleSession, ShareLink
 from app.pipeline.schemas import Candidate
-from app.routers.schedule import _find_candidate
+from app.routers.schedule import _find_candidate, candidate_with_source_categories
 
 router = APIRouter()
 
@@ -30,4 +30,5 @@ def get_shared_schedule(slug: str, session: Session = Depends(get_session)):
     if schedule_session is None or schedule_session.confirmed_candidate_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "존재하지 않는 링크입니다.")
 
-    return _find_candidate(schedule_session, schedule_session.confirmed_candidate_id)
+    candidate = _find_candidate(schedule_session, schedule_session.confirmed_candidate_id)
+    return candidate_with_source_categories(session, schedule_session, candidate)

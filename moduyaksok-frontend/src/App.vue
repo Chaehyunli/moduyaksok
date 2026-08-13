@@ -25,11 +25,15 @@ onMounted(async () => {
   </svg>
 
   <!-- 모든 화면에 고정으로 떠 있는 로고. 클릭하면 항상 홈으로 -->
-  <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center border-b-2 border-dashed border-ink/15 bg-paper/95 px-6 backdrop-blur-sm">
+  <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b-2 border-dashed border-ink/15 bg-paper/95 px-6 backdrop-blur-sm">
     <RouterLink to="/" class="relative font-hand text-lg text-ink">
       모두약속
       <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
     </RouterLink>
+    <nav class="flex items-center gap-3 font-hand text-sm">
+      <RouterLink to="/confirmed-schedules" class="text-ink/70 hover:text-ink">확정 일정</RouterLink>
+      <RouterLink to="/settings" class="text-ink/70 hover:text-ink">설정</RouterLink>
+    </nav>
   </header>
 
   <div class="pt-14">

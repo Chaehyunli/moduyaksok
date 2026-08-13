@@ -283,6 +283,9 @@ class Activity(BaseModel):
     # 일정) 이 장소가 어느 liked 태그에서 나왔는지가 최종 응답까지 필요하다.
     matched_tag: str | None = None
     matched_tags: list[str] = []
+    # 네이버가 준 세부 업종과 별개로, 15개 검색 버킷 중 어디서 찾았는지. 화면의
+    # 카테고리 그림은 이 값을 우선해 "전시" 검색 결과를 일관되게 보여준다.
+    source_category: str | None = None
 
 
 class Candidate(BaseModel):
