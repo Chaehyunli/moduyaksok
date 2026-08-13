@@ -95,7 +95,12 @@ function selectedRouteSummary(segment: RouteSegment): string {
         </div>
       </template>
       <p v-else-if="loading" class="font-hand text-ink/60">불러오는 중...</p>
-      <p v-else-if="notFound" class="font-hand text-ink/60">이 링크를 찾을 수 없어요.</p>
     </div>
+    <p
+      v-if="!loading && notFound"
+      class="flex min-h-[calc(100dvh-8.5rem)] items-center justify-center font-hand text-lg text-ink/60"
+    >
+      이 링크를 찾을 수 없어요.
+    </p>
   </div>
 </template>

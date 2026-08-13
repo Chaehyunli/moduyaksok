@@ -97,6 +97,7 @@ export interface ConfirmedScheduleSummary {
   region: string
   candidateTitle: string
   createdAt: string
+  shareSlug: string | null
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -314,6 +315,7 @@ export const useScheduleStore = defineStore('schedule', {
         region: item.region,
         candidateTitle: item.candidate_title,
         createdAt: item.created_at,
+        shareSlug: item.share_slug ?? null,
       }))
     },
     async updateConfirmedScheduleTitle(sessionId: string, title: string): Promise<ConfirmedScheduleSummary> {
@@ -324,6 +326,7 @@ export const useScheduleStore = defineStore('schedule', {
         region: data.region,
         candidateTitle: data.candidate_title,
         createdAt: data.created_at,
+        shareSlug: data.share_slug ?? null,
       }
     },
     async deleteConfirmedSchedule(sessionId: string) {

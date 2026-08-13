@@ -14,6 +14,7 @@ const error = ref('')
 const editingId = ref<string | null>(null)
 const titleDraft = ref('')
 const deletingId = ref<string | null>(null)
+const openMenuId = ref<string | null>(null)
 
 async function load() {
   loading.value = true
@@ -54,6 +55,14 @@ async function openSchedule(item: ConfirmedScheduleSummary) {
   }
 }
 
+function viewConfirmedSchedule(item: ConfirmedScheduleSummary) {
+  if (item.shareSlug) router.push(`/share/${item.shareSlug}`)
+}
+
+function toggleMenu(item: ConfirmedScheduleSummary) {
+  openMenuId.value = openMenuId.value === item.sessionId ? null : item.sessionId
+}
+
 async function removeSchedule(item: ConfirmedScheduleSummary) {
   if (!window.confirm(`“${item.title}” 일정과 대화방, 공유 링크를 모두 삭제할까요?`)) return
   deletingId.value = item.sessionId
@@ -78,23 +87,31 @@ onMounted(load)
       <DoodleAlert v-if="error" title="처리하지 못했어요" class="mb-5">{{ error }}</DoodleAlert>
       <p v-if="loading" class="font-hand text-ink/60">불러오는 중...</p>
       <div v-else-if="schedules.length" class="space-y-4">
-        <DoodleCard v-for="item in schedules" :key="item.sessionId">
+        <DoodleCard
+          v-for="item in schedules"
+          :key="item.sessionId"
+          class="cursor-pointer transition-colors hover:bg-white/40"
+          @click="editingId !== item.sessionId && viewConfirmedSchedule(item)"
+        >
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="min-w-0 flex-1">
               <template v-if="editingId === item.sessionId">
                 <label class="block font-hand text-sm text-ink/60" :for="`title-${item.sessionId}`">일정 이름</label>
-                <input :id="`title-${item.sessionId}`" v-model="titleDraft" class="mt-1 w-full rounded-[2px] border-2 border-ink bg-paper px-3 py-2 font-hand text-lg text-ink outline-none focus:border-red" maxlength="80" @keyup.enter="saveTitle(item)" />
-                <div class="mt-3 flex gap-2"><DoodleButton size="sm" @click="saveTitle(item)">저장</DoodleButton><DoodleButton size="sm" variant="ghost" @click="editingId = null">취소</DoodleButton></div>
+                <input :id="`title-${item.sessionId}`" v-model="titleDraft" class="mt-1 w-full rounded-[2px] border-2 border-ink bg-paper px-3 py-2 font-hand text-lg text-ink outline-none focus:border-red" maxlength="80" @click.stop @keyup.enter="saveTitle(item)" />
+                <div class="mt-3 flex gap-2"><DoodleButton size="sm" @click.stop="saveTitle(item)">저장</DoodleButton><DoodleButton size="sm" variant="ghost" @click.stop="editingId = null">취소</DoodleButton></div>
               </template>
               <template v-else>
                 <h2 class="font-hand text-xl text-ink">{{ item.title }}</h2>
                 <p class="mt-1 font-hand text-sm text-ink/60">{{ item.candidateTitle }} · {{ item.region }}</p>
-                <button class="mt-2 font-hand text-sm text-red underline underline-offset-2" @click="startEditing(item)">이름 수정</button>
+                <button class="mt-2 font-hand text-sm text-red underline underline-offset-2" @click.stop="startEditing(item)">이름 수정</button>
               </template>
             </div>
-            <div class="flex shrink-0 flex-wrap gap-2">
-              <DoodleButton size="sm" @click="openSchedule(item)">일정 수정하기</DoodleButton>
-              <DoodleButton size="sm" variant="ghost" :disabled="deletingId === item.sessionId" @click="removeSchedule(item)">{{ deletingId === item.sessionId ? '삭제 중...' : '삭제' }}</DoodleButton>
+            <div class="relative flex shrink-0 items-center gap-2" @click.stop>
+              <DoodleButton size="sm" @click="openSchedule(item)">일정 수정</DoodleButton>
+              <button type="button" class="px-2 py-1 font-hand text-xl leading-none text-ink/60 hover:text-ink" :aria-expanded="openMenuId === item.sessionId" aria-label="일정 더보기" @click="toggleMenu(item)">⋯</button>
+              <div v-if="openMenuId === item.sessionId" class="absolute right-0 top-9 z-10 w-28 rounded-[2px] border-2 border-ink bg-paper p-1 shadow-sm">
+                <button type="button" class="w-full px-2 py-1.5 text-left font-hand text-sm text-red hover:bg-red/5 disabled:opacity-40" :disabled="deletingId === item.sessionId" @click="removeSchedule(item)">{{ deletingId === item.sessionId ? '삭제 중...' : '일정 삭제' }}</button>
+              </div>
             </div>
           </div>
         </DoodleCard>

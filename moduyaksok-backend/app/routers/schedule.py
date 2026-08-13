@@ -128,6 +128,7 @@ class ConfirmedScheduleSummary(BaseModel):
     region: str
     candidate_title: str
     created_at: datetime
+    share_slug: str | None = None
 
 
 # ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
@@ -443,6 +444,11 @@ def list_confirmed_schedules(
                 region=str(schedule.conditions.get("region", "지역 미정")),
                 candidate_title=candidate.title if candidate else "확정 일정",
                 created_at=schedule.created_at,
+                share_slug=(
+                    session.exec(
+                        select(ShareLink.slug).where(ShareLink.session_id == schedule.id)
+                    ).first()
+                ),
             )
         )
     return result
@@ -481,6 +487,9 @@ def update_confirmed_schedule_title(
         region=str(schedule.conditions.get("region", "지역 미정")),
         candidate_title=candidate.title if candidate else "확정 일정",
         created_at=schedule.created_at,
+        share_slug=session.exec(
+            select(ShareLink.slug).where(ShareLink.session_id == schedule.id)
+        ).first(),
     )
 
 
