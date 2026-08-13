@@ -10,7 +10,7 @@ import DoodleDivider from '../components/doodle/DoodleDivider.vue'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
-import { categoryImage } from '../lib/categoryImages'
+import { activityImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
@@ -116,8 +116,8 @@ async function confirmSchedule() {
                 </p>
               </div>
               <img
-                :src="categoryImage(a.sourceCategory).src"
-                :alt="categoryImage(a.sourceCategory).alt"
+                :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).src"
+                :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).alt"
                 class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
               />
             </div>

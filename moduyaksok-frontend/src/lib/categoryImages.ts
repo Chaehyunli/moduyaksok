@@ -14,6 +14,8 @@ import performance from '../assets/categories/performance.svg'
 import snack from '../assets/categories/snack.svg'
 import western from '../assets/categories/western.svg'
 import placeholder from '../assets/place-placeholder.svg'
+import liked from '../assets/categories/liked.svg'
+import required from '../assets/categories/required.svg'
 
 // 백엔드의 naver_local_search._PLACE_CATEGORIES와 1:1로 대응한다. 일정 생성 시
 // "홍대 중식"처럼 어느 고정 카테고리 검색에서 발견했는지가 source_category로
@@ -40,4 +42,16 @@ export function categoryImage(sourceCategory: string | null | undefined): { src:
   const exactSource = sourceCategory ? SOURCE_CATEGORY_IMAGES[sourceCategory] : undefined
   if (exactSource) return { src: exactSource.image, alt: `${exactSource.label} 카테고리` }
   return { src: placeholder, alt: '장소 기본 이미지' }
+}
+
+// 일정의 의미가 일반 카테고리보다 우선한다. 필수 포함은 별, 좋아요 태그 검색
+// 결과는 하트로 보여 주고, 그 외에만 15개 고정 카테고리 그림을 쓴다.
+export function activityImage(
+  sourceCategory: string | null | undefined,
+  isRequired: boolean,
+  isLiked: boolean,
+): { src: string; alt: string } {
+  if (isRequired) return { src: required, alt: '필수 포함 장소' }
+  if (isLiked) return { src: liked, alt: '좋아요 장소' }
+  return categoryImage(sourceCategory)
 }

@@ -465,6 +465,7 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
                 matched_tag=draft.matched_tag,
                 matched_tags=draft.matched_tags,
                 source_category=draft.source_category,
+                place_id=draft.place_id,
             )
         )
     return activities

@@ -17,6 +17,8 @@ export interface Activity {
   // groups.liked 라벨과 매칭해 색으로 구분해 보여줄 때 쓴다(src/lib/tagColors.ts).
   matchedTag: string | null
   sourceCategory: string | null
+  placeId: string | null
+  isRequired: boolean
 }
 
 export interface RouteOption {
@@ -113,6 +115,8 @@ function mapApiActivity(raw: any): Activity {
     lng: raw.lng ?? null,
     matchedTag: raw.matched_tag ?? null,
     sourceCategory: raw.source_category ?? null,
+    placeId: raw.place_id ?? null,
+    isRequired: raw.is_required ?? false,
   }
 }
 

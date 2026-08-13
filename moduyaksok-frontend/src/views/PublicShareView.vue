@@ -5,7 +5,7 @@ import { useScheduleStore } from '../stores/schedule'
 import type { RouteOption, RouteSegment } from '../stores/schedule'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
-import { categoryImage } from '../lib/categoryImages'
+import { activityImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
@@ -78,8 +78,8 @@ function selectedRouteSummary(segment: RouteSegment): string {
                   </a>
                 </div>
                 <img
-                  :src="categoryImage(a.sourceCategory).src"
-                  :alt="categoryImage(a.sourceCategory).alt"
+                  :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).src"
+                  :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).alt"
                   class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
                 />
               </div>

@@ -286,6 +286,9 @@ class Activity(BaseModel):
     # 네이버가 준 세부 업종과 별개로, 15개 검색 버킷 중 어디서 찾았는지. 화면의
     # 카테고리 그림은 이 값을 우선해 "전시" 검색 결과를 일관되게 보여준다.
     source_category: str | None = None
+    # 검색 결과의 안정 식별자. 필수 포함 여부를 최종·공유 카드에서도 판별한다.
+    place_id: str | None = None
+    is_required: bool = False
 
 
 class Candidate(BaseModel):

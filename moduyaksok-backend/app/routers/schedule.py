@@ -172,14 +172,21 @@ def candidate_with_source_categories(
     ).first()
     if place_pool is None:
         return candidate
-    source_by_name = {
-        str(place.get("title")): str(place.get("source_category"))
+    place_by_name = {
+        str(place.get("title")): place
         for place in place_pool.places.get("places", [])
-        if place.get("title") and place.get("source_category")
+        if place.get("title")
+    }
+    required_place_ids = {
+        place.place_id for place in _required_places_for_session(session, schedule_session.id)
     }
     enriched = candidate.model_copy(deep=True)
     for activity in enriched.activities:
-        activity.source_category = activity.source_category or source_by_name.get(activity.name)
+        source = place_by_name.get(activity.name)
+        if source:
+            activity.source_category = activity.source_category or source.get("source_category")
+            activity.place_id = activity.place_id or _place_with_id(source)["place_id"]
+        activity.is_required = bool(activity.place_id and activity.place_id in required_place_ids)
     return enriched
 
 
