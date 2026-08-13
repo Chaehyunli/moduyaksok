@@ -90,7 +90,7 @@ onMounted(load)
         <DoodleCard
           v-for="item in schedules"
           :key="item.sessionId"
-          class="cursor-pointer transition-colors hover:bg-white/40"
+          class="!bg-transparent cursor-pointer transition-colors hover:!bg-paper"
           @click="editingId !== item.sessionId && viewConfirmedSchedule(item)"
         >
           <div class="flex flex-wrap items-start justify-between gap-4">
