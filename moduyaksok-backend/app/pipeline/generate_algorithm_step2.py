@@ -495,7 +495,9 @@ def generate_algorithm_candidates(
     plans = _build_candidate_plans(conditions, places, fixed, precovered_liked_tags)
     if not plans:
         return []
-    soft_scores = score_soft_preferences(provider, api_key, conditions, places)
+    soft_scores = score_soft_preferences(
+        provider, api_key, conditions, places, prioritized_place_ids=tuple(sorted(fixed_set))
+    )
     drafts: list[_ScoredDraft] = []
     for index, plan in enumerate(plans):
         drafts.extend(
