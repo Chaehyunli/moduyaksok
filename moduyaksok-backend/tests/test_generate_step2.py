@@ -391,6 +391,56 @@ def test_build_user_prompt_omits_meal_slot_instruction_when_not_needed():
     assert "식사가 되는 카테고리" not in prompt
 
 
+def test_required_liked_tag_filters_optional_places_of_same_tag_from_plans():
+    places = [
+        {
+            "place_id": "required",
+            "title": "필수 중식당",
+            "category": "중식",
+            "source_category": "중식",
+            "matched_tags": ["콩국수"],
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "place_id": "duplicate",
+            "title": "일반 콩국수집",
+            "category": "한식",
+            "source_category": "한식",
+            "matched_tags": ["콩국수"],
+            "mapx": "1270000100",
+            "mapy": "375000100",
+        },
+        {
+            "place_id": "dinner",
+            "title": "저녁 식당",
+            "category": "한식",
+            "source_category": "한식",
+            "mapx": "1270000200",
+            "mapy": "375000200",
+        },
+        {
+            "place_id": "activity",
+            "title": "전시장",
+            "category": "전시",
+            "source_category": "전시",
+            "mapx": "1270000300",
+            "mapy": "375000300",
+        },
+    ]
+
+    plans = _build_candidate_plans(
+        _CONDITIONS,
+        places,
+        required_place_ids=("required",),
+        precovered_liked_tags=("콩국수",),
+    )
+
+    assert plans
+    assert all("필수 중식당" in {p["title"] for p in plan.place_candidates} for plan in plans)
+    assert all("일반 콩국수집" not in {p["title"] for p in plan.place_candidates} for plan in plans)
+
+
 def test_format_place_candidates_shows_source_category_bracket():
     formatted = _format_place_candidates(
         [{"title": "잠실집", "category": "한식", "source_category": "한식"}]
@@ -795,6 +845,47 @@ def test_required_place_reclusters_around_selected_place_and_keeps_it_in_every_p
     )
     assert all(
         "far-cafe" not in {place["place_id"] for place in plan.place_candidates} for plan in plans
+    )
+
+
+def test_distant_required_places_bypass_cluster_radius_but_optional_places_stay_local():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 17, 0)),
+            "liked_tags": [],
+        }
+    )
+    places = [
+        {
+            "place_id": "must-east",
+            "title": "동쪽 필수 장소",
+            "source_category": "전시",
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "place_id": "must-west",
+            "title": "서쪽 필수 장소",
+            "source_category": "카페",
+            # 첫 필수 장소에서 약 4.4km — 최대 2.5km 반경 밖이다.
+            "mapx": "1269500000",
+            "mapy": "375000000",
+        },
+        {
+            "place_id": "near-east",
+            "title": "동쪽 주변 장소",
+            "source_category": "액티비티",
+            "mapx": "1270001000",
+            "mapy": "375000100",
+        },
+    ]
+
+    plans = _build_candidate_plans(conditions, places, ("must-east", "must-west"))
+
+    assert plans
+    assert all(
+        {"must-east", "must-west"}.issubset({place["place_id"] for place in plan.place_candidates})
+        for plan in plans
     )
 
 

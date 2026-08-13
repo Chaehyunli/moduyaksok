@@ -225,6 +225,7 @@ class CandidateDraft(BaseModel):
     # 사용자가 후보 목록에서 직접 고른 필수 장소. 빈 목록이면 최초 생성과 동일하게
     # 동작하고, 값이 있으면 Step3가 각 후보에 이 ID 전부가 실제 포함됐는지 강제한다.
     required_place_ids: list[str] = []
+    precovered_liked_tags: list[str] = []
     cluster_radius_meters: int = 0
 
 
@@ -313,6 +314,8 @@ class RequiredPlace(BaseModel):
 class ScheduleResponse(BaseModel):
     session_id: str
     candidates: list[Candidate]
+    # 확정 일정 상세에서 변경이 없을 때 재확정 버튼을 숨기기 위한 서버 상태.
+    status: Literal["draft", "confirmed"] = "draft"
     # POST /schedules와 GET /schedules/{id}가 함께 돌려주는 검색 스냅샷. 최종
     # 후보와 달리 "일정을 만들기 위해 무엇을 검색했는지"를 보여주는 보조 정보다.
     # 파이프라인 순수 함수 단독 호출에서는 만들지 않으므로 기본값은 None이다.
@@ -320,6 +323,10 @@ class ScheduleResponse(BaseModel):
     # 확정 전 사용자가 고른 장소 제약. 후보 풀과 분리해 저장되므로, 후보 목록이
     # 갱신돼도 사용자는 자신이 고정한 장소를 계속 확인·해제할 수 있다.
     required_places: list[RequiredPlace] = []
+    # 현재 필수 장소와 마지막 후보 생성에 실제 반영된 필수 장소를 구분한다.
+    # 사용자가 마지막 필수 장소를 해제해 required_places가 빈 배열이 되어도,
+    # 프런트는 이 스냅샷과 비교해 "필수 없이 다시 생성" 버튼을 계속 보여준다.
+    applied_required_place_ids: list[str] = []
     # 확정된 뒤 생긴 공유 링크가 있으면 같이 돌려준다 — GET /schedules/{id}가
     # 새로고침 후에도 공유 slug를 복구할 수 있게 한다(2026-08-10, Finding 1).
     share_slug: str | None = None

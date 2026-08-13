@@ -24,7 +24,8 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401 && window.location.pathname !== '/login') {
       useAuthStore().logout()
-      window.location.href = '/login'
+      const returnTo = window.location.pathname + window.location.search
+      window.location.href = `/login?redirect=${encodeURIComponent(returnTo)}`
     }
     return Promise.reject(error)
   },

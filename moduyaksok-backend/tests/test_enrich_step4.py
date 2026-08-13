@@ -270,6 +270,27 @@ async def test_enrich_routes_includes_car_option_when_available(monkeypatch):
     assert result.routes[0].recommended_option_id == "car"
 
 
+async def test_enrich_routes_selects_car_by_default_even_when_transit_is_shorter(monkeypatch):
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(30))
+
+    async def fake_transit(*a):
+        return [_transit("transit-0", 8)]
+
+    async def fake_car(*a):
+        return RouteOption(option_id="car", mode="car", duration_minutes=12, fare_krw=2500)
+
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", fake_transit)
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_car_option", fake_car)
+
+    candidate = _candidate(
+        [_activity(1, "A", "10:00", "10:30"), _activity(2, "B", "11:00", "11:30")]
+    )
+    result = await enrich_routes(candidate, _TIME_RANGE)
+
+    assert result.routes[0].recommended_option_id == "transit-0"
+    assert result.routes[0].selected_option_id == "car"
+
+
 async def test_enrich_routes_omits_car_when_none_returned(monkeypatch):
     monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(10))
 

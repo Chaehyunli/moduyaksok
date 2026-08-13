@@ -158,7 +158,11 @@ def _similarity_score(a: CandidateDraft, b: CandidateDraft) -> float:
 
 
 def _has_hallucinated_activity(candidate: CandidateDraft) -> bool:
-    return any(a.lat is None or a.lng is None for a in candidate.activities)
+    required_ids = set(candidate.required_place_ids)
+    return any(
+        (activity.lat is None or activity.lng is None) and activity.place_id not in required_ids
+        for activity in candidate.activities
+    )
 
 
 def _has_time_overlap(candidate: CandidateDraft) -> bool:
@@ -177,18 +181,23 @@ def _activity_matched_tags(activity: ActivityDraft) -> set[str]:
 
 
 def _has_duplicate_tag_match(candidate: CandidateDraft) -> bool:
-    """같은 좋아요 태그를 만족하는 활동이 한 후보에 2곳 이상이면 하드 위반.
+    """같은 좋아요 태그의 일반 활동이 한 후보에 2곳 이상이면 하드 위반.
 
     한 장소가 여러 검색 태그에 동시에 잡힌 경우도 모두 검사한다. 예를 들어 첫
-    장소가 스시/초밥이고 두 번째가 스시면, 스시를 중복 반영한 것으로 본다.
+    장소가 스시/초밥이고 두 번째가 스시면, 스시를 중복 반영한 것으로 본다. 단,
+    사용자가 같은 태그의 장소를 여러 곳 직접 필수로 골랐다면 그 필수 개수까지만
+    허용한다. 필수 한 곳이 태그를 이미 충족했다고 일반 장소까지 더 허용하지 않는다.
     """
-    seen: set[str] = set()
+    total_counts: dict[str, int] = {}
+    required_counts: dict[str, int] = {}
+    required_ids = set(candidate.required_place_ids)
     for activity in candidate.activities:
         tags = _activity_matched_tags(activity)
-        if seen & tags:
-            return True
-        seen.update(tags)
-    return False
+        for tag in tags:
+            total_counts[tag] = total_counts.get(tag, 0) + 1
+            if activity.place_id in required_ids:
+                required_counts[tag] = required_counts.get(tag, 0) + 1
+    return any(count > max(1, required_counts.get(tag, 0)) for tag, count in total_counts.items())
 
 
 def _has_duplicate_place(candidate: CandidateDraft) -> bool:
@@ -213,13 +222,35 @@ def _has_excessive_travel(candidate: CandidateDraft) -> bool:
     먼 지역끼리 섞이는 문제를 잡는다. 좌표가 없는 활동(환각 장소, 이미
     _has_hallucinated_activity가 먼저 드롭함)은 건너뛴다.
     """
+    required_ids = set(candidate.required_place_ids)
     for prev, cur in zip(candidate.activities, candidate.activities[1:], strict=False):
         if prev.lat is None or prev.lng is None or cur.lat is None or cur.lng is None:
             continue
         minutes = estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng)
-        if minutes > _MAX_TRAVEL_MINUTES:
+        involves_required_place = bool(
+            required_ids and (prev.place_id in required_ids or cur.place_id in required_ids)
+        )
+        if minutes > _MAX_TRAVEL_MINUTES and not involves_required_place:
             return True
     return False
+
+
+def _required_travel_warning_minutes(candidate: CandidateDraft) -> int:
+    """거리 필터를 면제한 필수 장소 연결 구간 중 가장 긴 예상 이동시간."""
+    required_ids = set(candidate.required_place_ids)
+    longest = 0
+    if not required_ids:
+        return longest
+    for prev, cur in zip(candidate.activities, candidate.activities[1:], strict=False):
+        if prev.lat is None or prev.lng is None or cur.lat is None or cur.lng is None:
+            continue
+        if prev.place_id not in required_ids and cur.place_id not in required_ids:
+            continue
+        longest = max(
+            longest,
+            estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng),
+        )
+    return longest if longest > _MAX_TRAVEL_MINUTES else 0
 
 
 def _required_meal_windows(time_range: tuple[datetime, datetime]) -> list[tuple[time, time]]:
@@ -264,6 +295,31 @@ def _has_missing_meal_slot(candidate: CandidateDraft, conditions: NormalizedCond
         if not has_meal:
             return True
     return False
+
+
+def _has_excessive_meal_places(candidate: CandidateDraft, conditions: NormalizedConditions) -> bool:
+    """식사 시간대 수보다 식사 장소가 과도하게 많이 선택됐는지 검사한다.
+
+    점심·저녁이 모두 있는 일정은 보통 식사 두 곳이면 충분하다. 같은 식사 태그를
+    좋아했다는 이유로 세 곳 이상을 채우지 못하게 하되, 사용자가 직접 필수로 고른
+    식사 장소 수가 더 많다면 그 선택은 그대로 허용한다.
+    """
+    meal_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal}
+
+    def is_meal(activity: ActivityDraft) -> bool:
+        return activity.source_category in _MEAL_CATEGORIES or bool(
+            _activity_matched_tags(activity) & meal_tags
+        )
+
+    meal_activities = [activity for activity in candidate.activities if is_meal(activity)]
+    required_ids = set(candidate.required_place_ids)
+    required_meal_count = sum(activity.place_id in required_ids for activity in meal_activities)
+    allowed = max(
+        1,
+        len(_required_meal_windows(conditions.time_range)),
+        required_meal_count,
+    )
+    return len(meal_activities) > allowed
 
 
 def _has_missing_required_tags(candidate: CandidateDraft, conditions: NormalizedConditions) -> bool:
@@ -340,7 +396,7 @@ def _has_insufficient_preference_coverage(
     if not candidate.required_meal_tags and not candidate.required_non_meal_tags:
         return False
 
-    matched_tags = {
+    matched_tags = set(candidate.precovered_liked_tags) | {
         tag for activity in candidate.activities for tag in _activity_matched_tags(activity)
     }
     return len(liked_tags & matched_tags) < minimum_coverage
@@ -406,6 +462,7 @@ def _rule_based_filter(
             or _has_duplicate_place(candidate)
             or _has_excessive_travel(candidate)
             or _has_missing_meal_slot(candidate, conditions)
+            or _has_excessive_meal_places(candidate, conditions)
             or _has_missing_required_tags(candidate, conditions)
             or _has_insufficient_preference_coverage(candidate, conditions)
             or _has_missing_required_anchors(candidate)
@@ -415,7 +472,7 @@ def _rule_based_filter(
 
         budget_ratio = _budget_overrun_ratio(candidate, conditions.budget_per_person)
         overrun_minutes = _time_overrun_minutes(candidate, conditions.time_range)
-        if (
+        if not candidate.required_place_ids and (
             budget_ratio > _BUDGET_OVERRUN_TOLERANCE_RATIO
             or overrun_minutes > _TIME_OVERRUN_TOLERANCE_MINUTES
         ):
@@ -427,6 +484,22 @@ def _rule_based_filter(
             warning_parts.append(f"1인 예산보다 약 {over_amount}원 더 필요할 수 있어요")
         if overrun_minutes > 0:
             warning_parts.append(f"예정보다 약 {overrun_minutes}분 더 걸릴 수 있어요")
+        if required_travel_minutes := _required_travel_warning_minutes(candidate):
+            warning_parts.append(
+                "고정된 장소를 포함해 한 구간 이동이 "
+                f"약 {required_travel_minutes}분 이상 걸릴 수 있어요"
+            )
+        missing_required_coordinates = [
+            activity.name
+            for activity in candidate.activities
+            if activity.place_id in set(candidate.required_place_ids)
+            and (activity.lat is None or activity.lng is None)
+        ]
+        if missing_required_coordinates:
+            warning_parts.append(
+                f"고정된 장소({', '.join(missing_required_coordinates)})의 위치를 "
+                "자동 확인하지 못해 이동 경로를 직접 확인해야 해요"
+            )
 
         survivors.append(candidate)
         warnings.append(", ".join(warning_parts))
@@ -608,22 +681,29 @@ def synthesize_and_validate(
     )
 
     kept: list[Candidate] = []
-    for entry in judgment.judgments:
-        if not entry.keep:
+    judgment_by_index = {
+        entry.candidate_index: entry
+        for entry in judgment.judgments
+        if 0 <= entry.candidate_index < len(rule_survivors)
+    }
+    for candidate_index, draft in enumerate(rule_survivors):
+        entry = judgment_by_index.get(candidate_index)
+        # 사용자가 직접 고른 필수 장소를 모두 포함하고 결정론적 검증까지 통과한
+        # 후보는 AI의 주관적인 keep=false/응답 누락만으로 다시 없애지 않는다.
+        if not draft.required_place_ids and (entry is None or not entry.keep):
             continue
-        if not (0 <= entry.candidate_index < len(rule_survivors)):
-            continue  # LLM이 범위 밖 index를 줄 경우에 대한 방어
         if len(kept) >= len(_CANDIDATE_IDS):
             break
 
-        draft = rule_survivors[entry.candidate_index]
-        rule_warning = rule_warnings[entry.candidate_index]
-        combined_warning = " ".join(p for p in (rule_warning, entry.feasibility_note) if p)
+        rule_warning = rule_warnings[candidate_index]
+        feasibility_note = entry.feasibility_note if entry else ""
+        why_recommended = entry.why_recommended if entry else draft.rationale
+        combined_warning = " ".join(p for p in (rule_warning, feasibility_note) if p)
         kept.append(
             Candidate(
                 candidate_id=_CANDIDATE_IDS[len(kept)],
                 title=draft.title,
-                why_recommended=entry.why_recommended,
+                why_recommended=why_recommended,
                 activities=_to_activities(draft.activities),
                 routes=[],
                 feasibility_warning=combined_warning or None,

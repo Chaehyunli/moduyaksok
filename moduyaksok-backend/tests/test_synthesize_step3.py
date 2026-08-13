@@ -20,6 +20,7 @@ from app.pipeline.synthesize_step3 import (
     _CandidateJudgment,
     _has_duplicate_place,
     _has_duplicate_tag_match,
+    _has_excessive_meal_places,
     _has_excessive_travel,
     _has_hallucinated_activity,
     _has_insufficient_preference_coverage,
@@ -121,6 +122,18 @@ def test_has_hallucinated_activity_true_when_coordinates_missing():
     assert _has_hallucinated_activity(c) is True
 
 
+def test_required_place_with_missing_coordinates_is_not_treated_as_hallucination():
+    c = _candidate(
+        "A", [_activity("좌표 없는 필수 장소", lat=None, lng=None, place_id="must")]
+    ).model_copy(update={"required_place_ids": ["must"]})
+
+    assert _has_hallucinated_activity(c) is False
+
+    survivors, warnings = _rule_based_filter([c], _CONDITIONS)
+    assert survivors == [c]
+    assert "이동 경로를 직접 확인" in warnings[0]
+
+
 def test_has_hallucinated_activity_false_when_all_have_coordinates():
     c = _candidate("A", [_activity("가게1"), _activity("가게2")])
     assert _has_hallucinated_activity(c) is False
@@ -187,6 +200,47 @@ def test_has_duplicate_tag_match_uses_all_matched_tags():
         ],
     )
     assert _has_duplicate_tag_match(c) is True
+
+
+def test_required_tag_place_does_not_allow_optional_duplicates_of_same_tag():
+    c = _candidate(
+        "A",
+        [
+            _activity("필수 중식당", matched_tags=["중식"], place_id="required"),
+            _activity("일반 중식당1", matched_tags=["중식"], place_id="optional-1"),
+            _activity("일반 중식당2", matched_tags=["중식"], place_id="optional-2"),
+        ],
+    ).model_copy(update={"required_place_ids": ["required"], "precovered_liked_tags": ["중식"]})
+
+    assert _has_duplicate_tag_match(c) is True
+
+
+def test_multiple_required_places_of_same_tag_are_allowed_only_up_to_required_count():
+    c = _candidate(
+        "A",
+        [
+            _activity("필수 중식당1", matched_tags=["중식"], place_id="required-1"),
+            _activity("필수 중식당2", matched_tags=["중식"], place_id="required-2"),
+        ],
+    ).model_copy(update={"required_place_ids": ["required-1", "required-2"]})
+
+    assert _has_duplicate_tag_match(c) is False
+
+
+def test_one_required_meal_does_not_allow_three_meal_activities():
+    conditions = _MEAL_CONDITIONS.model_copy(
+        update={"liked_tags": [PreferenceTag(tag="중식", verifiable=True, is_meal=True)]}
+    )
+    c = _candidate(
+        "A",
+        [
+            _activity("필수 중식당", matched_tags=["중식"], place_id="required"),
+            _activity("일반 중식당", source_category="중식", place_id="optional-1"),
+            _activity("일반 한식당", source_category="한식", place_id="optional-2"),
+        ],
+    ).model_copy(update={"required_place_ids": ["required"]})
+
+    assert _has_excessive_meal_places(c, conditions) is True
 
 
 # ── _has_duplicate_place (2026-08-12(2차), 같은 장소 중복 방문 하드룰) ────────
@@ -258,6 +312,18 @@ def test_has_excessive_travel_true_when_over_fifteen_minute_estimate():
     )
 
     assert _has_excessive_travel(c) is True
+
+
+def test_has_excessive_travel_allows_distant_segment_involving_required_place():
+    c = _candidate(
+        "A",
+        [
+            _activity("필수 장소", lat=37.5, lng=127.0, place_id="must"),
+            _activity("먼 장소", lat=37.526, lng=127.0, place_id="other"),
+        ],
+    ).model_copy(update={"required_place_ids": ["must"]})
+
+    assert _has_excessive_travel(c) is False
 
 
 def test_has_excessive_travel_false_when_coordinates_missing():
@@ -531,6 +597,41 @@ def test_rule_based_filter_drops_candidate_with_excessive_travel():
     assert survivors == []
 
 
+def test_rule_based_filter_keeps_distant_required_place_with_warning():
+    far_required = _candidate(
+        "필수 장소 우선",
+        [
+            _activity("필수 장소", lat=37.5, lng=127.0, place_id="must"),
+            _activity(
+                "먼 장소",
+                start="11:30",
+                end="12:30",
+                lat=37.526,
+                lng=127.0,
+                place_id="other",
+            ),
+        ],
+    ).model_copy(update={"required_place_ids": ["must"]})
+
+    survivors, warnings = _rule_based_filter([far_required], _CONDITIONS)
+
+    assert survivors == [far_required]
+    assert "고정된 장소" in warnings[0]
+    assert "이동" in warnings[0]
+
+
+def test_rule_based_filter_keeps_large_required_budget_overrun_with_warning():
+    expensive_required = _candidate(
+        "필수 장소 우선",
+        [_activity("필수 장소", price=(90000, 100000), place_id="must")],
+    ).model_copy(update={"required_place_ids": ["must"]})
+
+    survivors, warnings = _rule_based_filter([expensive_required], _CONDITIONS)
+
+    assert survivors == [expensive_required]
+    assert "원 더 필요" in warnings[0]
+
+
 # ── synthesize_and_validate ──────────────────────────────────────────────
 
 
@@ -608,6 +709,20 @@ def test_synthesize_and_validate_returns_infeasible_when_llm_drops_all(monkeypat
     result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, candidates)
 
     assert isinstance(result, InfeasibleResponse)
+
+
+def test_synthesize_and_validate_keeps_required_candidate_when_llm_drops_it(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices=set())
+    )
+    required = _candidate("필수 후보", [_activity("필수 장소", place_id="must")]).model_copy(
+        update={"required_place_ids": ["must"]}
+    )
+
+    result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, [required])
+
+    assert isinstance(result, ScheduleResponse)
+    assert result.candidates[0].title == "필수 후보"
 
 
 def test_synthesize_and_validate_combines_rule_and_llm_warnings(monkeypatch):

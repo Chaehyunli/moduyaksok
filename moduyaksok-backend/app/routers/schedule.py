@@ -66,6 +66,7 @@ from app.models.schedule import (
 )
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
+from app.pipeline.generate_step2 import PERSPECTIVES, generate_single_candidate
 from app.pipeline.orchestrate import generate_schedule_candidates, regenerate_schedule_candidates
 from app.pipeline.schemas import (
     Candidate,
@@ -74,6 +75,7 @@ from app.pipeline.schemas import (
     RequiredPlace,
     ScheduleResponse,
 )
+from app.pipeline.synthesize_step3 import synthesize_and_validate
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
 from app.services.naver_local_search import NaverSearchError, place_id_for
@@ -118,6 +120,24 @@ class RequiredPlaceRequest(BaseModel):
     place_id: str
 
 
+class CandidatePreviewRequest(BaseModel):
+    excluded_place_ids: list[str]
+
+
+class CandidatePreviewResponse(BaseModel):
+    preview_id: str
+    candidate: Candidate
+
+
+class CandidatePreviewSaveRequest(BaseModel):
+    selected_options: list[SelectedOption] = []
+
+
+class CandidateRemovalSaveRequest(BaseModel):
+    excluded_place_ids: list[str]
+    selected_options: list[SelectedOption] = []
+
+
 class ScheduleTitleRequest(BaseModel):
     title: str
 
@@ -129,6 +149,15 @@ class ConfirmedScheduleSummary(BaseModel):
     candidate_title: str
     created_at: datetime
     share_slug: str | None = None
+
+
+class DraftScheduleSummary(BaseModel):
+    """확정 전, 이어서 작업할 수 있는 일정 세션의 최소 정보."""
+
+    session_id: UUID
+    region: str
+    candidate_count: int
+    created_at: datetime
 
 
 # ponytail: 8자 base62라 충돌 확률은 무시할 만한 수준(62^8 ≈ 218조) — 유니크
@@ -194,13 +223,46 @@ def candidate_with_source_categories(
 def _replace_candidate(schedule_session: ScheduleSession, updated: Candidate) -> None:
     items = schedule_session.candidates.get("candidates", [])
     schedule_session.candidates = {
+        **schedule_session.candidates,
         "candidates": [
             updated.model_dump(mode="json")
             if item["candidate_id"] == updated.candidate_id
             else item
             for item in items
-        ]
+        ],
     }
+
+
+def _candidate_previews(schedule_session: ScheduleSession) -> dict:
+    previews = schedule_session.candidates.get("previews", {})
+    return dict(previews) if isinstance(previews, dict) else {}
+
+
+def _set_candidate_preview(
+    schedule_session: ScheduleSession,
+    candidate_id: str,
+    preview_id: str,
+    candidate: Candidate,
+    excluded_place_ids: set[str],
+) -> None:
+    previews = _candidate_previews(schedule_session)
+    previews[candidate_id] = {
+        "preview_id": preview_id,
+        "candidate": candidate.model_dump(mode="json"),
+        "excluded_place_ids": sorted(excluded_place_ids),
+    }
+    schedule_session.candidates = {**schedule_session.candidates, "previews": previews}
+
+
+def _remove_candidate_preview(schedule_session: ScheduleSession, candidate_id: str) -> None:
+    previews = _candidate_previews(schedule_session)
+    previews.pop(candidate_id, None)
+    payload = {**schedule_session.candidates}
+    if previews:
+        payload["previews"] = previews
+    else:
+        payload.pop("previews", None)
+    schedule_session.candidates = payload
 
 
 def _empty_place_pool() -> dict:
@@ -273,10 +335,202 @@ def _required_places_for_session(session: Session, session_id: UUID) -> list[Req
     ]
 
 
+def _applied_required_place_ids(schedule_session: ScheduleSession) -> list[str]:
+    """마지막으로 후보 생성에 반영된 필수 장소 ID 스냅샷."""
+    raw = schedule_session.conditions.get("applied_required_place_ids", [])
+    if not isinstance(raw, list):
+        return []
+    return sorted(str(place_id) for place_id in raw)
+
+
+def _candidate_exclusions(schedule_session: ScheduleSession, candidate_id: str) -> set[str]:
+    feedback = schedule_session.conditions.get("candidate_exclusions", {})
+    return set(feedback.get(candidate_id, [])) if isinstance(feedback, dict) else set()
+
+
+def _set_candidate_exclusions(
+    schedule_session: ScheduleSession, candidate_id: str, place_ids: set[str]
+) -> None:
+    feedback = dict(schedule_session.conditions.get("candidate_exclusions", {}))
+    feedback[candidate_id] = sorted(place_ids)
+    schedule_session.conditions = {**schedule_session.conditions, "candidate_exclusions": feedback}
+
+
+def _precovered_liked_tags(
+    place_pool: SchedulePlacePool, required_place_ids: set[str]
+) -> tuple[str, ...]:
+    """필수로 고른 좋아요 검색 결과가 이미 충족한 고유 태그를 계산한다."""
+    tags: set[str] = set()
+    for raw in place_pool.places.get("places", []):
+        place = _place_with_id(raw)
+        if place["place_id"] in required_place_ids:
+            tags.update(place.get("matched_tags", []))
+            if place.get("matched_tag"):
+                tags.add(place["matched_tag"])
+    return tuple(sorted(tags))
+
+
+def _candidate_pool_without_exclusions(
+    place_pool: SchedulePlacePool, excluded_place_ids: set[str], required_place_ids: set[str]
+) -> list[dict]:
+    """후보별로 싫다고 한 장소만 빼고, 필수 장소는 어떤 경우에도 남긴다."""
+    return [
+        _place_with_id(raw)
+        for raw in place_pool.places.get("places", [])
+        if _place_with_id(raw)["place_id"] not in excluded_place_ids
+        or _place_with_id(raw)["place_id"] in required_place_ids
+    ]
+
+
+def _activity_place_ids(candidate: Candidate, place_pool: SchedulePlacePool) -> set[str]:
+    """구버전 후보도 이름으로 후보 풀을 대조해 장소 ID를 복구한다."""
+    place_id_by_name = {
+        str(place.get("title")): _place_with_id(place)["place_id"]
+        for place in place_pool.places.get("places", [])
+        if place.get("title")
+    }
+    return {
+        activity.place_id or place_id_by_name.get(activity.name)
+        for activity in candidate.activities
+        if activity.place_id or place_id_by_name.get(activity.name)
+    }
+
+
+def _effective_candidate_exclusions(
+    schedule_session: ScheduleSession,
+    candidate: Candidate,
+    place_pool: SchedulePlacePool,
+) -> set[str]:
+    """현재 저장 후보에서 실제로 빠져 있는 제외 기록만 유효한 피드백으로 본다.
+
+    예전 구현은 저장 버튼을 누르기 전에도 conditions에 제외 ID부터 기록해서, 원본
+    후보에는 장소가 남아 있는데 조회 시에만 몰래 두 번째 장소가 사라지는 세션을
+    만들었다. 새 흐름은 저장할 때 후보 JSON도 함께 교체하므로, 후보에 여전히 있는
+    ID는 그 구버전의 미완료 기록으로 보고 무시한다.
+    """
+    current_place_ids = _activity_place_ids(candidate, place_pool)
+    return _candidate_exclusions(schedule_session, candidate.candidate_id) - current_place_ids
+
+
+def _candidate_without_places(candidate: Candidate, excluded_place_ids: set[str]) -> Candidate:
+    """선택한 장소를 제거하고 화면·지도용 순번과 오래된 경로를 초기화한다."""
+    remaining = [
+        activity.model_copy(deep=True)
+        for activity in candidate.activities
+        if activity.place_id not in excluded_place_ids
+    ]
+    for order, activity in enumerate(remaining, start=1):
+        activity.order = order
+    return candidate.model_copy(update={"activities": remaining, "routes": []}, deep=True)
+
+
+def _apply_selected_options(candidate: Candidate, selected_options: list[SelectedOption]) -> None:
+    selections = {option.from_order: option.option_id for option in selected_options}
+    for route in candidate.routes:
+        selected = selections.get(route.from_order)
+        if selected is None:
+            continue
+        if selected not in {option.option_id for option in route.options}:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "선택할 수 없는 교통편입니다."
+            )
+        route.selected_option_id = selected
+
+
 def _ensure_draft(schedule_session: ScheduleSession) -> None:
     # 확정된 일정도 목록에서 다시 열어 필수 장소·후보를 조정할 수 있다. 재확정하면
     # 기존 공유 링크는 유지되고, 링크가 가리키는 확정 후보만 최신 내용으로 바뀐다.
     return None
+
+
+async def _generate_candidate_replacement(
+    session: Session,
+    schedule_session: ScheduleSession,
+    current_user: User,
+    candidate_id: str,
+    excluded_place_ids: set[str],
+    replacement_count: int = 1,
+) -> Candidate:
+    """현재 후보의 남은 장소는 고정하고, 제외된 자리에 새 장소를 채운다.
+
+    이 함수는 후보 값을 계산할 뿐 DB의 본 후보를 바꾸지 않는다. 기존 즉시 저장
+    API와 새 미리보기 API가 저장 시점만 다르게 같은 생성 규칙을 쓰도록 분리했다.
+    """
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == schedule_session.id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "저장된 장소 후보가 없어 다시 만들 수 없습니다."
+        )
+
+    required_ids = {
+        place.place_id for place in _required_places_for_session(session, schedule_session.id)
+    }
+    available_places = _candidate_pool_without_exclusions(
+        place_pool, excluded_place_ids, required_ids
+    )
+    fixed_place_ids = required_ids | (
+        _activity_place_ids(current_candidate, place_pool) - excluded_place_ids
+    )
+    if schedule_session.normalized_conditions:
+        conditions = NormalizedConditions.model_validate(schedule_session.normalized_conditions)
+    else:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "저장된 일정 조건이 없어 다시 만들 수 없습니다."
+        )
+
+    credential = _get_user_credential(session, current_user.id)
+    api_key = decrypt_key(credential.encrypted_key)
+    perspective_index = ord(candidate_id[:1]) - ord("A")
+    if not 0 <= perspective_index < len(PERSPECTIVES):
+        raise HTTPException(status.HTTP_409_CONFLICT, "이 후보의 생성 관점을 찾을 수 없습니다.")
+
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    try:
+        draft = await loop.run_in_executor(
+            None,
+            generate_single_candidate,
+            credential.provider,
+            api_key,
+            conditions,
+            available_places,
+            PERSPECTIVES[perspective_index][0],
+            tuple(sorted(fixed_place_ids)),
+            _precovered_liked_tags(place_pool, fixed_place_ids),
+            replacement_count,
+        )
+        result = await loop.run_in_executor(
+            None,
+            synthesize_and_validate,
+            credential.provider,
+            api_key,
+            str(schedule_session.id),
+            conditions,
+            [draft],
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    if isinstance(result, InfeasibleResponse) or not result.candidates:
+        reason = (
+            result.reason
+            if isinstance(result, InfeasibleResponse)
+            else "대체 장소를 찾지 못했습니다."
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, reason)
+
+    updated = result.candidates[0].model_copy(update={"candidate_id": candidate_id})
+    new_place_ids = _activity_place_ids(updated, place_pool) - fixed_place_ids
+    if len(new_place_ids) != replacement_count:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"기존 장소를 유지하면서 대체 장소 {replacement_count}곳을 정확히 찾지 못했습니다.",
+        )
+    return candidate_with_source_categories(session, schedule_session, updated)
 
 
 def _automatic_confirmed_titles(items: list[ScheduleSession]) -> dict[UUID, str]:
@@ -356,6 +610,7 @@ async def create_schedule(
         candidates=result.candidates,
         place_pool=place_pool,
         required_places=[],
+        applied_required_place_ids=[],
     )
 
 
@@ -408,10 +663,12 @@ def get_schedule(
     return ScheduleResponse(
         session_id=str(schedule_session.id),
         candidates=candidates,
+        status=schedule_session.status,
         place_pool=_place_pool_for_response(place_pool.search_groups)
         if place_pool
         else _empty_place_pool(),
         required_places=_required_places_for_session(session, schedule_session.id),
+        applied_required_place_ids=_applied_required_place_ids(schedule_session),
         share_slug=share_link.slug if share_link else None,
     )
 
@@ -452,6 +709,32 @@ def list_confirmed_schedules(
             )
         )
     return result
+
+
+@router.get("/draft-schedules", response_model=list[DraftScheduleSummary])
+def list_draft_schedules(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """로그인 사용자가 확정하기 전까지 저장해 둔 일정 세션 목록.
+
+    후보/장소 풀 자체는 GET /schedules/{id}에서 가져온다. 이 목록은 새로고침 또는
+    토큰 재로그인 뒤 가장 최근 초안을 다시 연결하기 위한 진입점이다.
+    """
+    schedules = session.exec(
+        select(ScheduleSession)
+        .where(ScheduleSession.user_id == current_user.id, ScheduleSession.status == "draft")
+        .order_by(ScheduleSession.created_at.desc())
+    ).all()
+    return [
+        DraftScheduleSummary(
+            session_id=schedule.id,
+            region=str(schedule.conditions.get("region", "지역 미정")),
+            candidate_count=len(schedule.candidates.get("candidates", [])),
+            created_at=schedule.created_at,
+        )
+        for schedule in schedules
+    ]
 
 
 @router.patch("/schedules/{session_id}/title", response_model=ConfirmedScheduleSummary)
@@ -556,6 +839,15 @@ def add_required_place(
             map_url=selected.map_url,
         )
     )
+    # 이전에 특정 후보에서 뺐던 장소라도 사용자가 필수로 고르면 필수 제약이
+    # 우선한다. 후보별 제외 기록을 지워 모든 후보에 다시 포함될 수 있게 한다.
+    feedback = dict(schedule_session.conditions.get("candidate_exclusions", {}))
+    for candidate_id, place_ids in feedback.items():
+        feedback[candidate_id] = [
+            place_id for place_id in place_ids if place_id != selected.place_id
+        ]
+    schedule_session.conditions = {**schedule_session.conditions, "candidate_exclusions": feedback}
+    session.add(schedule_session)
     session.commit()
     return selected
 
@@ -584,6 +876,222 @@ def remove_required_place(
     session.commit()
 
 
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/preview",
+    response_model=CandidatePreviewResponse,
+)
+async def preview_candidate_replacement(
+    session_id: UUID,
+    candidate_id: str,
+    body: CandidatePreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """장소 제외 결과를 만들되, 저장 후보와 제외 목록은 아직 바꾸지 않는다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == session_id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "저장된 장소 후보가 없어 다시 만들 수 없습니다."
+        )
+
+    requested_exclusions = set(body.excluded_place_ids)
+    if not requested_exclusions:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "뺄 장소를 먼저 선택해주세요.")
+    required_ids = {place.place_id for place in _required_places_for_session(session, session_id)}
+    if requested_exclusions & required_ids:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "필수 장소는 먼저 필수 목록에서 해제한 뒤 뺄 수 있습니다."
+        )
+    existing_exclusions = _effective_candidate_exclusions(
+        schedule_session, current_candidate, place_pool
+    )
+    visible_place_ids = _activity_place_ids(current_candidate, place_pool)
+    if not requested_exclusions.issubset(visible_place_ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "이 후보에 포함되지 않은 장소가 있습니다.")
+
+    combined_exclusions = existing_exclusions | requested_exclusions
+    updated = await _generate_candidate_replacement(
+        session,
+        schedule_session,
+        current_user,
+        candidate_id,
+        combined_exclusions,
+        len(requested_exclusions),
+    )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    enriched = await enrich_routes(updated, time_range)
+
+    preview_id = str(uuid4())
+    _set_candidate_preview(
+        schedule_session,
+        candidate_id,
+        preview_id,
+        enriched,
+        combined_exclusions,
+    )
+    session.add(schedule_session)
+    session.commit()
+    return CandidatePreviewResponse(preview_id=preview_id, candidate=enriched)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/preview/{preview_id}/save",
+    response_model=Candidate,
+)
+def save_candidate_preview(
+    session_id: UUID,
+    candidate_id: str,
+    preview_id: str,
+    body: CandidatePreviewSaveRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """서버에 보관한 미리보기를 사용자가 저장할 때만 실제 후보로 교체한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    preview = _candidate_previews(schedule_session).get(candidate_id)
+    if not preview or preview.get("preview_id") != preview_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "저장할 후보 미리보기를 찾을 수 없습니다.")
+
+    updated = Candidate.model_validate(preview["candidate"])
+    selections = {option.from_order: option.option_id for option in body.selected_options}
+    for route in updated.routes:
+        selected = selections.get(route.from_order)
+        if selected is None:
+            continue
+        if selected not in {option.option_id for option in route.options}:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "선택할 수 없는 교통편입니다."
+            )
+        route.selected_option_id = selected
+
+    _replace_candidate(schedule_session, updated)
+    _set_candidate_exclusions(
+        schedule_session,
+        candidate_id,
+        set(preview.get("excluded_place_ids", [])),
+    )
+    _remove_candidate_preview(schedule_session, candidate_id)
+    if schedule_session.status == "confirmed":
+        schedule_session.status = "draft"
+        schedule_session.confirmed_candidate_id = None
+    session.add(schedule_session)
+    session.commit()
+    return candidate_with_source_categories(session, schedule_session, updated)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/removal/preview",
+    response_model=Candidate,
+)
+async def preview_candidate_removal(
+    session_id: UUID,
+    candidate_id: str,
+    body: CandidatePreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """장소를 뺀 직후 남은 순서와 교통편을 계산하되 본 후보는 저장하지 않는다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == session_id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "저장된 장소 후보를 찾을 수 없습니다.")
+
+    requested_exclusions = set(body.excluded_place_ids)
+    if not requested_exclusions:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "뺄 장소를 먼저 선택해주세요.")
+    required_ids = {place.place_id for place in _required_places_for_session(session, session_id)}
+    if requested_exclusions & required_ids:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "필수 장소는 먼저 필수 목록에서 해제한 뒤 뺄 수 있습니다."
+        )
+    visible_place_ids = _activity_place_ids(current_candidate, place_pool)
+    if not requested_exclusions.issubset(visible_place_ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "이 후보에 포함되지 않은 장소가 있습니다.")
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    updated = _candidate_without_places(visible_candidate, requested_exclusions)
+    if not updated.activities:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "일정의 모든 장소를 뺄 수는 없습니다. 한 곳은 남겨주세요."
+        )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    return await enrich_routes(updated, time_range)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/removal/save",
+    response_model=Candidate,
+)
+async def save_candidate_removal(
+    session_id: UUID,
+    candidate_id: str,
+    body: CandidateRemovalSaveRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """대체 장소 없이 선택한 장소만 빼고, 줄어든 일정과 새 동선을 저장한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    place_pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == session_id)
+    ).first()
+    if place_pool is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "저장된 장소 후보를 찾을 수 없습니다.")
+
+    requested_exclusions = set(body.excluded_place_ids)
+    if not requested_exclusions:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "뺄 장소를 먼저 선택해주세요.")
+    required_ids = {place.place_id for place in _required_places_for_session(session, session_id)}
+    if requested_exclusions & required_ids:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "필수 장소는 먼저 필수 목록에서 해제한 뒤 뺄 수 있습니다."
+        )
+    existing_exclusions = _effective_candidate_exclusions(
+        schedule_session, current_candidate, place_pool
+    )
+    visible_place_ids = _activity_place_ids(current_candidate, place_pool)
+    if not requested_exclusions.issubset(visible_place_ids):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "이 후보에 포함되지 않은 장소가 있습니다.")
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    updated = _candidate_without_places(visible_candidate, requested_exclusions)
+    if not updated.activities:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "일정의 모든 장소를 뺄 수는 없습니다. 한 곳은 남겨주세요."
+        )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    enriched = await enrich_routes(updated, time_range)
+    _apply_selected_options(enriched, body.selected_options)
+
+    _replace_candidate(schedule_session, enriched)
+    _set_candidate_exclusions(
+        schedule_session,
+        candidate_id,
+        existing_exclusions | requested_exclusions,
+    )
+    _remove_candidate_preview(schedule_session, candidate_id)
+    if schedule_session.status == "confirmed":
+        schedule_session.status = "draft"
+        schedule_session.confirmed_candidate_id = None
+    session.add(schedule_session)
+    session.commit()
+    return candidate_with_source_categories(session, schedule_session, enriched)
+
+
 @router.post("/schedules/{session_id}/regenerate", response_model=ScheduleResponse)
 async def regenerate_schedule(
     session_id: UUID,
@@ -607,11 +1115,8 @@ async def regenerate_schedule(
 
     required_places = _required_places_for_session(session, session_id)
     required_place_ids = tuple(place.place_id for place in required_places)
+    required_place_ids_set = set(required_place_ids)
     place_candidates = [_place_with_id(place) for place in place_pool.places.get("places", [])]
-    if not required_place_ids:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "필수로 추가한 장소를 먼저 선택해주세요."
-        )
     if any(_find_place_in_pool(place_pool, place_id) is None for place_id in required_place_ids):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "필수 장소가 저장된 후보 풀에서 사라졌습니다."
@@ -638,7 +1143,8 @@ async def regenerate_schedule(
         )
         schedule_session.normalized_conditions = conditions.model_dump(mode="json")
 
-    result = await regenerate_schedule_candidates(
+    precovered_tags = _precovered_liked_tags(place_pool, required_place_ids_set)
+    args = (
         credential.provider,
         api_key,
         str(session_id),
@@ -646,11 +1152,87 @@ async def regenerate_schedule(
         place_candidates,
         required_place_ids,
     )
+    stored_candidates = {
+        candidate["candidate_id"]: Candidate.model_validate(candidate)
+        for candidate in schedule_session.candidates.get("candidates", [])
+    }
+    candidate_ids = list(stored_candidates)
+    effective_exclusions = {
+        candidate_id: _effective_candidate_exclusions(schedule_session, candidate, place_pool)
+        for candidate_id, candidate in stored_candidates.items()
+    }
+    has_candidate_specific_exclusions = any(effective_exclusions.values())
+    if has_candidate_specific_exclusions:
+        # 후보마다 "빼기" 목록이 다르므로, 전체 재생성이라도 후보별 후보 풀을
+        # 따로 만들어 독립적으로 대체한다. A에서 뺀 장소가 B의 선택지까지
+        # 사라지는 부작용을 막는다.
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        replacements: list[Candidate] = []
+        for candidate_id in candidate_ids:
+            perspective_index = ord(candidate_id[:1]) - ord("A")
+            if not 0 <= perspective_index < len(PERSPECTIVES):
+                continue
+            candidate_places = _candidate_pool_without_exclusions(
+                place_pool,
+                effective_exclusions[candidate_id],
+                required_place_ids_set,
+            )
+            try:
+                draft = await loop.run_in_executor(
+                    None,
+                    generate_single_candidate,
+                    credential.provider,
+                    api_key,
+                    conditions,
+                    candidate_places,
+                    PERSPECTIVES[perspective_index][0],
+                    required_place_ids,
+                    precovered_tags,
+                )
+                one_result = await loop.run_in_executor(
+                    None,
+                    synthesize_and_validate,
+                    credential.provider,
+                    api_key,
+                    str(session_id),
+                    conditions,
+                    [draft],
+                )
+            except ValueError as exc:
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
+                    content={"detail": "대체 후보를 만들 수 없습니다.", "reason": str(exc)},
+                )
+            if isinstance(one_result, InfeasibleResponse) or not one_result.candidates:
+                return JSONResponse(
+                    status_code=status.HTTP_409_CONFLICT,
+                    content=(
+                        one_result.model_dump()
+                        if isinstance(one_result, InfeasibleResponse)
+                        else {"detail": "대체 후보를 만들 수 없습니다."}
+                    ),
+                )
+            replacements.append(
+                one_result.candidates[0].model_copy(update={"candidate_id": candidate_id})
+            )
+        result = ScheduleResponse(session_id=str(session_id), candidates=replacements)
+    else:
+        result = await (
+            regenerate_schedule_candidates(*args, precovered_tags)
+            if precovered_tags
+            else regenerate_schedule_candidates(*args)
+        )
     if isinstance(result, InfeasibleResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=result.model_dump())
 
     schedule_session.candidates = {
         "candidates": [candidate.model_dump(mode="json") for candidate in result.candidates]
+    }
+    schedule_session.conditions = {
+        **schedule_session.conditions,
+        "applied_required_place_ids": sorted(required_place_ids),
     }
     # 확정된 일정에서 다시 생성했다면 새 후보를 확인한 뒤 다시 확정하게 한다.
     # 이때 기존 공유 링크는 지우지 않고, 재확정 시 같은 링크를 이어서 사용한다.
@@ -659,11 +1241,16 @@ async def regenerate_schedule(
         schedule_session.confirmed_candidate_id = None
     session.add(schedule_session)
     session.commit()
+    response_candidates = [
+        candidate_with_source_categories(session, schedule_session, candidate)
+        for candidate in result.candidates
+    ]
     return ScheduleResponse(
         session_id=str(session_id),
-        candidates=result.candidates,
+        candidates=response_candidates,
         place_pool=_place_pool_for_response(place_pool.search_groups),
         required_places=required_places,
+        applied_required_place_ids=sorted(required_place_ids),
     )
 
 

@@ -204,6 +204,10 @@ function buildTimeRange(startTime: string, endTime: string): [string, string] {
   return [`${dateStr}T${startTime}:00`, `${dateStr}T${endTime}:00`]
 }
 
+// Pinia 상태는 탭 새로고침 때 사라진다. 실제 초안은 서버의 ScheduleSession에 이미
+// 저장돼 있으므로, 마지막으로 작업하던 세션 ID만 브라우저에 기억해 다시 연결한다.
+const ACTIVE_DRAFT_SESSION_KEY = 'active_draft_schedule_session_id'
+
 export const useScheduleStore = defineStore('schedule', {
   state: () => ({
     conditions: null as Conditions | null,
@@ -213,16 +217,27 @@ export const useScheduleStore = defineStore('schedule', {
     // 후보 풀과 별개로 서버에 영속되는 하드 제약. 다시 일정 생성하기 전까지는
     // 현재 카드가 그대로 남지만, 다음 재생성의 모든 일정안에는 이 장소가 들어가야 한다.
     requiredPlaces: [] as RequiredPlace[],
+    // 마지막 후보 생성에 실제 반영된 필수 장소 ID. requiredPlaces와 비교하면
+    // 마지막 필수 장소를 해제해 배열이 비어도 재생성이 필요한 상태를 알 수 있다.
+    appliedRequiredPlaceIds: [] as string[],
     selectedCandidateId: null as string | null,
     // 409(조건 불만족) 사유든 그 외 네트워크/서버 오류든, 후보를 못 만든 이유를
     // CandidatesView가 그대로 보여준다.
     scheduleError: null as string | null,
     shareSlug: '',
+    scheduleStatus: 'draft' as 'draft' | 'confirmed',
+    // 확정된 후보에서 사용자가 교통편을 바꾼 경우도 재확정이 필요한 변경이다.
+    routeSelectionDirtyCandidateIds: [] as string[],
     sharedCandidate: null as Candidate | null,
   }),
   getters: {
     selectedCandidate(state): Candidate | undefined {
       return state.candidates.find((c) => c.id === state.selectedCandidateId)
+    },
+    requiredPlacesDirty(state): boolean {
+      const current = state.requiredPlaces.map((place) => place.placeId).sort()
+      const applied = [...state.appliedRequiredPlaceIds].sort()
+      return current.length !== applied.length || current.some((id, index) => id !== applied[index])
     },
   },
   actions: {
@@ -234,6 +249,10 @@ export const useScheduleStore = defineStore('schedule', {
       this.candidates = []
       this.placePool = null
       this.requiredPlaces = []
+      this.appliedRequiredPlaceIds = []
+      this.scheduleStatus = 'draft'
+      this.routeSelectionDirtyCandidateIds = []
+      localStorage.removeItem(ACTIVE_DRAFT_SESSION_KEY)
 
       const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
       try {
@@ -247,9 +266,12 @@ export const useScheduleStore = defineStore('schedule', {
           budget_per_person: conditions.budgetPerPerson,
         })
         this.sessionId = data.session_id
+        localStorage.setItem(ACTIVE_DRAFT_SESSION_KEY, data.session_id)
         this.candidates = data.candidates.map(mapApiCandidate)
         this.placePool = mapApiPlacePool(data.place_pool)
         this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
+        this.appliedRequiredPlaceIds = data.applied_required_place_ids ?? []
+        this.scheduleStatus = data.status ?? 'draft'
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError =
@@ -272,6 +294,9 @@ export const useScheduleStore = defineStore('schedule', {
       const updated = mapApiCandidate(data)
       const index = this.candidates.findIndex((c) => c.id === candidateId)
       if (index !== -1) this.candidates[index] = updated
+      this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
+        (id) => id !== candidateId,
+      )
     },
     // 사용자가 구간별로 어떤 교통편을 쓸지 고르는 건 서버에 저장할 필요가 없다 —
     // POST .../confirm은 candidate_id만 받고, 확정된 뒤엔 이 선택을 다시 바꿀 방법도
@@ -279,7 +304,12 @@ export const useScheduleStore = defineStore('schedule', {
     selectRouteOption(candidateId: string, fromOrder: number, optionId: string) {
       const candidate = this.candidates.find((c) => c.id === candidateId)
       const segment = candidate?.routes.find((r) => r.fromOrder === fromOrder)
-      if (segment) segment.selectedOptionId = optionId
+      if (segment && segment.selectedOptionId !== optionId) {
+        segment.selectedOptionId = optionId
+        if (!this.routeSelectionDirtyCandidateIds.includes(candidateId)) {
+          this.routeSelectionDirtyCandidateIds.push(candidateId)
+        }
+      }
     },
     async confirmSchedule(candidateId: string) {
       if (!this.sessionId) return
@@ -293,19 +323,41 @@ export const useScheduleStore = defineStore('schedule', {
         selected_options: selectedOptions,
       })
       this.shareSlug = data.share_slug
+      this.scheduleStatus = 'confirmed'
+      this.routeSelectionDirtyCandidateIds = []
+      localStorage.removeItem(ACTIVE_DRAFT_SESSION_KEY)
     },
-    // 새로고침·네트워크 문제로 confirm 응답(share_slug)을 놓쳤을 때, 세션이 아직
-    // 메모리에 남아있으면(store.sessionId) 세션을 다시 조회해서 slug를 복구한다
-    // (브라우저 하드 새로고침까지 막는 완전한 해결책은 아님 — sessionId 자체가
-    // 날아가면 이 방법도 못 씀. ponytail: 완전한 복구는 세션 id를 localStorage/URL에
-    // 영속화해야 하는데 이번 픽스 범위 밖).
     async fetchSchedule(sessionId: string) {
       const { data } = await api.get(`/schedules/${sessionId}`)
       this.sessionId = data.session_id
+      if (!data.share_slug) localStorage.setItem(ACTIVE_DRAFT_SESSION_KEY, data.session_id)
       this.candidates = data.candidates.map(mapApiCandidate)
       this.placePool = mapApiPlacePool(data.place_pool)
       this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
+      this.appliedRequiredPlaceIds = data.applied_required_place_ids ?? []
       this.shareSlug = data.share_slug ?? ''
+      this.scheduleStatus = data.status ?? (data.share_slug ? 'confirmed' : 'draft')
+      this.routeSelectionDirtyCandidateIds = []
+    },
+    async restoreDraftSchedule(): Promise<boolean> {
+      const rememberedSessionId = localStorage.getItem(ACTIVE_DRAFT_SESSION_KEY)
+      try {
+        if (rememberedSessionId) {
+          await this.fetchSchedule(rememberedSessionId)
+          return !this.shareSlug
+        }
+
+        const { data } = await api.get('/draft-schedules')
+        if (!data.length) return false
+        await this.fetchSchedule(data[0].session_id)
+        return true
+      } catch (err: any) {
+        // 삭제됐거나 다른 계정의 오래된 브라우저 기록이면 다음 방문에서 재시도하지 않는다.
+        if (err.response?.status === 403 || err.response?.status === 404) {
+          localStorage.removeItem(ACTIVE_DRAFT_SESSION_KEY)
+        }
+        return false
+      }
     },
     async fetchConfirmedSchedules(): Promise<ConfirmedScheduleSummary[]> {
       const { data } = await api.get('/confirmed-schedules')
@@ -355,6 +407,9 @@ export const useScheduleStore = defineStore('schedule', {
         this.candidates = data.candidates.map(mapApiCandidate)
         this.placePool = mapApiPlacePool(data.place_pool)
         this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
+        this.appliedRequiredPlaceIds = data.applied_required_place_ids ?? []
+        this.scheduleStatus = data.status ?? 'draft'
+        this.routeSelectionDirtyCandidateIds = []
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError = err.response.data?.reason ?? '필수 장소를 포함한 일정을 만들지 못했어요.'
@@ -365,6 +420,69 @@ export const useScheduleStore = defineStore('schedule', {
         }
         throw err
       }
+    },
+    async previewCandidateReplacement(
+      candidateId: string,
+      excludedPlaceIds: string[],
+    ): Promise<{ previewId: string; candidate: Candidate }> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/preview`,
+        { excluded_place_ids: excludedPlaceIds },
+      )
+      return {
+        previewId: data.preview_id,
+        candidate: mapApiCandidate(data.candidate),
+      }
+    },
+    async saveCandidatePreview(
+      candidateId: string,
+      previewId: string,
+      selectedOptions: { from_order: number; option_id: string }[],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/preview/${previewId}/save`,
+        { selected_options: selectedOptions },
+      )
+      const saved = mapApiCandidate(data)
+      const index = this.candidates.findIndex((candidate) => candidate.id === candidateId)
+      if (index !== -1) this.candidates[index] = saved
+      this.scheduleStatus = 'draft'
+      this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
+        (id) => id !== candidateId,
+      )
+      return saved
+    },
+    async previewCandidateRemoval(
+      candidateId: string,
+      excludedPlaceIds: string[],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/removal/preview`,
+        { excluded_place_ids: excludedPlaceIds },
+      )
+      return mapApiCandidate(data)
+    },
+    async saveCandidateRemoval(
+      candidateId: string,
+      excludedPlaceIds: string[],
+      selectedOptions: { from_order: number; option_id: string }[] = [],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/removal/save`,
+        { excluded_place_ids: excludedPlaceIds, selected_options: selectedOptions },
+      )
+      const saved = mapApiCandidate(data)
+      const index = this.candidates.findIndex((candidate) => candidate.id === candidateId)
+      if (index !== -1) this.candidates[index] = saved
+      this.scheduleStatus = 'draft'
+      this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
+        (id) => id !== candidateId,
+      )
+      return saved
     },
     async fetchSharedSchedule(slug: string) {
       // 이전 slug 조회 결과가 남아있으면, 새 slug가 실패했을 때 화면이 옛 데이터를

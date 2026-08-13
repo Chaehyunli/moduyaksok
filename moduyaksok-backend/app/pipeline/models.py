@@ -74,7 +74,8 @@ MODELS: dict[str, dict[ModelTier, str]] = {
         # solar-mini는 Step1 골든셋에서 탈락(few-shot 베끼기·태그 중복, 2026-08-07)
         # 확인된 모델이라 LOW에서 뺐다. Upstage는 solar-pro보다 위 단계가 없어
         # MID/HIGH도 그대로 solar-pro — 상위 모델이 별도로 나오면 분리.
-        ModelTier.LOW: "solar-pro2",
+        # 2026-09-11 할인가 종료 뒤 solar-pro2로 교체 예정.
+        ModelTier.LOW: "solar-pro4",
         ModelTier.MID: "solar-pro4",
         ModelTier.HIGH: "solar-pro4",
     },

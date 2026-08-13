@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule'
 import type { RouteOption, RouteSegment } from '../stores/schedule'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
@@ -10,6 +10,7 @@ import { activityImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
 
 const route = useRoute()
+const router = useRouter()
 const store = useScheduleStore()
 const loading = ref(true)
 const notFound = ref(false)
@@ -65,6 +66,12 @@ async function copyShareLink() {
   <div class="notebook-bg min-h-dvh px-6 py-10">
     <div class="mx-auto max-w-lg">
       <template v-if="candidate">
+        <button
+          class="mb-6 font-hand text-base text-ink/60 hover:text-ink"
+          @click="router.push('/confirmed-schedules')"
+        >
+          ← 목록으로
+        </button>
         <h1 class="mb-1 font-hand text-2xl text-ink">{{ candidate.title }}</h1>
         <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>
         <div class="mb-5 flex justify-end">

@@ -107,9 +107,9 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
     나머지를 버리지 않는다. 자차는 실시간 빠른길(trafast) 1개만 담는다(대중교통만큼
     대안 간 차이가 크지 않다고 판단). 사용자가 원치 않는 교통편이 자동 확정되면
     UX가 깨진다는 판단(2026-08-07 논의).
-    `recommended_option_id`(최단 소요시간)는 프런트 기본 선택값이고,
-    `selected_option_id`가 사용자가 실제로 확정한 값이다 — 초기값은
-    recommended와 같게 채운다.
+    `recommended_option_id`는 최단 소요시간을 보존하고, `selected_option_id`는
+    사용자가 실제로 볼·확정할 값이다. 상세 최초 진입은 자차를 기본으로 보여주므로
+    자차 옵션이 있으면 selected는 자차, 없으면 recommended로 채운다.
 
     입력·반환 타입이 Candidate인 이유: 사용자가 실제로 고르고 DB에 저장되는 건
     Step3(synthesize_and_validate)가 만든 Candidate지 Step2의 CandidateDraft가
@@ -119,7 +119,7 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
     발견한 경고를 이어붙인다 — 지우지 않는다.
 
     Step2가 배정한 start_time/end_time은 좌표 기반 추정 버퍼를 쓴 값이라 실제와
-    다를 수 있다 — 이 함수가 구간마다 recommended(=최초 selected) 옵션의 실제
+    다를 수 있다 — 이 함수가 구간마다 최초 selected 옵션의 실제
     소요시간과 Step2 추정치를 비교해 reconcile_schedule()로 이후 활동들의 시간을
     보정한다. 이후 사용자가 selected_option_id를 다른 옵션으로 바꾸면 같은
     reconcile_schedule()을 그 시점에 다시 호출해 재조정하면 된다(프런트 연동 시).
@@ -143,16 +143,22 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
             continue
 
         recommended = min(options, key=lambda o: o.duration_minutes)
+        # 상세 화면의 최초 기본값은 자차다. 추천값은 여전히 객관적인 최단 옵션으로
+        # 보존해 두고, 자차 경로를 조회한 구간만 selected를 자차로 시작한다.
+        # 자차 API가 실패하거나 경로가 없는 구간은 최단 추천 옵션으로 폴백한다.
+        initially_selected = next(
+            (option for option in options if option.mode == "car"), recommended
+        )
         # from_order/to_order는 1-based — 최종 Activity.order(Step3)가 1부터 매겨질
-        # 순서 그대로 사용. selected_option_id 초기값은 recommended와 동일 —
-        # 사용자가 나중에 바꾸면 그 시점에 이 필드만 갱신한다(프런트 연동 시).
+        # 순서 그대로 사용. selected_option_id는 자차 우선이며, 사용자가 나중에
+        # 바꾸면 그 시점에 이 필드만 갱신한다.
         routes.append(
             RouteSegment(
                 from_order=i + 1,
                 to_order=i + 2,
                 options=options,
                 recommended_option_id=recommended.option_id,
-                selected_option_id=recommended.option_id,
+                selected_option_id=initially_selected.option_id,
             )
         )
 
@@ -164,7 +170,7 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
             // 60
         )
         activities = reconcile_schedule(
-            activities, i, estimated_buffer, recommended.duration_minutes
+            activities, i, estimated_buffer, initially_selected.duration_minutes
         )
 
     if activities:

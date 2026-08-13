@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
@@ -19,6 +19,7 @@ const changingRequiredPlaceId = ref<string | null>(null)
 const regenerating = ref(false)
 const requiredPlaceError = ref('')
 const scheduleRegion = computed(() => store.conditions?.region ?? '')
+const restoringDraft = ref(true)
 // 코스 카드의 장소가 어느 liked 라벨에서 나왔는지 색으로 매칭하는 데 쓴다 —
 // pill 색과 같은 순서(index)를 공유해야 두 화면에서 색이 일치한다.
 const likedLabels = computed(() => store.placePool?.groups.liked.map((g) => g.label) ?? [])
@@ -77,6 +78,13 @@ async function regenerateSchedule() {
     regenerating.value = false
   }
 }
+
+onMounted(async () => {
+  if (!store.sessionId || store.candidates.length === 0) {
+    await store.restoreDraftSchedule()
+  }
+  restoringDraft.value = false
+})
 </script>
 
 <template>
@@ -93,7 +101,9 @@ async function regenerateSchedule() {
         }}
       </h1>
 
-      <DoodleAlert v-if="store.candidates.length === 0" title="이 조건으로는 일정을 만들 수 없어요">
+      <p v-if="restoringDraft" class="font-hand text-base text-ink/60">저장된 일정을 불러오는 중...</p>
+
+      <DoodleAlert v-else-if="store.candidates.length === 0" title="이 조건으로는 일정을 만들 수 없어요">
         {{ store.scheduleError ?? '예산이 너무 적어서 조건을 만족하는 장소가 없어요. 예산을 늘리거나 지역을 넓혀보세요.' }}
         <template #actions>
           <DoodleButton size="sm" @click="router.push('/new')">조건 완화하기</DoodleButton>
@@ -118,7 +128,10 @@ async function regenerateSchedule() {
           </template>
 
           <div class="space-y-5">
-            <section v-if="store.requiredPlaces.length" class="space-y-2">
+            <section
+              v-if="store.requiredPlaces.length || store.requiredPlacesDirty"
+              class="space-y-2"
+            >
               <h2 class="font-hand text-base text-ink">일정에 꼭 넣을 장소</h2>
               <div class="flex flex-wrap items-center gap-2">
                 <span
@@ -130,19 +143,29 @@ async function regenerateSchedule() {
                   <button
                     type="button"
                     class="ml-1 text-base leading-none text-red hover:text-ink disabled:opacity-40"
-                    :disabled="changingRequiredPlaceId === place.placeId"
+                    :disabled="regenerating || changingRequiredPlaceId === place.placeId"
                     :aria-label="`${place.name} 필수 장소에서 삭제`"
                     @click="removeRequiredPlace(place.placeId)"
                   >
                     ×
                   </button>
                 </span>
+                <span
+                  v-if="store.requiredPlaces.length === 0"
+                  class="font-hand text-sm text-ink/60"
+                >
+                  필수 장소 없이 다시 만들도록 변경됐어요.
+                </span>
                 <DoodleButton size="sm" :disabled="regenerating" @click="regenerateSchedule">
                   {{ regenerating ? '다시 만드는 중...' : '다시 일정 생성하기' }}
                 </DoodleButton>
               </div>
               <p class="font-hand text-sm text-ink/55">
-                다시 생성하면 위 장소를 모두 포함한 새 후보를 만들어요.
+                {{
+                  store.requiredPlaces.length
+                    ? '다시 생성하면 위 장소를 모두 포함한 새 후보를 만들어요.'
+                    : '다시 생성하면 이전 필수 장소를 고정하지 않은 새 후보를 만들어요.'
+                }}
               </p>
             </section>
 
@@ -182,7 +205,7 @@ async function regenerateSchedule() {
                           size="sm"
                           variant="ghost"
                           class="h-16 w-32 shrink-0 px-2 text-center leading-5"
-                          :disabled="isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
+                          :disabled="regenerating || isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >
                           <template v-if="isRequiredPlace(place)">추가됨</template>
@@ -246,7 +269,7 @@ async function regenerateSchedule() {
                           size="sm"
                           variant="ghost"
                           class="h-16 w-32 shrink-0 px-2 text-center leading-5"
-                          :disabled="isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
+                          :disabled="regenerating || isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >
                           <template v-if="isRequiredPlace(place)">추가됨</template>

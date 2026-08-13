@@ -391,8 +391,9 @@ def _meal_slot_instruction(
         f"카테고리({meal_labels} 중 하나) 표시된 장소를 최소 1곳씩 포함해라(정확히 "
         "그 시각일 필요는 없고 자연스러운 범위면 된다). 식사 장소는 방문 순서에도 "
         "점심부터 저녁 순으로 넣어라. 시간 배정기는 이 순서를 바탕으로 실제 식사 "
-        "시각에 배치한다. 나머지 시간은 자유롭게(카페/액티비티/문화시설 등으로) 채워라."
-        + tag_instruction
+        "시각에 배치한다. 사용자가 식사 장소를 필수로 더 많이 지정한 경우가 아니라면 "
+        f"식사 장소는 최대 {len(windows)}곳만 골라라. 나머지 시간은 "
+        "자유롭게(카페/액티비티/문화시설 등으로) 채워라." + tag_instruction
     )
 
 
@@ -413,6 +414,7 @@ def _build_user_prompt(
     required_non_meal_tags: list[str] | tuple[str, ...] = (),
     required_tag_anchors: tuple[tuple[str, str], ...] = (),
     required_place_anchors: tuple[tuple[str, str], ...] = (),
+    minimum_additional_places: int = 0,
 ) -> str:
     start, end = conditions.time_range
     meal_instruction = _meal_slot_instruction(conditions.time_range, required_meal_tags)
@@ -437,6 +439,13 @@ def _build_user_prompt(
         if required_place_anchors
         else ""
     )
+    replacement_instruction = (
+        "위 고정 장소는 모두 그대로 유지하고, 후보 목록에서 고정 장소와 다른 대체 장소를 "
+        f"정확히 {minimum_additional_places}곳만 더 골라 공백을 채워라. 고정 장소를 바꾸거나 "
+        "대체 장소를 이보다 더 추가하지 마라.\n"
+        if minimum_additional_places
+        else ""
+    )
     return (
         f"목적: {_format_purpose(conditions.purpose)}\n"
         f"인원: {conditions.headcount}명\n"
@@ -445,6 +454,7 @@ def _build_user_prompt(
         + non_meal_instruction
         + anchor_instruction
         + required_place_instruction
+        + replacement_instruction
         + f"지역(place_candidates는 이 지역에서 조회된 것): {conditions.region}\n"
         f"1인 예산: {conditions.budget_per_person}원\n"
         f"좋아하는 것: {_format_tags(conditions.liked_tags)}\n"
@@ -557,6 +567,9 @@ def _temporary_clusters(
         (place, point) for place in place_candidates if (point := _coords(place)) is not None
     ]
     required_ids = frozenset(required_place_ids)
+    places_by_id = {_place_id(place): place for place in place_candidates if _place_id(place)}
+    if required_ids and not required_ids.issubset(places_by_id):
+        return []
     if not located:
         return (
             [_TemporaryCluster(None, tuple(place_candidates), radius_meters)]
@@ -565,29 +578,36 @@ def _temporary_clusters(
             else []
         )
 
-    # 필수 장소를 고른 뒤의 재생성은 기존 클러스터를 우연히 재사용하면 안 된다.
-    # 선택 장소를 중심으로 생활권을 새로 만들고, 모든 필수 장소가 그 안에 들어오는
-    # 경우에만 후보로 남긴다. 좌표가 없는 필수 장소는 동선 품질을 보장할 수 없어
-    # 여기서 유효 후보를 만들지 않는다.
+    # 필수 장소를 고른 뒤에는 각 필수 장소 주변의 일반 후보만 기존 생활권 반경으로
+    # 제한하되, 사용자가 직접 고른 필수 장소 자체는 거리에 상관없이 전부 합친다.
+    # 필수 장소끼리 2.5km보다 멀다는 이유로 계획 자체를 없애면 사용자의 명시적
+    # 선택보다 추천용 동선 필터가 우선되는 문제가 생긴다. 먼 필수 장소의 이동 부담은
+    # Step3/Step4에서 경고와 실제 교통편으로 보여준다.
     if required_ids:
         required_centers = [
             (place, point) for place, point in located if _place_id(place) in required_ids
         ]
-        if {_place_id(place) for place, _point in required_centers} != required_ids:
-            return []
+        if not required_centers:
+            return [_TemporaryCluster(None, tuple(place_candidates), radius_meters)]
         seeds = required_centers
     else:
         seeds = sorted(located, key=lambda item: item[0].get("title", ""))
 
     clusters_by_titles: dict[tuple[str, ...], _TemporaryCluster] = {}
     for _seed, center in seeds:
-        nearby = tuple(
+        nearby_list = [
             place
             for place, point in located
             if haversine_distance_m(center[0], center[1], point[0], point[1]) <= radius_meters
-        )
-        if not required_ids.issubset({_place_id(place) for place in nearby}):
-            continue
+        ]
+        if required_ids:
+            nearby_ids = {_place_id(place) for place in nearby_list}
+            nearby_list.extend(
+                places_by_id[place_id]
+                for place_id in required_place_ids
+                if place_id not in nearby_ids
+            )
+        nearby = tuple(nearby_list)
         titles = tuple(sorted(place.get("title", "") for place in nearby))
         clusters_by_titles.setdefault(titles, _TemporaryCluster(center, nearby, radius_meters))
 
@@ -744,14 +764,29 @@ def _plans_for_cluster(
     cluster: _TemporaryCluster,
     conditions: NormalizedConditions,
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[_CandidatePlan]:
-    meal_tags = _meal_tag_names(conditions)
-    non_meal_tags = _non_meal_tag_names(conditions)
+    precovered = set(precovered_liked_tags)
+    meal_tags = tuple(tag for tag in _meal_tag_names(conditions) if tag not in precovered)
+    non_meal_tags = tuple(tag for tag in _non_meal_tag_names(conditions) if tag not in precovered)
     meal_slots = len(_required_meal_windows(conditions.time_range))
     places = cluster.places
 
     if not set(required_place_ids).issubset({_place_id(place) for place in places}):
         return []
+
+    # 필수 장소가 이미 좋아요 태그를 충족했다면, 같은 태그의 일반 장소를 후보
+    # 입력에서 제거한다. 필수 장소가 같은 태그에서 여러 곳인 경우에는 그 필수들만
+    # 모두 유지한다. 프롬프트 뒤의 검증에만 맡기면 "필수 1 + 같은 태그 2"처럼
+    # 한 태그를 세 번 고르는 초안이 자주 생겨 후보 전체가 드롭된다.
+    required_ids = set(required_place_ids)
+    if precovered:
+        places = tuple(
+            place
+            for place in places
+            if _place_id(place) in required_ids
+            or not (set(_place_matched_tags(place)) & precovered)
+        )
 
     if sum(_is_meal_place(place, meal_tags) for place in places) < meal_slots:
         return []
@@ -765,7 +800,8 @@ def _plans_for_cluster(
         if not _can_assign_distinct_tags(required_meal_tags, places):
             continue
         minimum_non_meal_count = max(
-            0, _minimum_preference_coverage(conditions) - len(required_meal_tags)
+            0,
+            _minimum_preference_coverage(conditions) - len(precovered) - len(required_meal_tags),
         )
         # 최소 반영 수부터 가능한 많이 포함하는 조합까지 모두 만든다. 계획 선택
         # 점수는 앵커 수가 많은 쪽을 우선해, 좋아요를 더 많이 담은 코스가 상위로
@@ -845,6 +881,7 @@ def _build_candidate_plans(
     conditions: NormalizedConditions,
     place_candidates: list[dict],
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[_CandidatePlan]:
     """반경을 필요한 경우에만 넓히며, 클러스터 × 태그 × 실제 장소 앵커를 만든다.
 
@@ -859,7 +896,9 @@ def _build_candidate_plans(
     ] = set()
     for radius in _CLUSTER_RADIUS_STEPS_METERS:
         for cluster in _temporary_clusters(place_candidates, radius, meal_tags, required_place_ids):
-            for plan in _plans_for_cluster(cluster, conditions, required_place_ids):
+            for plan in _plans_for_cluster(
+                cluster, conditions, required_place_ids, precovered_liked_tags
+            ):
                 key = (
                     _plan_titles(plan),
                     plan.required_meal_tags,
@@ -1148,6 +1187,7 @@ def _draft_from_selection(
     selection: CandidateSelectionDraft,
     conditions: NormalizedConditions,
     plan: _CandidatePlan,
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> CandidateDraft:
     place_candidates = list(plan.place_candidates)
     corrected = _correct_categories(selection, place_candidates)
@@ -1167,6 +1207,7 @@ def _draft_from_selection(
         required_non_meal_tags=list(plan.required_non_meal_tags),
         required_tag_anchors=dict(plan.required_tag_anchors),
         required_place_ids=list(plan.required_place_ids),
+        precovered_liked_tags=list(precovered_liked_tags),
         cluster_radius_meters=plan.cluster_radius_meters,
     )
 
@@ -1177,12 +1218,15 @@ async def generate_candidates_with_perspectives(
     conditions: NormalizedConditions,
     place_candidates: list[dict],
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[tuple[str, CandidateDraft]]:
     """공간 클러스터·식사 태그 조합별로 생성하고 관점 라벨도 함께 반환한다.
 
     필수 장소가 있으면 해당 장소들을 모두 품은 클러스터만 계획으로 남긴다.
     """
-    candidate_plans = _build_candidate_plans(conditions, place_candidates, required_place_ids)
+    candidate_plans = _build_candidate_plans(
+        conditions, place_candidates, required_place_ids, precovered_liked_tags
+    )
     if not candidate_plans:
         # Step3가 이후에 의미 없는 광역 후보를 걸러내는 것보다, 식사·태그 제약을
         # 만족하는 생활권 자체가 없음을 상위 오케스트레이터에 명확히 알린다.
@@ -1199,7 +1243,10 @@ async def generate_candidates_with_perspectives(
     if not labeled_selections:
         raise RuntimeError("Step2: 유효한 후보안의 관점 호출이 모두 실패했습니다.")
     return [
-        (plan.perspective_label, _draft_from_selection(selection, conditions, plan))
+        (
+            plan.perspective_label,
+            _draft_from_selection(selection, conditions, plan, precovered_liked_tags),
+        )
         for plan, selection in labeled_selections
     ]
 
@@ -1210,6 +1257,7 @@ async def generate_candidates(
     conditions: NormalizedConditions,
     place_candidates: list[dict],
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[CandidateDraft]:
     """PERSPECTIVES 각각에 대해 스레드풀로 병렬 LLM 호출, CandidateDraft 최대 3개 반환.
 
@@ -1234,7 +1282,12 @@ async def generate_candidates(
     이 함수는 그 얇은 래퍼다.
     """
     labeled = await generate_candidates_with_perspectives(
-        provider, api_key, conditions, place_candidates, required_place_ids
+        provider,
+        api_key,
+        conditions,
+        place_candidates,
+        required_place_ids,
+        precovered_liked_tags,
     )
     return [draft for _, draft in labeled]
 
@@ -1246,6 +1299,8 @@ def generate_single_candidate(
     place_candidates: list[dict],
     perspective_label: str,
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
+    minimum_additional_places: int = 0,
 ) -> CandidateDraft:
     """관점 하나만 다시 생성한다 — Step3가 특정 관점의 후보를 하드 위반으로
     드롭했을 때 그 관점만 재시도하는 데 쓴다(orchestrate.py). 새 로직이 아니라
@@ -1258,7 +1313,9 @@ def generate_single_candidate(
     벗어나지 않는다.
     """
     perspective = _find_perspective(perspective_label)
-    candidate_plans = _build_candidate_plans(conditions, place_candidates, required_place_ids)
+    candidate_plans = _build_candidate_plans(
+        conditions, place_candidates, required_place_ids, precovered_liked_tags
+    )
     plan = next(
         (
             candidate_plan
@@ -1281,7 +1338,8 @@ def generate_single_candidate(
             plan.required_non_meal_tags,
             plan.required_tag_anchors,
             _required_place_anchors(plan),
+            minimum_additional_places,
         ),
         schema=CandidateSelectionDraft,
     )
-    return _draft_from_selection(selection, conditions, plan)
+    return _draft_from_selection(selection, conditions, plan, precovered_liked_tags)

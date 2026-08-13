@@ -124,6 +124,7 @@ async def regenerate_schedule_candidates(
     conditions: NormalizedConditions,
     place_candidates: list[dict],
     required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
 ) -> ScheduleResponse | InfeasibleResponse:
     """저장된 조건·후보 풀로 일정 후보를 다시 만든다.
 
@@ -136,7 +137,12 @@ async def regenerate_schedule_candidates(
     loop = asyncio.get_running_loop()
     labeled_drafts = await (
         generate_candidates_with_perspectives(
-            provider, api_key, conditions, place_candidates, required_place_ids
+            provider,
+            api_key,
+            conditions,
+            place_candidates,
+            required_place_ids,
+            precovered_liked_tags,
         )
         if required_place_ids
         else generate_candidates_with_perspectives(provider, api_key, conditions, place_candidates)
@@ -166,7 +172,15 @@ async def regenerate_schedule_candidates(
     for label in missing:
         try:
             args = (
-                (provider, api_key, conditions, place_candidates, label, required_place_ids)
+                (
+                    provider,
+                    api_key,
+                    conditions,
+                    place_candidates,
+                    label,
+                    required_place_ids,
+                    precovered_liked_tags,
+                )
                 if required_place_ids
                 else (provider, api_key, conditions, place_candidates, label)
             )

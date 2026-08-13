@@ -25,6 +25,8 @@ from app.pipeline.schemas import (
     Candidate,
     InfeasibleResponse,
     NormalizedConditions,
+    RouteOption,
+    RouteSegment,
     ScheduleResponse,
 )
 from app.services.credential import encrypt_key
@@ -246,6 +248,24 @@ def _create_session(client, session, monkeypatch) -> tuple[dict, str]:
     return headers, response.json()["session_id"]
 
 
+def test_list_draft_schedules_returns_current_users_unconfirmed_sessions(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.get("/draft-schedules", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "session_id": session_id,
+            "region": "서울 강남",
+            "candidate_count": 1,
+            "created_at": response.json()[0]["created_at"],
+        }
+    ]
+
+
 def test_create_routes_calls_enrich_routes_and_persists_result(client, session, monkeypatch):
     headers, session_id = _create_session(client, session, monkeypatch)
 
@@ -322,6 +342,7 @@ def test_get_schedule_draft_session_has_null_share_slug(client, session, monkeyp
 
     assert response.status_code == 200
     assert response.json()["share_slug"] is None
+    assert response.json()["status"] == "draft"
 
 
 def test_get_schedule_after_confirm_returns_matching_share_slug(client, session, monkeypatch):
@@ -335,6 +356,7 @@ def test_get_schedule_after_confirm_returns_matching_share_slug(client, session,
 
     assert response.status_code == 200
     assert response.json()["share_slug"] == slug
+    assert response.json()["status"] == "confirmed"
 
 
 # ── 필수 장소 선택·재생성 ─────────────────────────────────────────────────
@@ -343,6 +365,22 @@ def test_get_schedule_after_confirm_returns_matching_share_slug(client, session,
 def _pool_place_id(client, session_id: str, headers: dict) -> str:
     response = client.get(f"/schedules/{session_id}", headers=headers)
     return response.json()["place_pool"]["groups"]["categories"][0]["places"][0]["place_id"]
+
+
+def _make_candidate_contain_pool_place(session, session_id: str, place_id: str) -> None:
+    """후보별 제외 API 테스트용으로 후보 활동을 저장된 후보 풀 장소와 연결한다."""
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    assert schedule is not None
+    candidates = deepcopy(schedule.candidates)
+    candidate = candidates["candidates"][0]
+    candidate["activities"][0].update({"name": "가게1", "place_id": place_id})
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
 
 
 def test_add_required_place_persists_and_get_schedule_returns_it(client, session, monkeypatch):
@@ -364,6 +402,187 @@ def test_add_required_place_persists_and_get_schedule_returns_it(client, session
     assert selected["place_id"] == place_id
     assert selected["name"] == "가게1"
     assert selected["map_url"].startswith("https://map.naver.com/p/search/")
+
+
+def test_candidate_preview_changes_only_after_explicit_save(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    excluded_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, excluded_place_id)
+
+    replacement = _candidate("A").model_copy(
+        update={
+            "title": "바뀐 후보",
+            "activities": [
+                _activity(1, "새 장소").model_copy(update={"place_id": "replacement-place"})
+            ],
+        }
+    )
+
+    async def fake_replacement(*_args, **_kwargs):
+        return replacement
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate.model_copy(update={"feasibility_warning": "새 교통편 반영"})
+
+    monkeypatch.setattr("app.routers.schedule._generate_candidate_replacement", fake_replacement)
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview_response = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": [excluded_place_id]},
+        headers=headers,
+    )
+
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["candidate"]["title"] == "바뀐 후보"
+    assert preview["candidate"]["feasibility_warning"] == "새 교통편 반영"
+
+    # 미리보기만 만든 상태에서는 목록/새로고침이 읽는 본 후보와 제외 목록이 그대로다.
+    before_save = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert before_save["candidates"][0]["title"] == "테스트 코스"
+
+    from app.models.schedule import ScheduleSession
+
+    stored_before = session.get(ScheduleSession, UUID(session_id))
+    assert stored_before.conditions.get("candidate_exclusions", {}).get("A") is None
+
+    save_response = client.post(
+        f"/schedules/{session_id}/candidates/A/preview/{preview['preview_id']}/save",
+        json={"selected_options": []},
+        headers=headers,
+    )
+
+    assert save_response.status_code == 200
+    after_save = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert after_save["candidates"][0]["title"] == "바뀐 후보"
+    assert after_save["candidates"][0]["activities"][0]["name"] == "새 장소"
+
+    session.expire_all()
+    stored_after = session.get(ScheduleSession, UUID(session_id))
+    assert stored_after.conditions["candidate_exclusions"]["A"] == [excluded_place_id]
+    assert "previews" not in stored_after.candidates
+
+
+def test_candidate_removal_preview_recalculates_routes_without_saving(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    excluded_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, excluded_place_id)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    candidates["candidates"][0]["activities"].append(_activity(3, "장소3").model_dump(mode="json"))
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    async def fake_enrich(candidate, _time_range):
+        assert [activity.order for activity in candidate.activities] == [1, 2]
+        return candidate.model_copy(
+            update={
+                "routes": [
+                    RouteSegment(
+                        from_order=1,
+                        to_order=2,
+                        options=[
+                            RouteOption(
+                                option_id="walk",
+                                mode="walk",
+                                duration_minutes=7,
+                                fare_krw=0,
+                            )
+                        ],
+                        recommended_option_id="walk",
+                        selected_option_id="walk",
+                    )
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/removal/preview",
+        json={"excluded_place_ids": [excluded_place_id]},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert [activity["order"] for activity in preview.json()["activities"]] == [1, 2]
+    assert preview.json()["routes"][0]["from_order"] == 1
+    assert preview.json()["routes"][0]["to_order"] == 2
+
+    # 교통편 미리보기는 저장 전이므로 목록/새로고침이 읽는 본 후보는 그대로다.
+    persisted = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert len(persisted["candidates"][0]["activities"]) == 3
+    session.expire_all()
+    stored = session.get(ScheduleSession, UUID(session_id))
+    assert stored.conditions.get("candidate_exclusions", {}).get("A") is None
+
+
+def test_removal_preview_ignores_legacy_exclusion_when_place_is_still_in_candidate(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    requested_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, requested_place_id)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    candidates["candidates"][0]["activities"].append(
+        _activity(3, "과거 기록 때문에 함께 빠지면 안 되는 장소")
+        .model_copy(update={"place_id": "legacy-stale-place"})
+        .model_dump(mode="json")
+    )
+    schedule.candidates = candidates
+    schedule.conditions = {
+        **schedule.conditions,
+        "candidate_exclusions": {"A": ["legacy-stale-place"]},
+    }
+    session.add(schedule)
+    session.commit()
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/removal/preview",
+        json={"excluded_place_ids": [requested_place_id]},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert [activity["name"] for activity in preview.json()["activities"]] == [
+        "장소2",
+        "과거 기록 때문에 함께 빠지면 안 되는 장소",
+    ]
+
+
+def test_candidate_preview_rejects_required_place(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, place_id)
+    client.post(
+        f"/schedules/{session_id}/required-places", json={"place_id": place_id}, headers=headers
+    )
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": [place_id]},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
 
 
 def test_add_same_required_place_is_idempotent(client, session, monkeypatch):
@@ -404,6 +623,71 @@ def test_remove_required_place_deletes_only_the_constraint(client, session, monk
     assert schedule["required_places"] == []
     # 해제만 했으므로 아직 재생성하지 않은 기존 일정 카드는 보존된다.
     assert schedule["candidates"][0]["candidate_id"] == "A"
+
+
+def test_removing_last_applied_required_place_can_regenerate_without_required(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    place_id = _pool_place_id(client, session_id, headers)
+    client.post(
+        f"/schedules/{session_id}/required-places",
+        json={"place_id": place_id},
+        headers=headers,
+    )
+
+    async def fake_regenerate(
+        _provider, _api_key, actual_session_id, _conditions, _places, required_ids
+    ):
+        assert actual_session_id == session_id
+        return ScheduleResponse(session_id=session_id, candidates=[_candidate("A")])
+
+    monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
+
+    first = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["applied_required_place_ids"] == [place_id]
+
+    client.delete(f"/schedules/{session_id}/required-places/{place_id}", headers=headers)
+    changed = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert changed["required_places"] == []
+    assert changed["applied_required_place_ids"] == [place_id]
+
+    second = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    assert second.status_code == 200
+    assert second.json()["required_places"] == []
+    assert second.json()["applied_required_place_ids"] == []
+
+
+def test_save_candidate_removal_keeps_fewer_places_and_renumbers(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    excluded_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, excluded_place_id)
+
+    async def fake_enrich(candidate, _time_range):
+        assert [activity.order for activity in candidate.activities] == [1]
+        assert candidate.routes == []
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/removal/save",
+        json={"excluded_place_ids": [excluded_place_id]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert [activity["order"] for activity in response.json()["activities"]] == [1]
+    assert [activity["name"] for activity in response.json()["activities"]] == ["장소2"]
+    persisted = client.get(f"/schedules/{session_id}", headers=headers).json()
+    assert [activity["order"] for activity in persisted["candidates"][0]["activities"]] == [1]
+
+    from app.models.schedule import ScheduleSession
+
+    session.expire_all()
+    stored = session.get(ScheduleSession, UUID(session_id))
+    assert stored.conditions["candidate_exclusions"]["A"] == [excluded_place_id]
 
 
 def test_regenerate_passes_persisted_required_place_and_replaces_candidates(
