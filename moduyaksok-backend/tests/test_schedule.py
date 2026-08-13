@@ -595,6 +595,111 @@ def test_candidate_removal_preview_preserves_later_activity_times(client, sessio
     assert preview.json()["activities"][0]["start_time"] == "18:00"
 
 
+def test_removal_preview_keeps_dinner_time_when_actual_route_is_short(client, session, monkeypatch):
+    """짧은 실제 이동시간이 제거로 생긴 긴 공백을 압축하면 안 된다."""
+    headers, session_id = _create_session(client, session, monkeypatch)
+    excluded_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, excluded_place_id)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0].update({"start_time": "10:00", "end_time": "11:00"})
+    activities[1].update({"name": "점심", "start_time": "12:00", "end_time": "13:00"})
+    activities.append(
+        _activity(3, "저녁")
+        .model_copy(update={"start_time": "18:00", "end_time": "19:00"})
+        .model_dump(mode="json")
+    )
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    async def fake_segment_options(_from, _to):
+        return [RouteOption(option_id="walk", mode="walk", duration_minutes=5, fare_krw=0)], None
+
+    monkeypatch.setattr("app.pipeline.enrich_step4._fetch_segment_options", fake_segment_options)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/removal/preview",
+        json={"excluded_place_ids": [excluded_place_id]},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert [activity["start_time"] for activity in preview.json()["activities"]] == [
+        "12:00",
+        "18:00",
+    ]
+
+
+def test_replacement_preview_fills_each_removed_time_slot(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    first_removed_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, first_removed_id)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0].update({"start_time": "11:00", "end_time": "12:00"})
+    activities[1].update(
+        {"name": "저녁", "start_time": "18:00", "end_time": "19:00", "place_id": "dinner"}
+    )
+    activities.append(
+        _activity(3, "오후에 뺀 장소")
+        .model_copy(
+            update={"start_time": "15:00", "end_time": "16:00", "place_id": "removed-afternoon"}
+        )
+        .model_dump(mode="json")
+    )
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    replacement = _candidate("A").model_copy(
+        update={
+            "activities": [
+                _activity(1, "늦게 생성된 새 장소").model_copy(
+                    update={"start_time": "19:00", "end_time": "20:00", "place_id": "new-late"}
+                ),
+                _activity(2, "일찍 생성된 새 장소").model_copy(
+                    update={"start_time": "09:00", "end_time": "10:00", "place_id": "new-early"}
+                ),
+            ]
+        }
+    )
+
+    async def fake_replacement(*_args, **_kwargs):
+        return replacement
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule._generate_candidate_replacement", fake_replacement)
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": [first_removed_id, "removed-afternoon"]},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert [(a["name"], a["start_time"]) for a in preview.json()["candidate"]["activities"]] == [
+        ("일찍 생성된 새 장소", "11:00"),
+        ("늦게 생성된 새 장소", "15:00"),
+        ("저녁", "18:00"),
+    ]
+
+
 def test_removal_preview_ignores_legacy_exclusion_when_place_is_still_in_candidate(
     client, session, monkeypatch
 ):
