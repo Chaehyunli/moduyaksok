@@ -39,8 +39,6 @@ async function copyLink() {
         <div class="flex flex-wrap justify-center gap-3">
           <DoodleButton size="sm" @click="copyLink">{{ copied ? '복사됨!' : '링크 복사' }}</DoodleButton>
           <DoodleButton size="sm" variant="ghost" @click="router.push(`/share/${store.shareSlug}`)">공유 화면 보기</DoodleButton>
-          <!-- TODO: html-to-image + jspdf로 실제 다운로드 붙이기 -->
-          <DoodleButton size="sm" variant="ghost">이미지·PDF 저장</DoodleButton>
         </div>
       </DoodleCard>
     </div>

@@ -382,14 +382,18 @@ def _has_missing_required_tags(candidate: CandidateDraft, conditions: Normalized
 def _has_insufficient_preference_coverage(
     candidate: CandidateDraft, conditions: NormalizedConditions
 ) -> bool:
-    """검증 가능한 좋아요 태그는 절반 이상(홀수는 올림) 반영해야 한다.
+    """검증 가능한 좋아요 태그는 가능한 범위에서 과반수 반영해야 한다.
 
-    태그를 1~5개까지 받을 수 있으므로 최소 반영 수는 각각 1, 1, 2, 2, 3개다.
     식사 태그의 시간대·서로 다른 슬롯 배정 규칙은 _has_missing_required_tags()가
-    별도로 계속 강제한다. 여기서는 식사/비식사를 합친 전체 선호 충족률만 본다.
+    별도로 계속 강제한다. 식사 선호가 식사 슬롯보다 많을 때는 가능한 슬롯 수를
+    상한으로 두고, 여기서는 식사/비식사를 합친 전체 선호 충족률을 본다.
     """
     liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
-    minimum_coverage = (len(liked_tags) + 1) // 2
+    meal_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal}
+    non_meal_count = len(liked_tags - meal_tags)
+    meal_capacity = max(1, len(_required_meal_windows(conditions.time_range)))
+    feasible_count = non_meal_count + min(len(meal_tags), meal_capacity)
+    minimum_coverage = min(len(liked_tags) // 2 + 1, feasible_count)
     if minimum_coverage == 0:
         return False
 
