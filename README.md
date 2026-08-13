@@ -75,11 +75,13 @@ npm run dev
 
 ```bash
 cd moduyaksok-backend && source .venv/bin/activate
-pip install -r requirements-dev.txt   # ruff, pytest, pre-commit
+# 테스트·평가 개발 의존성 설치 (pytest-asyncio, deepeval, fakeredis 포함)
+pip install -r requirements-dev.txt
 pre-commit install                     # 최초 1회 — 커밋 시 ruff 자동 실행
 
 ruff check . && ruff format .          # lint + format
 pytest -q                              # 테스트
+pytest -m eval tests/eval -v -s        # 실제 LLM + DeepEval 파이프라인 평가
 ```
 
 ## 라이선스
