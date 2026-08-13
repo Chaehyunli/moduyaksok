@@ -95,6 +95,7 @@
 #             식사 슬롯도 새 후보에는 앵커 장소를 우선 근거로 삼아, "햄버거" 검색
 #             결과에 섞여 들어온 카페가 식사로 오인되는 것을 막는다.
 # ------------------------------------------------------------------
+import logging
 from datetime import datetime, time
 
 from pydantic import BaseModel
@@ -113,6 +114,8 @@ from app.pipeline.schemas import (
 from app.pipeline.travel_estimate import estimate_buffer_minutes
 from app.services.naver_map_url import build_naver_map_url
 from app.services.structured_llm import call_structured
+
+logger = logging.getLogger(__name__)
 
 # 파이프라인에서 정확한 판단력이 품질을 가장 크게 좌우하는 단계(예산/시간 위반
 # 재검증, 후보 드롭·재생성 판단, 최종 요약 작성) — 호출은 1회뿐이라 비용 부담도
@@ -379,14 +382,14 @@ def _has_missing_required_tags(candidate: CandidateDraft, conditions: Normalized
 def _has_insufficient_preference_coverage(
     candidate: CandidateDraft, conditions: NormalizedConditions
 ) -> bool:
-    """검증 가능한 좋아요 태그는 절반 이상 반영해야 한다.
+    """검증 가능한 좋아요 태그는 절반 이상(홀수는 올림) 반영해야 한다.
 
-    태그를 1~5개까지 받을 수 있으므로 최소 반영 수는 각각 1, 1, 1, 2, 2개다.
+    태그를 1~5개까지 받을 수 있으므로 최소 반영 수는 각각 1, 1, 2, 2, 3개다.
     식사 태그의 시간대·서로 다른 슬롯 배정 규칙은 _has_missing_required_tags()가
     별도로 계속 강제한다. 여기서는 식사/비식사를 합친 전체 선호 충족률만 본다.
     """
     liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
-    minimum_coverage = max(1, len(liked_tags) // 2)
+    minimum_coverage = (len(liked_tags) + 1) // 2
     if minimum_coverage == 0:
         return False
 
@@ -665,14 +668,21 @@ def synthesize_and_validate(
         >= _SIMILARITY_CONTEXT_THRESHOLD
     ]
 
-    judgment = call_structured(
-        provider=provider,
-        api_key=api_key,
-        model=get_model(provider, TIER),
-        system=_ROLE_TASK,
-        user=_build_user_prompt(conditions, rule_survivors, similar_pairs),
-        schema=_JudgmentBatch,
-    )
+    try:
+        judgment = call_structured(
+            provider=provider,
+            api_key=api_key,
+            model=get_model(provider, TIER),
+            system=_ROLE_TASK,
+            user=_build_user_prompt(conditions, rule_survivors, similar_pairs),
+            schema=_JudgmentBatch,
+        )
+    except Exception:
+        # 이 호출은 이미 규칙을 통과한 일정에 제목·설명을 붙이는 보조 단계다.
+        # provider 지연/장애 때문에 유효한 일정 자체를 버리지 않고 draft의 제목과
+        # rationale을 아래 기존 폴백 경로로 사용한다.
+        logger.exception("일정 설명 생성에 실패해 규칙 기반 결과로 대체합니다.")
+        judgment = _JudgmentBatch(judgments=[])
 
     kept: list[Candidate] = []
     judgment_by_index = {

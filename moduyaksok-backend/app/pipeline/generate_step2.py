@@ -266,6 +266,7 @@ _MAX_ACTIVITY_MINUTES = 90
 # 넓힌다. 이는 실제 이동수단을 미리 정하는 규칙이 아니며, Step4에서 사용자가
 # 교통수단을 선택하는 흐름과 독립적이다.
 _CLUSTER_RADIUS_STEPS_METERS = (1_000, 1_500, 2_500)
+_REQUIRED_PLACE_FALLBACK_RADIUS_METERS = 5_000
 _MAX_TEMPORARY_CLUSTERS = 10
 _MAX_CANDIDATE_PLANS = len(PERSPECTIVES)
 # 한 태그 검색은 최대 10개(두 정렬 병합)까지 나올 수 있으나, 후보안 조합 수가
@@ -504,9 +505,9 @@ def _non_meal_tag_names(conditions: NormalizedConditions) -> tuple[str, ...]:
 
 
 def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
-    """검증 가능한 좋아요 태그 1~5개에 대해 최소 1, 1, 1, 2, 2개를 요구한다."""
+    """검증 가능한 좋아요 태그의 절반 이상(홀수는 올림)을 요구한다."""
     verified_count = len(_meal_tag_names(conditions)) + len(_non_meal_tag_names(conditions))
-    return max(1, verified_count // 2) if verified_count else 0
+    return (verified_count + 1) // 2 if verified_count else 0
 
 
 def _is_eligible_tag_anchor(place: dict, tag: str, required_meal_tags: tuple[str, ...]) -> bool:
@@ -786,7 +787,8 @@ def _plans_for_cluster(
     precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[_CandidatePlan]:
     precovered = set(precovered_liked_tags)
-    meal_tags = tuple(tag for tag in _meal_tag_names(conditions) if tag not in precovered)
+    all_meal_tags = _meal_tag_names(conditions)
+    meal_tags = tuple(tag for tag in all_meal_tags if tag not in precovered)
     non_meal_tags = tuple(tag for tag in _non_meal_tag_names(conditions) if tag not in precovered)
     meal_slots = len(_required_meal_windows(conditions.time_range))
     places = cluster.places
@@ -807,7 +809,9 @@ def _plans_for_cluster(
             or not (set(_place_matched_tags(place)) & precovered)
         )
 
-    if sum(_is_meal_place(place, meal_tags) for place in places) < meal_slots:
+    # precovered 식사 태그는 추가 앵커 대상에서는 빼지만, 사용자가 고른 필수
+    # 식사 장소 자체는 점심/저녁 수용량 계산에 계속 포함해야 한다.
+    if sum(_is_meal_place(place, all_meal_tags) for place in places) < meal_slots:
         return []
 
     chosen_meal_count = min(meal_slots, len(meal_tags))
@@ -913,7 +917,15 @@ def _build_candidate_plans(
     seen: set[
         tuple[frozenset[str], tuple[str, ...], tuple[str, ...], tuple[tuple[str, str], ...]]
     ] = set()
-    for radius in _CLUSTER_RADIUS_STEPS_METERS:
+    uncovered_liked_tags = (
+        set(_meal_tag_names(conditions)) | set(_non_meal_tag_names(conditions))
+    ) - set(precovered_liked_tags)
+    radius_steps = _CLUSTER_RADIUS_STEPS_METERS + (
+        (_REQUIRED_PLACE_FALLBACK_RADIUS_METERS,)
+        if required_place_ids and uncovered_liked_tags
+        else ()
+    )
+    for radius in radius_steps:
         for cluster in _temporary_clusters(place_candidates, radius, meal_tags, required_place_ids):
             for plan in _plans_for_cluster(
                 cluster, conditions, required_place_ids, precovered_liked_tags

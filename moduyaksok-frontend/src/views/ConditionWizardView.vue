@@ -23,8 +23,8 @@ const PURPOSES = [
 ]
 
 // 태그 선택이 아니라 자유 텍스트 그대로 받는다 — Step1 조건 정규화(LLM)가 여기서
-// 구조화 태그를 뽑아낸다. 짧은 한두 문장 수준으로 100자 제한.
-const PREFERENCE_MAX_LENGTH = 100
+// 구조화 태그를 뽑아낸다. 짧은 한두 문장 수준으로 50자 제한.
+const PREFERENCE_MAX_LENGTH = 50
 
 const step = ref(0)
 const totalSteps = 6

@@ -45,7 +45,9 @@
 #             트랜잭션에서 SchedulePlacePool(신규 테이블)도 같이 저장한다 — 나중에
 #             피드백 단계가 이미 검색한 장소·태그를 재사용할 수 있게 미리 쌓아둠.
 # ------------------------------------------------------------------
+import logging
 import secrets
+import time
 from datetime import datetime
 from functools import partial
 from typing import Literal
@@ -53,7 +55,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -84,6 +86,7 @@ from app.services.naver_local_search import NaverSearchError, place_id_for
 from app.services.naver_map_url import build_naver_map_url
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ScheduleCreateRequest(BaseModel):
@@ -91,8 +94,8 @@ class ScheduleCreateRequest(BaseModel):
     headcount: int
     time_range: tuple[datetime, datetime]
     region: str
-    liked_text: str = ""
-    disliked_text: str = ""
+    liked_text: str = Field(default="", max_length=50)
+    disliked_text: str = Field(default="", max_length=50)
     budget_per_person: int
 
 
@@ -417,6 +420,29 @@ def _precovered_liked_tags(
     return tuple(sorted(tags))
 
 
+def _replacement_place_sets(
+    place_pool: SchedulePlacePool,
+    current_place_ids: set[str],
+    required_place_ids: set[str],
+    excluded_place_ids: set[str],
+) -> tuple[set[str], set[str], set[str]]:
+    """대체 생성에서 유지·고정·자동 교체할 장소 ID를 계산한다."""
+    pending_required_ids = required_place_ids - current_place_ids
+    pending_required_tags = set(_precovered_liked_tags(place_pool, pending_required_ids))
+    superseded_place_ids = {
+        _place_with_id(raw)["place_id"]
+        for raw in place_pool.places.get("places", [])
+        if _place_with_id(raw)["place_id"] in current_place_ids - required_place_ids
+        and (
+            set(raw.get("matched_tags", []))
+            | ({raw["matched_tag"]} if raw.get("matched_tag") else set())
+        )
+        & pending_required_tags
+    }
+    retained_place_ids = current_place_ids - excluded_place_ids - superseded_place_ids
+    return retained_place_ids, required_place_ids | retained_place_ids, superseded_place_ids
+
+
 def _candidate_pool_without_exclusions(
     place_pool: SchedulePlacePool, excluded_place_ids: set[str], required_place_ids: set[str]
 ) -> list[dict]:
@@ -561,6 +587,7 @@ async def _generate_candidate_replacement(
     이 함수는 후보 값을 계산할 뿐 DB의 본 후보를 바꾸지 않는다. 기존 즉시 저장
     API와 새 미리보기 API가 저장 시점만 다르게 같은 생성 규칙을 쓰도록 분리했다.
     """
+    started = time.perf_counter()
     current_candidate = _find_candidate(schedule_session, candidate_id)
     place_pool = session.exec(
         select(SchedulePlacePool).where(SchedulePlacePool.session_id == schedule_session.id)
@@ -576,9 +603,24 @@ async def _generate_candidate_replacement(
     available_places = _candidate_pool_without_exclusions(
         place_pool, excluded_place_ids, required_ids
     )
-    fixed_place_ids = required_ids | (
-        _activity_place_ids(current_candidate, place_pool) - excluded_place_ids
+    current_place_ids = _activity_place_ids(current_candidate, place_pool)
+    # 새 필수 장소가 좋아요 검색 결과라면, 현재 후보의 같은 태그 장소를 함께
+    # 유지하지 않고 새 필수 장소로 교체한다. 예: 기존 초밥집 + 필수 초밥집 두 곳을
+    # 고정하는 대신 기존 초밥집의 슬롯을 필수 초밥집이 차지한다.
+    retained_place_ids, fixed_place_ids, superseded_place_ids = _replacement_place_sets(
+        place_pool, current_place_ids, required_ids, excluded_place_ids
     )
+    # 아직 본 후보에 반영되지 않은 필수 장소는 사용자가 뺀 자리를 채우는 새 장소로
+    # 센다. 예: 기존 5곳 중 1곳 제거 + 미반영 필수 1곳이면 목표는 5곳이지,
+    # 필수 1곳에 별도 대체 1곳까지 더한 6곳이 아니다.
+    new_place_count = replacement_count + len(superseded_place_ids)
+    target_count = len(retained_place_ids) + new_place_count
+    if len(fixed_place_ids) > target_count:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "뺀 자리보다 아직 반영하지 않은 필수 장소가 더 많습니다. "
+            "필수 장소를 먼저 일정에 반영하거나 더 많은 장소를 빼주세요.",
+        )
     if schedule_session.normalized_conditions:
         conditions = NormalizedConditions.model_validate(schedule_session.normalized_conditions)
     else:
@@ -592,6 +634,7 @@ async def _generate_candidate_replacement(
 
     loop = asyncio.get_running_loop()
     try:
+        stage_started = time.perf_counter()
         labeled_drafts = await loop.run_in_executor(
             None,
             partial(
@@ -604,12 +647,21 @@ async def _generate_candidate_replacement(
                 _precovered_liked_tags(place_pool, fixed_place_ids),
                 fixed_place_ids=tuple(sorted(fixed_place_ids)),
                 candidate_limit=1,
-                target_count=len(fixed_place_ids) + replacement_count,
+                target_count=target_count,
             ),
+        )
+        logger.info(
+            "candidate_replacement_stage session_id=%s candidate_id=%s "
+            "stage=algorithm elapsed_seconds=%.3f draft_count=%s",
+            schedule_session.id,
+            candidate_id,
+            time.perf_counter() - stage_started,
+            len(labeled_drafts),
         )
         if not labeled_drafts:
             raise ValueError("남은 장소를 유지하면서 넣을 대체 장소를 찾지 못했습니다.")
         draft = labeled_drafts[0][1]
+        stage_started = time.perf_counter()
         result = await loop.run_in_executor(
             None,
             synthesize_and_validate,
@@ -618,6 +670,13 @@ async def _generate_candidate_replacement(
             str(schedule_session.id),
             conditions,
             [draft],
+        )
+        logger.info(
+            "candidate_replacement_stage session_id=%s candidate_id=%s "
+            "stage=synthesize elapsed_seconds=%.3f",
+            schedule_session.id,
+            candidate_id,
+            time.perf_counter() - stage_started,
         )
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
@@ -631,13 +690,22 @@ async def _generate_candidate_replacement(
         raise HTTPException(status.HTTP_409_CONFLICT, reason)
 
     updated = result.candidates[0].model_copy(update={"candidate_id": candidate_id})
-    new_place_ids = _activity_place_ids(updated, place_pool) - fixed_place_ids
-    if len(new_place_ids) != replacement_count:
+    # 미반영 필수 장소도 이번 수정에서 새로 들어온 장소이므로, 모든 고정 장소가
+    # 아니라 실제로 남겨둔 기존 장소를 기준으로 새 장소 수를 검증한다.
+    new_place_ids = _activity_place_ids(updated, place_pool) - retained_place_ids
+    if len(new_place_ids) != new_place_count:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"기존 장소를 유지하면서 대체 장소 {replacement_count}곳을 정확히 찾지 못했습니다.",
+            f"기존 장소를 유지하면서 대체 장소 {new_place_count}곳을 정확히 찾지 못했습니다.",
         )
-    return candidate_with_source_categories(session, schedule_session, updated)
+    result = candidate_with_source_categories(session, schedule_session, updated)
+    logger.info(
+        "candidate_replacement session_id=%s candidate_id=%s elapsed_seconds=%.3f",
+        schedule_session.id,
+        candidate_id,
+        time.perf_counter() - started,
+    )
+    return result
 
 
 def _automatic_confirmed_titles(items: list[ScheduleSession]) -> dict[UUID, str]:

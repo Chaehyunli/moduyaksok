@@ -137,7 +137,7 @@ def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> Normal
 
     raw_input의 purpose/headcount/time_range/region/budget_per_person은 프런트에서
     이미 구조화해서 보낸 값이라 그대로 통과시키고, liked_text/disliked_text(자유
-    텍스트, 각 최대 100자)만 LLM 1회 호출로 구조화 태그(PreferenceTag)로 뽑는다.
+    텍스트, 각 최대 50자)만 LLM 1회 호출로 구조화 태그(PreferenceTag)로 뽑는다.
 
     자유 텍스트가 그대로 프롬프트에 들어가니 프롬프트 인젝션 가능성을 염두에 뒀다 —
     structured output으로 출력 스키마를 강제하면 "다른 텍스트를 출력하게" 만들 수는

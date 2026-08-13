@@ -21,6 +21,7 @@
 # ------------------------------------------------------------------
 import json
 import logging
+import time
 from typing import TypeVar, get_origin
 
 from anthropic import Anthropic
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 # .parse()(Pydantic 모델 직접 전달)까지 GPT와 동일하게 지원해서, GPT/Solar는 분기를
 # 나눌 필요 없이 같은 코드 경로를 탄다 — Claude(tool use)만 별도.
 _UPSTAGE_BASE_URL = "https://api.upstage.ai/v1/solar"
+_REQUEST_TIMEOUT_SECONDS = 20.0
 
 
 def _repair_stringified_lists(data: dict, schema: type[BaseModel]) -> dict:
@@ -89,8 +91,9 @@ def call_structured(
     모드 강제·파싱까지 다 처리해줌.
     """
     if provider == "anthropic":
-        client = Anthropic(api_key=api_key)
+        client = Anthropic(api_key=api_key, max_retries=0)
         tool_name = schema.__name__
+        started = time.perf_counter()
         response = client.messages.create(
             model=model,
             max_tokens=1024,
@@ -104,11 +107,14 @@ def call_structured(
                 }
             ],
             tool_choice={"type": "tool", "name": tool_name},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
         )
         logger.info(
-            "call_structured provider=%s model=%s input_tokens=%s output_tokens=%s",
+            "call_structured provider=%s model=%s elapsed_seconds=%.3f "
+            "input_tokens=%s output_tokens=%s",
             provider,
             model,
+            time.perf_counter() - started,
             response.usage.input_tokens,
             response.usage.output_tokens,
         )
@@ -117,7 +123,8 @@ def call_structured(
 
     if provider in ("openai", "upstage"):
         base_url = _UPSTAGE_BASE_URL if provider == "upstage" else None
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        started = time.perf_counter()
         response = client.beta.chat.completions.parse(
             model=model,
             messages=[
@@ -125,11 +132,14 @@ def call_structured(
                 {"role": "user", "content": user},
             ],
             response_format=schema,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
         )
         logger.info(
-            "call_structured provider=%s model=%s input_tokens=%s output_tokens=%s",
+            "call_structured provider=%s model=%s elapsed_seconds=%.3f "
+            "input_tokens=%s output_tokens=%s",
             provider,
             model,
+            time.perf_counter() - started,
             response.usage.prompt_tokens,
             response.usage.completion_tokens,
         )

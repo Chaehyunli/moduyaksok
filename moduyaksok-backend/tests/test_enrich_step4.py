@@ -22,6 +22,7 @@
 #             테스트만 별도로 0을 반환하게 덮어씀(tests/test_naver_local_search.py와
 #             같은 패턴).
 # ------------------------------------------------------------------
+import asyncio
 from datetime import datetime
 
 import pytest
@@ -268,6 +269,32 @@ async def test_enrich_routes_includes_car_option_when_available(monkeypatch):
     option_ids = {o.option_id for o in result.routes[0].options}
     assert option_ids == {"walk", "car"}
     assert result.routes[0].recommended_option_id == "car"
+
+
+async def test_enrich_routes_fetches_transit_and_car_in_parallel(monkeypatch):
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(30))
+    transit_started = asyncio.Event()
+    car_started = asyncio.Event()
+
+    async def fake_transit(*a):
+        transit_started.set()
+        await asyncio.wait_for(car_started.wait(), timeout=0.1)
+        return []
+
+    async def fake_car(*a):
+        car_started.set()
+        await asyncio.wait_for(transit_started.wait(), timeout=0.1)
+        return None
+
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", fake_transit)
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_car_option", fake_car)
+    candidate = _candidate(
+        [_activity(1, "A", "10:00", "10:30"), _activity(2, "B", "11:00", "11:30")]
+    )
+
+    result = await enrich_routes(candidate, _TIME_RANGE)
+
+    assert [option.mode for option in result.routes[0].options] == ["walk"]
 
 
 async def test_enrich_routes_selects_car_by_default_even_when_transit_is_shorter(monkeypatch):

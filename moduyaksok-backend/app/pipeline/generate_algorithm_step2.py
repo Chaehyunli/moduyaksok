@@ -142,7 +142,7 @@ def _travel_minutes(a: dict, b: dict) -> int:
 
 def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
     count = sum(tag.verifiable for tag in conditions.liked_tags)
-    return max(1, count // 2) if count else 0
+    return (count + 1) // 2 if count else 0
 
 
 def _target_place_count(conditions: NormalizedConditions, fixed_count: int) -> int:
@@ -281,6 +281,14 @@ def _draft_for_state(
 ) -> _ScoredDraft:
     selected = [places_by_id[place_id] for place_id in state.place_ids]
     meal_tags = tuple(tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal)
+    # 필수 장소가 이미 식사 좋아요 태그를 충족하면 계획 단계에서는 그 태그가
+    # precovered로 빠진다. 그래도 시간 배정 단계에서는 해당 장소를 점심/저녁
+    # 앵커로 유지해야 일반 활동처럼 오후 애매한 시각에 배치되지 않는다.
+    fixed_meal_names = {
+        place.get("title", "")
+        for place in selected
+        if _place_id(place) in fixed_ids and _is_meal_place(place, meal_tags)
+    }
     ordered = _best_order(selected, fixed_ids, meal_tags, conditions)
     place_selections = [
         PlaceSelectionDraft(
@@ -299,7 +307,8 @@ def _draft_for_state(
             list(plan.place_candidates),
             meal_anchor_names=frozenset(
                 name for tag, name in plan.required_tag_anchors if tag in plan.required_meal_tags
-            ),
+            )
+            | frozenset(fixed_meal_names),
         ),
         rationale=(
             f"{label}을 중심으로 필수 장소와 좋아하는 조건을 지키면서 "

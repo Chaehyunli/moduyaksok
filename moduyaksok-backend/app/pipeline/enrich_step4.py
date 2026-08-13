@@ -53,14 +53,18 @@
 #             그 타입을 직접 쓰기로 함 — EnrichedCandidate는 삭제.
 # ------------------------------------------------------------------
 import asyncio
+import logging
+import time
 from datetime import datetime
 
 from app.config import settings
 from app.pipeline.schemas import Activity, Candidate, RouteOption, RouteSegment
 from app.pipeline.travel_estimate import reconcile_schedule
-from app.services.naver_directions import NaverDirectionsError, get_car_option
-from app.services.odsay_directions import OdsayError, get_transit_options, get_walk_option
+from app.services.naver_directions import get_car_option
+from app.services.odsay_directions import get_transit_options, get_walk_option
 from app.services.rate_limiter import reserve_daily_budget
+
+logger = logging.getLogger(__name__)
 
 # 이 단계는 LLM을 쓰지 않는다(ODsay API 호출) — 모델 티어 해당 없음.
 
@@ -78,24 +82,35 @@ async def _fetch_segment_options(a: Activity, b: Activity) -> tuple[list[RouteOp
     options: list[RouteOption] = [get_walk_option(a.lat, a.lng, b.lat, b.lng)]
     warnings: list[str] = []
 
-    try:
-        granted = await reserve_daily_budget("odsay", 1, settings.odsay_daily_call_limit)
-        if granted:
-            options += await get_transit_options(a.lat, a.lng, b.lat, b.lng)
-        else:
-            warnings.append(
+    async def fetch_transit() -> tuple[list[RouteOption], str | None]:
+        try:
+            granted = await reserve_daily_budget("odsay", 1, settings.odsay_daily_call_limit)
+            if granted:
+                return await get_transit_options(a.lat, a.lng, b.lat, b.lng), None
+            return [], (
                 f"{a.name} → {b.name} 구간은 오늘 대중교통 조회 한도를 다 써서 "
                 "도보 정보만 제공돼요."
             )
-    except OdsayError:
-        warnings.append(f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다.")
+        except Exception:
+            logger.exception(
+                "대중교통 경로 응답을 처리하지 못해 해당 옵션만 생략합니다."
+            )
+            return [], f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다."
 
-    try:
-        car = await get_car_option(a.lat, a.lng, b.lat, b.lng)
-        if car is not None:
-            options.append(car)
-    except NaverDirectionsError:
-        warnings.append(f"{a.name} → {b.name} 구간의 자동차 경로 정보를 가져오지 못했습니다.")
+    async def fetch_car() -> tuple[RouteOption | None, str | None]:
+        try:
+            return await get_car_option(a.lat, a.lng, b.lat, b.lng), None
+        except Exception:
+            logger.exception("자동차 경로 응답을 처리하지 못해 해당 옵션만 생략합니다.")
+            return None, f"{a.name} → {b.name} 구간의 자동차 경로 정보를 가져오지 못했습니다."
+
+    transit_result, car_result = await asyncio.gather(fetch_transit(), fetch_car())
+    transit_options, transit_warning = transit_result
+    car, car_warning = car_result
+    options += transit_options
+    if car is not None:
+        options.append(car)
+    warnings.extend(warning for warning in (transit_warning, car_warning) if warning)
 
     return options, " ".join(warnings) if warnings else None
 
@@ -129,6 +144,7 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
     operating_hours와 같은 패턴으로, 이르거나 늦은 시간대 이동은 사용자가 직접
     확인하도록 프런트가 hedge된 안내를 보여준다(이 함수의 책임 밖).
     """
+    started = time.perf_counter()
     activities: list[Activity] = list(candidate.activities)
     warnings: list[str] = [candidate.feasibility_warning] if candidate.feasibility_warning else []
 
@@ -183,10 +199,17 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
                 f"희망 시간({window_end.strftime('%H:%M')})을 넘길 수 있습니다."
             )
 
-    return candidate.model_copy(
+    result = candidate.model_copy(
         update={
             "activities": activities,
             "routes": routes,
             "feasibility_warning": " ".join(warnings) if warnings else None,
         }
     )
+    logger.info(
+        "route_enrichment candidate_id=%s segment_count=%s elapsed_seconds=%.3f",
+        candidate.candidate_id,
+        len(pairs),
+        time.perf_counter() - started,
+    )
+    return result

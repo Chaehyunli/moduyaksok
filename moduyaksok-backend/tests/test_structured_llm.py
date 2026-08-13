@@ -50,7 +50,7 @@ class _FakeAnthropicMessages:
 
 
 class _FakeAnthropicClient:
-    def __init__(self, captured: dict, input_data: dict, api_key: str = ""):
+    def __init__(self, captured: dict, input_data: dict, api_key: str = "", **_kwargs):
         self.messages = _FakeAnthropicMessages(captured, input_data)
 
 
@@ -59,7 +59,7 @@ def test_call_structured_anthropic_forces_tool_choice_and_parses_input(monkeypat
     input_data = {"liked_tags": ["콩국수"], "disliked_tags": ["해산물"]}
     monkeypatch.setattr(
         "app.services.structured_llm.Anthropic",
-        lambda api_key: _FakeAnthropicClient(captured, input_data),
+        lambda **kwargs: _FakeAnthropicClient(captured, input_data, **kwargs),
     )
 
     result = call_structured(
@@ -110,8 +110,10 @@ class _FakeOpenAIBeta:
 
 
 class _FakeOpenAIClient:
-    def __init__(self, captured: dict, parsed, api_key: str = "", base_url: str | None = None):
-        self._captured_init = {"api_key": api_key, "base_url": base_url}
+    def __init__(
+        self, captured: dict, parsed, api_key: str = "", base_url: str | None = None, **kwargs
+    ):
+        self._captured_init = {"api_key": api_key, "base_url": base_url, **kwargs}
         self.beta = _FakeOpenAIBeta(captured, parsed)
 
 
@@ -158,6 +160,8 @@ def test_call_structured_upstage_uses_same_path_as_openai_with_custom_base_url(m
 
     assert result is parsed
     assert init_kwargs["base_url"] == "https://api.upstage.ai/v1/solar"
+    assert init_kwargs["max_retries"] == 0
+    assert captured["timeout"] == 20.0
 
 
 class _Judgment(BaseModel):
@@ -174,7 +178,7 @@ def test_call_structured_anthropic_repairs_stringified_list_field(monkeypatch):
     input_data = {"judgments": '[{"candidate_index": 0, "keep": true}]'}
     monkeypatch.setattr(
         "app.services.structured_llm.Anthropic",
-        lambda api_key: _FakeAnthropicClient({}, input_data),
+        lambda **kwargs: _FakeAnthropicClient({}, input_data, **kwargs),
     )
 
     result = call_structured(
@@ -194,7 +198,7 @@ def test_call_structured_anthropic_repairs_self_wrapped_stringified_list_field(m
     input_data = {"judgments": '{"judgments": [{"candidate_index": 0, "keep": false}]}'}
     monkeypatch.setattr(
         "app.services.structured_llm.Anthropic",
-        lambda api_key: _FakeAnthropicClient({}, input_data),
+        lambda **kwargs: _FakeAnthropicClient({}, input_data, **kwargs),
     )
 
     result = call_structured(
@@ -214,7 +218,7 @@ def test_call_structured_anthropic_repairs_flattened_single_item(monkeypatch):
     input_data = {"candidate_index": 1, "keep": True}
     monkeypatch.setattr(
         "app.services.structured_llm.Anthropic",
-        lambda api_key: _FakeAnthropicClient({}, input_data),
+        lambda **kwargs: _FakeAnthropicClient({}, input_data, **kwargs),
     )
 
     result = call_structured(
@@ -233,7 +237,7 @@ def test_call_structured_logs_token_usage(monkeypatch, caplog):
     input_data = {"liked_tags": [], "disliked_tags": []}
     monkeypatch.setattr(
         "app.services.structured_llm.Anthropic",
-        lambda api_key: _FakeAnthropicClient({}, input_data),
+        lambda **kwargs: _FakeAnthropicClient({}, input_data, **kwargs),
     )
 
     with caplog.at_level("INFO", logger="app.services.structured_llm"):

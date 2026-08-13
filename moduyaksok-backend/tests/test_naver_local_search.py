@@ -421,7 +421,7 @@ async def test_search_places_for_region_raises_when_every_query_fails(monkeypatc
         await search_places_for_region("서울 잠실")
 
 
-async def test_search_places_for_region_calls_each_query_with_both_sorts(monkeypatch):
+async def test_search_places_for_region_uses_one_category_sort_and_both_tag_sorts(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     class _SortRecordingClient:
@@ -440,10 +440,16 @@ async def test_search_places_for_region_calls_each_query_with_both_sorts(monkeyp
 
     monkeypatch.setattr("app.services.naver_local_search.httpx.AsyncClient", _SortRecordingClient())
 
-    await search_places_for_region("서울 잠실")
+    from app.pipeline.schemas import PreferenceTag
 
-    sorts = {sort for query, sort in calls if query == "서울 잠실 한식"}
-    assert sorts == {"random", "comment"}
+    await search_places_for_region(
+        "서울 잠실", liked_tags=[PreferenceTag(tag="와플", verifiable=True)]
+    )
+
+    category_sorts = {sort for query, sort in calls if query == "서울 잠실 한식"}
+    tag_sorts = {sort for query, sort in calls if query == "서울 잠실 와플"}
+    assert category_sorts == {"random"}
+    assert tag_sorts == {"random", "comment"}
 
 
 async def test_search_places_for_region_search_groups_dedupe_by_label(monkeypatch):

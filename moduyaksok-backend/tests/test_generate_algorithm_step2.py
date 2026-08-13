@@ -194,3 +194,77 @@ def test_verifiable_disliked_place_is_filtered_but_required_place_wins():
     )
     assert required
     assert required_id in {activity.place_id for activity in required[0][1].activities}
+
+
+def test_required_meal_place_replaces_same_tag_and_keeps_other_liked_tag():
+    conditions = _conditions().model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
+            "liked_tags": [
+                PreferenceTag(
+                    tag="초밥",
+                    verifiable=True,
+                    is_meal=True,
+                    preference_kind="food_menu",
+                ),
+                PreferenceTag(tag="와플", verifiable=True, preference_kind="food_menu"),
+            ]
+        }
+    )
+    places = ensure_place_ids(
+        [
+            {
+                "place_id": "required-sushi",
+                "title": "사용자가 고른 초밥집",
+                "category": "음식점>일식>초밥",
+                "matched_tags": ["초밥"],
+                "mapx": "1270000000",
+                "mapy": "375000000",
+            },
+            {
+                "title": "가까운 한식집",
+                "source_category": "한식",
+                "mapx": "1270001000",
+                "mapy": "375000100",
+            },
+            {
+                "title": "조금 먼 와플집",
+                "category": "카페,디저트>와플",
+                "matched_tags": ["와플"],
+                "mapx": "1270360000",
+                "mapy": "375000000",
+            },
+            {
+                "title": "전시관",
+                "source_category": "전시",
+                "mapx": "1270359000",
+                "mapy": "375000100",
+            },
+            {
+                "title": "보드게임카페",
+                "source_category": "보드게임카페",
+                "mapx": "1270358000",
+                "mapy": "375000200",
+            },
+        ]
+    )
+
+    labeled = generate_algorithm_candidates(
+        "upstage",
+        "unused",
+        conditions,
+        places,
+        ("required-sushi",),
+        ("초밥",),
+    )
+
+    assert labeled
+    for _, draft in labeled:
+        names = {activity.name for activity in draft.activities}
+        assert "사용자가 고른 초밥집" in names
+        assert "조금 먼 와플집" in names
+        required_meal = next(
+            activity for activity in draft.activities if activity.place_id == "required-sushi"
+        )
+        assert required_meal.start_time < "19:00"
+        assert required_meal.end_time > "18:00"

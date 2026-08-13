@@ -399,7 +399,7 @@ def test_required_meal_tag_must_be_in_its_meal_slot():
     assert _has_missing_required_tags(candidate, dinner_conditions) is True
 
 
-def test_preference_coverage_requires_two_of_five_verified_tags():
+def test_preference_coverage_requires_three_of_five_verified_tags():
     conditions = _CONDITIONS.model_copy(
         update={
             "liked_tags": [
@@ -418,9 +418,11 @@ def test_preference_coverage_requires_two_of_five_verified_tags():
             _activity("전시장", matched_tags=["전시"]),
         ],
     ).model_copy(update={"required_non_meal_tags": ["와플"]})
+    three_matches = two_matches.model_copy(update={"precovered_liked_tags": ["커피"]})
 
     assert _has_insufficient_preference_coverage(one_match, conditions) is True
-    assert _has_insufficient_preference_coverage(two_matches, conditions) is False
+    assert _has_insufficient_preference_coverage(two_matches, conditions) is True
+    assert _has_insufficient_preference_coverage(three_matches, conditions) is False
 
 
 def test_required_anchor_drops_candidate_when_llm_uses_another_same_tag_place():
@@ -683,6 +685,20 @@ def test_synthesize_and_validate_builds_schedule_response_from_llm_judgment(monk
     assert len(result.candidates) == 2
     assert [c.candidate_id for c in result.candidates] == ["A", "B"]
     assert result.candidates[0].why_recommended == "강점 설명"
+
+
+def test_synthesize_and_validate_falls_back_when_explanation_llm_times_out(monkeypatch):
+    def timeout(**_kwargs):
+        raise TimeoutError("provider timeout")
+
+    monkeypatch.setattr("app.pipeline.synthesize_step3.call_structured", timeout)
+    candidate = _candidate("규칙 통과", [_activity("가게1")])
+
+    result = synthesize_and_validate("upstage", "up-fake", "sess-1", _CONDITIONS, [candidate])
+
+    assert isinstance(result, ScheduleResponse)
+    assert result.candidates[0].title == "규칙 통과"
+    assert result.candidates[0].why_recommended == candidate.rationale
 
 
 def test_synthesize_and_validate_keeps_rule_valid_candidate_when_llm_keep_false(monkeypatch):
