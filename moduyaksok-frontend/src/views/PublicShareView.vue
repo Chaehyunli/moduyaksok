@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule'
 import type { RouteOption, RouteSegment } from '../stores/schedule'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
+import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import { activityImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
@@ -12,6 +13,7 @@ const route = useRoute()
 const store = useScheduleStore()
 const loading = ref(true)
 const notFound = ref(false)
+const copied = ref(false)
 
 const candidate = computed(() => store.sharedCandidate)
 
@@ -51,6 +53,12 @@ function selectedRouteSummary(segment: RouteSegment): string {
   if (option.description) parts.push(option.description)
   return parts.join(' · ')
 }
+
+async function copyShareLink() {
+  await navigator.clipboard.writeText(window.location.href)
+  copied.value = true
+  setTimeout(() => (copied.value = false), 1500)
+}
 </script>
 
 <template>
@@ -59,6 +67,11 @@ function selectedRouteSummary(segment: RouteSegment): string {
       <template v-if="candidate">
         <h1 class="mb-1 font-hand text-2xl text-ink">{{ candidate.title }}</h1>
         <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>
+        <div class="mb-5 flex justify-end">
+          <DoodleButton size="sm" @click="copyShareLink">
+            {{ copied ? '링크 복사됨!' : '공유 링크 복사' }}
+          </DoodleButton>
+        </div>
         <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
         <div class="space-y-3">
           <template v-for="(a, index) in candidate.activities" :key="a.order">
