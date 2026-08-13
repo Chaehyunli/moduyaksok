@@ -30,9 +30,15 @@ onMounted(async () => {
       모두약속
       <DoodleUnderline class="absolute -bottom-1.5 left-0 h-2 w-full text-red" />
     </RouterLink>
-    <nav class="flex items-center gap-3 font-hand text-sm">
-      <RouterLink to="/confirmed-schedules" class="text-ink/70 hover:text-ink">확정 일정</RouterLink>
-      <RouterLink to="/settings" class="text-ink/70 hover:text-ink">설정</RouterLink>
+    <nav class="flex items-center gap-5 font-hand text-sm">
+      <RouterLink to="/confirmed-schedules" class="relative pb-1 text-ink/70 hover:text-ink">
+        확정 일정
+        <DoodleUnderline class="absolute -bottom-1 left-0 h-1.5 w-full text-red" />
+      </RouterLink>
+      <RouterLink to="/settings" class="relative pb-1 text-ink/70 hover:text-ink">
+        설정
+        <DoodleUnderline class="absolute -bottom-1 left-0 h-1.5 w-full text-red" />
+      </RouterLink>
     </nav>
   </header>
 
