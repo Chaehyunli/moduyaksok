@@ -162,7 +162,7 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
           v-model="form.dislikedText"
           label="싫어하는 것"
           :maxlength="PREFERENCE_MAX_LENGTH"
-          placeholder="해산물은 못 먹고, 사람 너무 많고 시끄러운 곳은 별로예요"
+          placeholder="콩이나 팥은 안 좋아하고, 사람이 너무 많고 시끄러운 곳은 별로예요"
         />
       </div>
 
