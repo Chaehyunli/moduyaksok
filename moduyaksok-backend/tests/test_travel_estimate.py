@@ -48,12 +48,12 @@ def test_reconcile_schedule_pushes_later_when_actual_exceeds_estimate():
     assert result[1].end_time == "11:50"
 
 
-def test_reconcile_schedule_pulls_earlier_when_slack_exceeds_threshold():
+def test_reconcile_schedule_preserves_large_slack_for_time_anchors():
     activities = [_activity("A", "10:00", "10:30"), _activity("B", "11:00", "11:30")]
     result = reconcile_schedule(
         activities, segment_index=0, estimated_buffer_minutes=90, actual_minutes=10
     )
-    assert result[1].start_time == "09:40"
+    assert result[1].start_time == "11:00"
 
 
 def test_reconcile_schedule_leaves_small_slack_untouched():

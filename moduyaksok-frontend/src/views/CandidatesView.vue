@@ -298,7 +298,17 @@ onMounted(async () => {
               <li v-for="a in c.activities" :key="a.name">
                 ·
                 <span
-                  v-if="activityTagColor(a)"
+                  v-if="a.isRequired"
+                  class="mr-1 inline-flex rounded-[2px] border-2 border-red bg-red px-1.5 py-0.5 text-sm leading-none text-paper"
+                  >필수</span
+                >
+                <span
+                  v-if="a.isRequired"
+                  class="rounded-[2px] border-2 border-red bg-red/10 px-1 font-bold text-ink"
+                  >{{ a.name }}</span
+                >
+                <span
+                  v-else-if="activityTagColor(a)"
                   class="rounded-[2px] border px-1"
                   :class="[activityTagColor(a)!.border, activityTagColor(a)!.bg]"
                   >{{ a.name }}</span

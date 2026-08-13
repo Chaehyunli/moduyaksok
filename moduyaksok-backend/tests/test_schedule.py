@@ -335,6 +335,36 @@ def test_get_schedule_returns_stored_candidates(client, session, monkeypatch):
     assert response.json()["candidates"][0]["candidate_id"] == "A"
 
 
+def test_get_schedule_rebuilds_search_groups_for_hybrid_transition_session(
+    client, session, monkeypatch
+):
+    """전환 직후 search_groups만 비어 저장된 세션도 수정용 장소 목록을 복구한다."""
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    from sqlmodel import select
+
+    from app.models.schedule import SchedulePlacePool
+
+    pool = session.exec(
+        select(SchedulePlacePool).where(SchedulePlacePool.session_id == UUID(session_id))
+    ).first()
+    raw = {**pool.places["places"][0], "source_category": "카페", "matched_tags": ["와플"]}
+    pool.places = {"places": [raw]}
+    pool.search_groups = {
+        "candidate_count": 0,
+        "groups": {"liked": [], "disliked": [], "categories": []},
+    }
+    session.add(pool)
+    session.commit()
+
+    body = client.get(f"/schedules/{session_id}", headers=headers).json()["place_pool"]
+
+    assert body["candidate_count"] == 1
+    assert body["groups"]["liked"][0]["label"] == "와플"
+    assert body["groups"]["categories"][0]["label"] == "카페"
+    assert body["groups"]["categories"][0]["places"][0]["place_id"]
+
+
 def test_get_schedule_draft_session_has_null_share_slug(client, session, monkeypatch):
     headers, session_id = _create_session(client, session, monkeypatch)
 
@@ -413,7 +443,13 @@ def test_candidate_preview_changes_only_after_explicit_save(client, session, mon
         update={
             "title": "바뀐 후보",
             "activities": [
-                _activity(1, "새 장소").model_copy(update={"place_id": "replacement-place"})
+                _activity(1, "새 장소").model_copy(
+                    update={
+                        "place_id": "replacement-place",
+                        "start_time": "15:00",
+                        "end_time": "16:00",
+                    }
+                )
             ],
         }
     )
@@ -437,6 +473,8 @@ def test_candidate_preview_changes_only_after_explicit_save(client, session, mon
     preview = preview_response.json()
     assert preview["candidate"]["title"] == "바뀐 후보"
     assert preview["candidate"]["feasibility_warning"] == "새 교통편 반영"
+    # 대체 장소는 새로 계산된 15시가 아니라 빠진 장소의 기존 10시 칸을 채운다.
+    assert preview["candidate"]["activities"][0]["start_time"] == "10:00"
 
     # 미리보기만 만든 상태에서는 목록/새로고침이 읽는 본 후보와 제외 목록이 그대로다.
     before_save = client.get(f"/schedules/{session_id}", headers=headers).json()
@@ -522,6 +560,39 @@ def test_candidate_removal_preview_recalculates_routes_without_saving(client, se
     session.expire_all()
     stored = session.get(ScheduleSession, UUID(session_id))
     assert stored.conditions.get("candidate_exclusions", {}).get("A") is None
+
+
+def test_candidate_removal_preview_preserves_later_activity_times(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    excluded_place_id = _pool_place_id(client, session_id, headers)
+    _make_candidate_contain_pool_place(session, session_id, excluded_place_id)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0].update({"start_time": "10:00", "end_time": "11:00"})
+    activities[1].update({"start_time": "18:00", "end_time": "19:00"})
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/removal/preview",
+        json={"excluded_place_ids": [excluded_place_id]},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["activities"][0]["start_time"] == "18:00"
 
 
 def test_removal_preview_ignores_legacy_exclusion_when_place_is_still_in_candidate(

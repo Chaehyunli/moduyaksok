@@ -769,6 +769,51 @@ def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():
     assert all(dict(plan.required_tag_anchors)["햄버거"] == "실제 버거집" for plan in plans)
 
 
+def test_tag_search_meal_results_without_source_category_form_distinct_anchors():
+    conditions = _CONDITIONS.model_copy(
+        update={"liked_tags": [PreferenceTag(tag="중식", verifiable=True, is_meal=True)]}
+    )
+    places = [
+        {
+            "title": f"중식당 {index}",
+            "category": "음식점>중식",
+            "matched_tags": ["중식"],
+            "mapx": str(1270000000 + index * 1000),
+            "mapy": str(375000000 + index * 1000),
+        }
+        for index in range(3)
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert len(plans) == 3
+    assert {dict(plan.required_tag_anchors)["중식"] for plan in plans} == {
+        "중식당 0",
+        "중식당 1",
+        "중식당 2",
+    }
+
+
+def test_required_meal_anchor_is_assigned_to_a_meal_window_before_generic_meal():
+    places = [_place("일반식당"), _place("필수식당"), _place("카페"), _place("저녁식당")]
+    candidates = [
+        {**_GANGNAM_CANDIDATE, "title": "일반식당", "source_category": "한식"},
+        {**_NEARBY_CANDIDATE, "title": "필수식당", "source_category": "중식"},
+        {**_NEARBY_CANDIDATE, "title": "카페", "source_category": "카페"},
+        {**_GANGNAM_CANDIDATE, "title": "저녁식당", "source_category": "양식"},
+    ]
+
+    activities = _schedule_places(
+        places,
+        _WINDOW_10_TO_21,
+        candidates,
+        meal_anchor_names=frozenset({"필수식당"}),
+    )
+
+    assert activities[1].start_time in {"12:00", "18:00"}
+    assert {activities[0].start_time, activities[1].start_time} == {"12:00", "18:00"}
+
+
 def test_candidate_plans_prefer_more_liked_tags_even_when_minimum_coverage_is_met():
     conditions = _CONDITIONS.model_copy(
         update={

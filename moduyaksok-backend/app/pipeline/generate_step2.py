@@ -520,7 +520,26 @@ def _is_eligible_tag_anchor(place: dict, tag: str, required_meal_tags: tuple[str
     if tag not in required_meal_tags:
         return True
     category = place.get("category", "").casefold()
-    return place.get("source_category") in _MEAL_CATEGORIES or tag.casefold() in category
+    non_meal_markers = ("카페", "디저트", "베이커리", "빵", "커피", "음료")
+    meal_markers = (
+        "음식점",
+        "한식",
+        "중식",
+        "일식",
+        "양식",
+        "분식",
+        "국수",
+        "요리",
+        "고기",
+    )
+    category_is_meal = any(marker in category for marker in meal_markers) and not any(
+        marker in category for marker in non_meal_markers
+    )
+    return (
+        place.get("source_category") in _MEAL_CATEGORIES
+        or tag.casefold() in category
+        or category_is_meal
+    )
 
 
 def _is_meal_place(place: dict, meal_tags: tuple[str, ...]) -> bool:
@@ -1071,11 +1090,23 @@ def _meal_anchor_starts(
     if len(meal_indices) < len(windows):
         return {}
 
+    preferred_indices = [i for i in meal_indices if places[i].name in meal_anchor_names]
     if len(windows) == 1:
-        selected_indices = [meal_indices[0]]
+        selected_indices = [preferred_indices[0] if preferred_indices else meal_indices[0]]
+    elif len(preferred_indices) >= 2:
+        selected_indices = [preferred_indices[0], preferred_indices[-1]]
+    elif len(preferred_indices) == 1:
+        # 필수 식사 태그가 하나뿐이어도 일반 식당 때문에 그 앵커가 점심·저녁
+        # 어디에도 배정되지 않는 일이 없게 한다. 방문 순서를 유지하며 나머지 한
+        # 슬롯만 일반 식사 장소로 채운다.
+        preferred = preferred_indices[0]
+        alternatives = [index for index in meal_indices if index != preferred]
+        before = [index for index in alternatives if index < preferred]
+        after = [index for index in alternatives if index > preferred]
+        selected_indices = [before[-1], preferred] if before else [preferred, after[0]]
     else:
-        # 첫·마지막 식사 장소를 각각 이른·늦은 식사 창에 붙이면 LLM이 고른
-        # 방문 순서도 유지하고, 중간 활동은 두 끼 사이로 자연스럽게 들어간다.
+        # 첫·마지막 식사 장소를 각각 이른·늦은 식사 창에 붙이면 방문 순서를
+        # 유지하고, 중간 활동은 두 끼 사이로 자연스럽게 들어간다.
         selected_indices = [meal_indices[0], meal_indices[-1]]
 
     date = time_range[0].date()

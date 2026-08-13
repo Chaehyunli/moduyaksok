@@ -140,3 +140,9 @@ def test_system_prompt_explains_meal_and_snack_classification():
     assert "is_meal" in _SYSTEM_PROMPT
     assert "와플" in _SYSTEM_PROMPT
     assert "삼겹살" in _SYSTEM_PROMPT
+
+
+def test_system_prompt_requires_preference_kind_and_priority():
+    assert "preference_kind" in _SYSTEM_PROMPT
+    assert "priority" in _SYSTEM_PROMPT
+    assert "중요도 1~5" in _SYSTEM_PROMPT

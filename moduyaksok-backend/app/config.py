@@ -34,6 +34,8 @@
 #             수학적으로 자동 보장되므로 별도 월간 카운터는 안 만들었다(단,
 #             NAVER_DAILY_CALL_LIMIT을 나중에 올리면 이 전제가 깨지니 재확인할 것).
 # ------------------------------------------------------------------
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -84,6 +86,10 @@ class Settings(BaseSettings):
     # 일일 호출 카운터 저장소. 여러 워커/인스턴스에서도 전역 집계가 맞아야 해서
     # in-memory 대신 Redis를 쓴다(app/services/rate_limiter.py).
     redis_url: str = "redis://localhost:6380/0"
+
+    # hybrid가 기본: AI는 자연어·소프트 취향·설명, 알고리즘은 장소/순서/다양성을
+    # 담당한다. legacy는 동일 장소 풀로 이전 3회 AI 선택 경로를 비교할 때만 쓴다.
+    schedule_generator_mode: Literal["hybrid", "legacy"] = "hybrid"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

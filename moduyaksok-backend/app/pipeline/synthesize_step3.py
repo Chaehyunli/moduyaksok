@@ -560,19 +560,14 @@ def _format_tags(tags: list[PreferenceTag]) -> str:
 
 _ROLE_TASK = """\
 # Role
-너는 만남 일정 후보 여러 개를 검토해서 사용자 조건에 맞는지 최종 판단하는 \
-전문 심사자다.
+너는 이미 결정론적 조건 검증을 통과한 만남 일정 후보들의 제목과 설명을 다듬는 \
+전문 에디터다.
 
 # Task
-- 각 후보(candidate_index로 구분)의 활동 목록이 disliked_tags 중 verifiable=true인 \
-태그와 category/name으로 명백히 겹치면(예: disliked_tags에 "해산물"이 있는데 \
-활동에 해산물 식당이 있음) keep=false로 드롭해라.
-- liked_tags 중 verifiable=true인 태그를 하나도 반영하지 못한 후보가 있고 다른 \
-후보는 반영했다면, 반영 못 한 후보도 검토해서 명백히 취향에서 벗어나면 \
-keep=false로 드롭해라. 애매하면 드롭하지 말고 keep=true로 살려라 — 확신 없는 \
-드롭은 하지 마라.
+- 후보를 삭제하거나 장소·순서·시간을 바꾸지 마라. 모든 후보는 keep=true다.
 - verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 \
-취향이니 드롭 근거로 쓰지 마라.
+취향이니 확정적 사실처럼 쓰지 마라.
+- title은 장소 목록을 잘 나타내면서 후보끼리 구분되는 짧은 일정 제목으로 써라.
 - keep=true인 후보에는 why_recommended를 써라 — "다른 후보보다 나아서"가 아니라 \
 "이 후보만의 강점이 뭔지"를 한두 문장으로 설명해라(랭킹 아님, 참고할 rationale \
 필드가 있다).
@@ -583,14 +578,14 @@ why_recommended에서 서로 다른 점을 강조해서 써라.
 "사람이 없습니다"가 아니라 "비교적 한산한 편일 수 있어요"처럼 hedge된 표현을 써라.
 
 # Format
-입력에 있는 candidate_index(0부터, 입력 순서 그대로)마다 keep/why_recommended/\
-feasibility_note를 하나씩 채워라. 판단 자체를 못 하겠는 후보도 keep=true로 \
-두고 why_recommended만 rationale 기반으로 채워라.\
+입력에 있는 candidate_index(0부터, 입력 순서 그대로)마다 title/keep/\
+why_recommended/feasibility_note를 하나씩 채워라. keep은 항상 true다.\
 """
 
 
 class _CandidateJudgment(BaseModel):
     candidate_index: int
+    title: str = ""
     keep: bool
     why_recommended: str
     feasibility_note: str
@@ -638,11 +633,11 @@ def synthesize_and_validate(
     이하)로 확정한다. 구조(장소·순서·시간)는 재배치하지 않는다:
     1. 규칙 기반 사전 필터링(_rule_based_filter) — 장소 환각·시간 겹침·같은 태그
        중복 반영·과도한 이동거리·식사 슬롯 누락은 예외 없이 드롭, 예산/시간 초과는 관용 범위
-       (20%/60분) 넘을 때만 드롭
+       (40%/60분) 넘을 때만 드롭
     2. 후보 간 유사도 검사(_similarity_score) — LLM 호출 전에 미리 계산해서
        겹침이 심한 쌍이 있으면 프롬프트 컨텍스트로 얹음
-    3. 살아남은 후보 전부를 한 번의 LLM 호출에 넣어 verifiable=true 태그 위반
-       재검증(추가 드롭 가능) + why_recommended 생성 + feasibility_note 작성
+    3. 살아남은 후보 전부를 한 번의 LLM 호출에 넣어 title·why_recommended와
+       feasibility_note 작성. AI 응답 누락이나 keep=false는 후보를 드롭하지 않음
     4. 규칙 기반 경고(예산/시간 관용 범위 내 초과)와 LLM의 feasibility_note를
        합쳐 최종 feasibility_warning으로 채움
 
@@ -652,12 +647,11 @@ def synthesize_and_validate(
 
     랭킹을 매기지 않는다 — 3개는 서로 다른 관점(가성비/동선최소화/취향반영)으로
     만들어진 것이라 "AI가 뽑은 1등"이 아니라 동등한 선택지로 제시한다.
-    candidate_id도 숫자가 아니라 A/B/C 문자를 쓴다(개수만큼만 부여, 3개를
-    억지로 보장하지 않는다 — 2026-08-09 결정).
+    candidate_id도 숫자가 아니라 A/B/C 문자를 쓴다(개수만큼만 부여).
 
     규칙 기반 필터링 이후 살아남은 후보가 하나도 없으면 LLM을 호출하지 않고
-    바로 InfeasibleResponse를 반환한다(비용 절약). LLM이 전부 keep=false로
-    드롭한 경우도 마찬가지.
+    바로 InfeasibleResponse를 반환한다(비용 절약). 하드 규칙을 통과한 뒤에는
+    LLM이 최종 후보 수를 줄일 권한을 갖지 않는다.
     """
     rule_survivors, rule_warnings = _rule_based_filter(candidates, conditions)
     if not rule_survivors:
@@ -688,10 +682,8 @@ def synthesize_and_validate(
     }
     for candidate_index, draft in enumerate(rule_survivors):
         entry = judgment_by_index.get(candidate_index)
-        # 사용자가 직접 고른 필수 장소를 모두 포함하고 결정론적 검증까지 통과한
-        # 후보는 AI의 주관적인 keep=false/응답 누락만으로 다시 없애지 않는다.
-        if not draft.required_place_ids and (entry is None or not entry.keep):
-            continue
+        # 하드 드롭 권한은 위 결정론적 필터에만 있다. AI 응답 누락이나 keep=false가
+        # 유효한 후보 수를 줄이지 못하게 하고, 설명만 안전하게 폴백한다.
         if len(kept) >= len(_CANDIDATE_IDS):
             break
 
@@ -702,7 +694,7 @@ def synthesize_and_validate(
         kept.append(
             Candidate(
                 candidate_id=_CANDIDATE_IDS[len(kept)],
-                title=draft.title,
+                title=entry.title.strip() if entry and entry.title.strip() else draft.title,
                 why_recommended=why_recommended,
                 activities=_to_activities(draft.activities),
                 routes=[],

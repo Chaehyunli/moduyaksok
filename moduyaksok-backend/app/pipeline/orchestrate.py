@@ -40,6 +40,11 @@
 # ------------------------------------------------------------------
 import asyncio
 
+from app.config import settings
+from app.pipeline.generate_algorithm_step2 import (
+    ensure_place_ids,
+    generate_algorithm_candidates,
+)
 from app.pipeline.generate_step2 import (
     generate_candidates_with_perspectives,
     generate_single_candidate,
@@ -103,8 +108,13 @@ async def generate_schedule_candidates(
         None, normalize_conditions, provider, api_key, raw_input
     )
 
-    place_candidates = await search_places_for_region(
-        conditions.region, conditions.liked_tags, conditions.disliked_tags, session_id=session_id
+    place_candidates = ensure_place_ids(
+        await search_places_for_region(
+            conditions.region,
+            conditions.liked_tags,
+            conditions.disliked_tags,
+            session_id=session_id,
+        )
     )
 
     result = await regenerate_schedule_candidates(
@@ -135,6 +145,34 @@ async def regenerate_schedule_candidates(
     전달돼 모든 결과에 실제 포함될 때만 반환된다.
     """
     loop = asyncio.get_running_loop()
+    place_candidates = ensure_place_ids(place_candidates)
+    if settings.schedule_generator_mode == "hybrid":
+        labeled_drafts = await loop.run_in_executor(
+            None,
+            generate_algorithm_candidates,
+            provider,
+            api_key,
+            conditions,
+            place_candidates,
+            required_place_ids,
+            precovered_liked_tags,
+        )
+        if not labeled_drafts:
+            return InfeasibleResponse(
+                detail="조건을 만족하는 일정 후보를 만들 수 없어요.",
+                reason="필수 장소·식사·좋아요·동선 조건을 동시에 만족하는 장소 조합이 부족합니다.",
+                adjustable_conditions=["required_places", "time_range", "region"],
+            )
+        return await loop.run_in_executor(
+            None,
+            synthesize_and_validate,
+            provider,
+            api_key,
+            session_id,
+            conditions,
+            [draft for _, draft in labeled_drafts],
+        )
+
     labeled_drafts = await (
         generate_candidates_with_perspectives(
             provider,

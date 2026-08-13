@@ -144,6 +144,9 @@ async function excludePlace(placeId: string | null) {
   if (
     !storedCandidate.value ||
     !placeId ||
+    storedCandidate.value.activities.some(
+      (activity) => activity.placeId === placeId && activity.isRequired,
+    ) ||
     previewCandidate.value ||
     refreshingRemovalRoutes.value
   ) return
@@ -276,7 +279,9 @@ function cancelCandidateChanges() {
                   <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-ink bg-red text-sm text-paper">{{ a.order }}</span>
                   {{ a.name }}
                 </p>
-                <p class="font-hand text-sm text-ink/60">{{ a.category }} · {{ a.time }}</p>
+                <p class="font-hand text-sm text-ink/60">
+                  {{ a.isRequired ? '필수 장소' : a.category }} · {{ a.time }}
+                </p>
                 <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
                 <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
                   영업시간은 자동으로 확인이 안 돼요 —
@@ -289,14 +294,13 @@ function cancelCandidateChanges() {
                 class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
               />
             </div>
-            <div v-if="a.placeId" class="mt-3 flex justify-end">
+            <div v-if="a.placeId && !a.isRequired" class="mt-3 flex justify-end">
               <DoodleButton
                 size="sm"
-                :variant="a.isRequired ? 'ghost' : 'primary'"
-                :disabled="Boolean(previewCandidate) || refreshingRemovalRoutes || a.isRequired"
+                :disabled="Boolean(previewCandidate) || refreshingRemovalRoutes"
                 @click="excludePlace(a.placeId)"
               >
-                {{ a.isRequired ? '필수 장소' : '이 장소 빼기' }}
+                이 장소 빼기
               </DoodleButton>
             </div>
           </DoodleCard>

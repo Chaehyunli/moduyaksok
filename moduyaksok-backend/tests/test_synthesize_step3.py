@@ -685,7 +685,7 @@ def test_synthesize_and_validate_builds_schedule_response_from_llm_judgment(monk
     assert result.candidates[0].why_recommended == "강점 설명"
 
 
-def test_synthesize_and_validate_drops_candidate_when_llm_keep_false(monkeypatch):
+def test_synthesize_and_validate_keeps_rule_valid_candidate_when_llm_keep_false(monkeypatch):
     monkeypatch.setattr(
         "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices={0})
     )
@@ -696,11 +696,11 @@ def test_synthesize_and_validate_drops_candidate_when_llm_keep_false(monkeypatch
 
     result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, candidates)
 
-    assert len(result.candidates) == 1
-    assert result.candidates[0].title == "살아남음"
+    assert len(result.candidates) == 2
+    assert [candidate.title for candidate in result.candidates] == ["살아남음", "드롭됨"]
 
 
-def test_synthesize_and_validate_returns_infeasible_when_llm_drops_all(monkeypatch):
+def test_synthesize_and_validate_ignores_llm_drop_all_when_rules_pass(monkeypatch):
     monkeypatch.setattr(
         "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices=set())
     )
@@ -708,7 +708,8 @@ def test_synthesize_and_validate_returns_infeasible_when_llm_drops_all(monkeypat
 
     result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, candidates)
 
-    assert isinstance(result, InfeasibleResponse)
+    assert isinstance(result, ScheduleResponse)
+    assert len(result.candidates) == 1
 
 
 def test_synthesize_and_validate_keeps_required_candidate_when_llm_drops_it(monkeypatch):

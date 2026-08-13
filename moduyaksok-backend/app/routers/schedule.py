@@ -47,6 +47,7 @@
 # ------------------------------------------------------------------
 import secrets
 from datetime import datetime
+from functools import partial
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -66,9 +67,10 @@ from app.models.schedule import (
 )
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
-from app.pipeline.generate_step2 import PERSPECTIVES, generate_single_candidate
+from app.pipeline.generate_algorithm_step2 import generate_algorithm_candidates
 from app.pipeline.orchestrate import generate_schedule_candidates, regenerate_schedule_candidates
 from app.pipeline.schemas import (
+    Activity,
     Candidate,
     InfeasibleResponse,
     NormalizedConditions,
@@ -294,6 +296,51 @@ def _place_pool_for_response(place_pool: dict) -> dict:
     }
 
 
+def _stored_place_pool_for_response(place_pool: SchedulePlacePool) -> dict:
+    """하이브리드 전환 직후 메타가 유실된 기존 세션의 검색 그룹을 복구한다.
+
+    병합 장소 풀에는 source_category와 matched_tags가 남아 있으므로 카테고리와
+    좋아요 검색 이력은 재구성할 수 있다. 싫어요 검색 결과는 안전한 장소 풀에서
+    제거된 데이터라 복구할 수 없고, 새 세션에서는 원래 search_groups를 보존한다.
+    """
+    raw_groups = place_pool.search_groups or _empty_place_pool()
+    raw_places = place_pool.places.get("places", [])
+    if raw_groups.get("candidate_count", 0) or not raw_places:
+        return _place_pool_for_response(raw_groups)
+
+    buckets: dict[str, dict[str, list[dict]]] = {"liked": {}, "categories": {}}
+    for raw in raw_places:
+        place = _place_with_id(raw)
+        snapshot = {
+            "place_id": place["place_id"],
+            "name": place.get("title", ""),
+            "category": place.get("category", ""),
+            "address": place.get("roadAddress") or place.get("address", ""),
+            "map_url": build_naver_map_url(place),
+        }
+        for tag in place.get("matched_tags") or (
+            [place["matched_tag"]] if place.get("matched_tag") else []
+        ):
+            buckets["liked"].setdefault(str(tag), []).append(snapshot)
+        if category := place.get("source_category"):
+            buckets["categories"].setdefault(str(category), []).append(snapshot)
+
+    rebuilt = {
+        "candidate_count": len(raw_places),
+        "groups": {
+            "liked": [
+                {"label": label, "places": places} for label, places in buckets["liked"].items()
+            ],
+            "disliked": [],
+            "categories": [
+                {"label": label, "places": places}
+                for label, places in buckets["categories"].items()
+            ],
+        },
+    }
+    return _place_pool_for_response(rebuilt)
+
+
 def _place_with_id(place: dict) -> dict:
     """저장 전/레거시 후보 풀에도 필수 장소용 안정 ID를 붙인다."""
     return {**place, "place_id": place.get("place_id") or place_id_for(place)}
@@ -413,7 +460,7 @@ def _effective_candidate_exclusions(
 
 
 def _candidate_without_places(candidate: Candidate, excluded_place_ids: set[str]) -> Candidate:
-    """선택한 장소를 제거하고 화면·지도용 순번과 오래된 경로를 초기화한다."""
+    """선택한 장소를 제거하되, 남은 활동의 원래 시간은 보존한다."""
     remaining = [
         activity.model_copy(deep=True)
         for activity in candidate.activities
@@ -422,6 +469,64 @@ def _candidate_without_places(candidate: Candidate, excluded_place_ids: set[str]
     for order, activity in enumerate(remaining, start=1):
         activity.order = order
     return candidate.model_copy(update={"activities": remaining, "routes": []}, deep=True)
+
+
+def _place_replacements_in_removed_slots(
+    current_candidate: Candidate,
+    replacement_candidate: Candidate,
+    place_pool: SchedulePlacePool,
+    excluded_place_ids: set[str],
+) -> Candidate:
+    """새 장소를 제거된 활동의 시간 칸에 넣어 식사 시간과 나머지 여유를 지킨다."""
+    place_id_by_name = {
+        str(place.get("title")): _place_with_id(place)["place_id"]
+        for place in place_pool.places.get("places", [])
+        if place.get("title")
+    }
+
+    def activity_place_id(activity: Activity) -> str | None:
+        return activity.place_id or place_id_by_name.get(activity.name)
+
+    removed_slots = [
+        activity
+        for activity in current_candidate.activities
+        if activity_place_id(activity) in excluded_place_ids
+    ]
+    current_place_ids = {
+        place_id
+        for activity in current_candidate.activities
+        if (place_id := activity_place_id(activity))
+    }
+    new_activities = [
+        activity
+        for activity in replacement_candidate.activities
+        if activity_place_id(activity) not in current_place_ids
+    ]
+    if not removed_slots or len(new_activities) != len(removed_slots):
+        return replacement_candidate
+
+    slotted_replacements = [
+        activity.model_copy(update={"start_time": slot.start_time, "end_time": slot.end_time})
+        for activity, slot in zip(
+            sorted(new_activities, key=lambda item: (item.start_time, item.end_time)),
+            sorted(removed_slots, key=lambda item: (item.start_time, item.end_time)),
+            strict=True,
+        )
+    ]
+    remaining = [
+        activity.model_copy(deep=True)
+        for activity in current_candidate.activities
+        if activity_place_id(activity) not in excluded_place_ids
+    ]
+    activities = sorted(
+        [*remaining, *slotted_replacements],
+        key=lambda item: (item.start_time, item.end_time, item.name),
+    )
+    for order, activity in enumerate(activities, start=1):
+        activity.order = order
+    return replacement_candidate.model_copy(
+        update={"activities": activities, "routes": []}, deep=True
+    )
 
 
 def _apply_selected_options(candidate: Candidate, selected_options: list[SelectedOption]) -> None:
@@ -483,26 +588,28 @@ async def _generate_candidate_replacement(
 
     credential = _get_user_credential(session, current_user.id)
     api_key = decrypt_key(credential.encrypted_key)
-    perspective_index = ord(candidate_id[:1]) - ord("A")
-    if not 0 <= perspective_index < len(PERSPECTIVES):
-        raise HTTPException(status.HTTP_409_CONFLICT, "이 후보의 생성 관점을 찾을 수 없습니다.")
-
     import asyncio
 
     loop = asyncio.get_running_loop()
     try:
-        draft = await loop.run_in_executor(
+        labeled_drafts = await loop.run_in_executor(
             None,
-            generate_single_candidate,
-            credential.provider,
-            api_key,
-            conditions,
-            available_places,
-            PERSPECTIVES[perspective_index][0],
-            tuple(sorted(fixed_place_ids)),
-            _precovered_liked_tags(place_pool, fixed_place_ids),
-            replacement_count,
+            partial(
+                generate_algorithm_candidates,
+                credential.provider,
+                api_key,
+                conditions,
+                available_places,
+                tuple(sorted(required_ids)),
+                _precovered_liked_tags(place_pool, fixed_place_ids),
+                fixed_place_ids=tuple(sorted(fixed_place_ids)),
+                candidate_limit=1,
+                target_count=len(fixed_place_ids) + replacement_count,
+            ),
         )
+        if not labeled_drafts:
+            raise ValueError("남은 장소를 유지하면서 넣을 대체 장소를 찾지 못했습니다.")
+        draft = labeled_drafts[0][1]
         result = await loop.run_in_executor(
             None,
             synthesize_and_validate,
@@ -664,7 +771,7 @@ def get_schedule(
         session_id=str(schedule_session.id),
         candidates=candidates,
         status=schedule_session.status,
-        place_pool=_place_pool_for_response(place_pool.search_groups)
+        place_pool=_stored_place_pool_for_response(place_pool)
         if place_pool
         else _empty_place_pool(),
         required_places=_required_places_for_session(session, schedule_session.id),
@@ -922,6 +1029,12 @@ async def preview_candidate_replacement(
         combined_exclusions,
         len(requested_exclusions),
     )
+    updated = _place_replacements_in_removed_slots(
+        candidate_with_source_categories(session, schedule_session, current_candidate),
+        updated,
+        place_pool,
+        requested_exclusions,
+    )
     start_raw, end_raw = schedule_session.conditions["time_range"]
     time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
     enriched = await enrich_routes(updated, time_range)
@@ -1170,27 +1283,50 @@ async def regenerate_schedule(
 
         loop = asyncio.get_running_loop()
         replacements: list[Candidate] = []
+        used_non_required_ids: set[str] = set()
         for candidate_id in candidate_ids:
-            perspective_index = ord(candidate_id[:1]) - ord("A")
-            if not 0 <= perspective_index < len(PERSPECTIVES):
-                continue
             candidate_places = _candidate_pool_without_exclusions(
                 place_pool,
                 effective_exclusions[candidate_id],
                 required_place_ids_set,
             )
+            diverse_places = [
+                place
+                for place in candidate_places
+                if _place_with_id(place)["place_id"] not in used_non_required_ids
+                or _place_with_id(place)["place_id"] in required_place_ids_set
+            ]
             try:
-                draft = await loop.run_in_executor(
+                labeled_drafts = await loop.run_in_executor(
                     None,
-                    generate_single_candidate,
-                    credential.provider,
-                    api_key,
-                    conditions,
-                    candidate_places,
-                    PERSPECTIVES[perspective_index][0],
-                    required_place_ids,
-                    precovered_tags,
+                    partial(
+                        generate_algorithm_candidates,
+                        credential.provider,
+                        api_key,
+                        conditions,
+                        diverse_places,
+                        required_place_ids,
+                        precovered_tags,
+                        candidate_limit=1,
+                    ),
                 )
+                if not labeled_drafts and diverse_places != candidate_places:
+                    labeled_drafts = await loop.run_in_executor(
+                        None,
+                        partial(
+                            generate_algorithm_candidates,
+                            credential.provider,
+                            api_key,
+                            conditions,
+                            candidate_places,
+                            required_place_ids,
+                            precovered_tags,
+                            candidate_limit=1,
+                        ),
+                    )
+                if not labeled_drafts:
+                    raise ValueError("후보별 제외 조건을 지키는 장소 조합이 부족합니다.")
+                draft = labeled_drafts[0][1]
                 one_result = await loop.run_in_executor(
                     None,
                     synthesize_and_validate,
@@ -1214,8 +1350,12 @@ async def regenerate_schedule(
                         else {"detail": "대체 후보를 만들 수 없습니다."}
                     ),
                 )
-            replacements.append(
-                one_result.candidates[0].model_copy(update={"candidate_id": candidate_id})
+            replacement = one_result.candidates[0].model_copy(update={"candidate_id": candidate_id})
+            replacements.append(replacement)
+            used_non_required_ids.update(
+                activity.place_id
+                for activity in replacement.activities
+                if activity.place_id and activity.place_id not in required_place_ids_set
             )
         result = ScheduleResponse(session_id=str(session_id), candidates=replacements)
     else:
@@ -1248,7 +1388,7 @@ async def regenerate_schedule(
     return ScheduleResponse(
         session_id=str(session_id),
         candidates=response_candidates,
-        place_pool=_place_pool_for_response(place_pool.search_groups),
+        place_pool=_stored_place_pool_for_response(place_pool),
         required_places=required_places,
         applied_required_place_ids=sorted(required_place_ids),
     )

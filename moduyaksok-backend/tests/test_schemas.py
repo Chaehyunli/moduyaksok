@@ -91,3 +91,11 @@ def test_verifiable_and_non_verifiable_tags_both_survive_mixed_input():
 
     assert len(result.liked_tags) == MAX_VERIFIABLE_TAGS + 1
     assert any(t.tag == "분위기" for t in result.liked_tags)
+
+
+def test_preference_priority_is_limited_to_one_through_five():
+    assert PreferenceTag(tag="전시", verifiable=True, priority=5).priority == 5
+    with pytest.raises(ValidationError):
+        PreferenceTag(tag="전시", verifiable=True, priority=0)
+    with pytest.raises(ValidationError):
+        PreferenceTag(tag="전시", verifiable=True, priority=6)

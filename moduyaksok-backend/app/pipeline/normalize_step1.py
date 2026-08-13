@@ -82,34 +82,45 @@ _SYSTEM_PROMPT = f"""\
 무관하다 — 검색에 안 쓰이니 개수 제한 없이 다 추출해라.
 
 # Format
-liked_tags, disliked_tags 각각 {{tag, verifiable, is_meal}} 객체 배열로 출력.
+liked_tags, disliked_tags 각각
+{{tag, verifiable, is_meal, preference_kind, priority}} 객체 배열로 출력.
+preference_kind는 food_menu/food_property/place_type/activity_level/atmosphere/crowd/environment
+중 하나다. priority는 중요도 1~5이며 강한 표현·먼저 강조한 요구를 높게 둔다.
 
 # Examples
 
 입력: 좋아하는 것: 콩국수나 텐동, 와플 먹고 싶어 / 싫어하는 것: (없음)
-출력: liked_tags=[{{tag: "콩국수", verifiable: true, is_meal: true}}, \
-{{tag: "텐동", verifiable: true, is_meal: true}}, \
-{{tag: "와플", verifiable: true, is_meal: false}}], disliked_tags=[]
+출력: liked_tags=[{{tag: "콩국수", verifiable: true, is_meal: true, \
+preference_kind: "food_menu", priority: 3}}, \
+{{tag: "텐동", verifiable: true, is_meal: true, preference_kind: "food_menu", priority: 3}}, \
+{{tag: "와플", verifiable: true, is_meal: false, preference_kind: "food_menu", priority: 3}}], \
+disliked_tags=[]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: 해산물 빼고 매운 것도 못 먹어요
-출력: liked_tags=[], disliked_tags=[{{tag: "해산물", verifiable: true, is_meal: false}}, \
-{{tag: "매운 음식", verifiable: true, is_meal: false}}]
+출력: liked_tags=[], disliked_tags=[{{tag: "해산물", verifiable: true, is_meal: false, \
+preference_kind: "food_menu", priority: 4}}, \
+{{tag: "매운 음식", verifiable: true, is_meal: false, preference_kind: "food_property", \
+priority: 4}}]
 
 입력: 좋아하는 것: (없음) / 싫어하는 것: (없음)
 출력: liked_tags=[], disliked_tags=[]
 
 입력: 좋아하는 것: 조용하고 차분한 분위기가 좋아요 / 싫어하는 것: 사람 많은 곳은 싫어요
-출력: liked_tags=[{{tag: "조용한 분위기", verifiable: false, is_meal: false}}], \
-disliked_tags=[{{tag: "사람 많은 곳", verifiable: false, is_meal: false}}]
+출력: liked_tags=[{{tag: "조용한 분위기", verifiable: false, is_meal: false, \
+preference_kind: "atmosphere", priority: 4}}], \
+disliked_tags=[{{tag: "사람 많은 곳", verifiable: false, is_meal: false, \
+preference_kind: "crowd", priority: 4}}]
 
 입력: 좋아하는 것: 저는 무조건 파스타예요. 스시도 좋고, 마라탕도 자주 먹고, 초밥이랑 \
 라멘도 자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / \
 싫어하는 것: (없음)
-출력: liked_tags=[{{tag: "파스타", verifiable: true, is_meal: true}}, \
-{{tag: "스시", verifiable: true, is_meal: true}}, \
-{{tag: "마라탕", verifiable: true, is_meal: true}}, \
-{{tag: "초밥", verifiable: true, is_meal: true}}, \
-{{tag: "라멘", verifiable: true, is_meal: true}}], disliked_tags=[] \
+출력: liked_tags=[{{tag: "파스타", verifiable: true, is_meal: true, \
+preference_kind: "food_menu", priority: 5}}, \
+{{tag: "스시", verifiable: true, is_meal: true, preference_kind: "food_menu", priority: 4}}, \
+{{tag: "마라탕", verifiable: true, is_meal: true, preference_kind: "food_menu", priority: 4}}, \
+{{tag: "초밥", verifiable: true, is_meal: true, preference_kind: "food_menu", priority: 3}}, \
+{{tag: "라멘", verifiable: true, is_meal: true, preference_kind: "food_menu", priority: 3}}], \
+disliked_tags=[] \
 (타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 \
 {MAX_VERIFIABLE_TAGS}번째 다음부터는 버린다 — 등장 순서가 아니라 사용자가 표현한 \
 중요도로 판단한 것)

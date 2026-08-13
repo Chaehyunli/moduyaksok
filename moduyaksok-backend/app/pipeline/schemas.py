@@ -95,7 +95,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 # liked_tags/disliked_tags 중 verifiable=true인 태그 하나당 naver_local_search가
 # "{region} {tag}" 검색을 추가로 호출한다(2026-08-11 설계) — 자유텍스트라 개수
@@ -117,6 +117,21 @@ class PreferenceTag(BaseModel):
     # 주관적 태그면 False (예: "사람 많은 곳", "조용한 분위기"). Step2가 이 값으로
     # "반드시 지킬 것"과 "참고만 할 것"을 구분한다.
     verifiable: bool
+    # 자연어 요구의 의미 축. 구버전 세션은 값이 없으므로 None을 허용한다.
+    preference_kind: (
+        Literal[
+            "food_menu",
+            "food_property",
+            "place_type",
+            "activity_level",
+            "atmosphere",
+            "crowd",
+            "environment",
+        ]
+        | None
+    ) = None
+    # 사용자가 먼저 말하거나 강하게 강조한 요구일수록 높은 1~5 우선순위.
+    priority: int = Field(default=1, ge=1, le=5)
     # 이 태그가 점심/저녁 슬롯을 자연스럽게 채울 식사인지. "음식인가"가 아니라
     # 일정에서 한 끼로 삼을 수 있는지의 분류다 — 삼겹살/콩국수/스테이크는 True,
     # 와플/소금빵/커피는 False. verifiable=False인 주관적 태그도 호환성을 위해

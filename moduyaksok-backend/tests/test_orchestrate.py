@@ -39,6 +39,7 @@ def _candidate(title: str) -> Candidate:
 
 
 def _patch_common(monkeypatch, *, labeled_drafts):
+    monkeypatch.setattr("app.pipeline.orchestrate.settings.schedule_generator_mode", "legacy")
     monkeypatch.setattr(
         "app.pipeline.orchestrate.normalize_conditions",
         lambda *a: _CONDITIONS,
@@ -86,7 +87,8 @@ async def test_returns_first_result_without_retry_when_nothing_missing(monkeypat
     assert isinstance(result, ScheduleResponse)
     assert call_count == 1
     assert conditions is _CONDITIONS
-    assert place_candidates == [{"title": "가게1"}]
+    assert place_candidates[0]["title"] == "가게1"
+    assert place_candidates[0]["place_id"]
 
 
 async def test_retries_only_the_missing_perspective(monkeypatch):
@@ -201,3 +203,28 @@ async def test_returns_infeasible_when_retry_also_fails(monkeypatch):
 
     assert isinstance(result, InfeasibleResponse)
     assert call_count == 2
+
+
+async def test_hybrid_mode_uses_joint_algorithm_once_without_legacy_retry(monkeypatch):
+    monkeypatch.setattr("app.pipeline.orchestrate.settings.schedule_generator_mode", "hybrid")
+    monkeypatch.setattr("app.pipeline.orchestrate.normalize_conditions", lambda *a: _CONDITIONS)
+
+    async def fake_search(*a, **kwargs):
+        return [{"title": "가게1", "address": "서울 강남구 1"}]
+
+    monkeypatch.setattr("app.pipeline.orchestrate.search_places_for_region", fake_search)
+    calls = []
+
+    def fake_algorithm(provider, api_key, conditions, places, required_ids, precovered):
+        calls.append((places, required_ids, precovered))
+        return [("공동 최적화", _draft("A"))]
+
+    monkeypatch.setattr("app.pipeline.orchestrate.generate_algorithm_candidates", fake_algorithm)
+    expected = ScheduleResponse(session_id="s1", candidates=[_candidate("A")])
+    monkeypatch.setattr("app.pipeline.orchestrate.synthesize_and_validate", lambda *a: expected)
+
+    result, _, places = await generate_schedule_candidates("anthropic", "sk-fake", "s1", _RAW_INPUT)
+
+    assert result is expected
+    assert len(calls) == 1
+    assert places[0]["place_id"]

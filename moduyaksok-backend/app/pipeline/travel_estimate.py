@@ -26,9 +26,6 @@ _WALK_TRANSIT_THRESHOLD_M = 1000  # 보정된 거리가 이 이하면 도보, �
 _SAFETY_MARGIN = 1.2  # Step2 시점 추정치는 불확실하니 20% 여유를 더 얹는다(2026-08-10 결정)
 _MIN_BUFFER_MINUTES = 5
 
-# Step4가 실제 이동시간을 받았을 때, 추정과 비교해 재조정할지 판단하는 기준.
-_PULL_FORWARD_THRESHOLD_MINUTES = 60  # 이보다 여유가 많이 남으면(=실제가 훨씬 짧으면) 당긴다
-
 
 def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """두 WGS84 좌표 사이 직선거리(미터)."""
@@ -69,13 +66,11 @@ def reconcile_schedule(
 
     - 실제가 추정보다 길면(초과): 반드시 뒤로 민다 — 안 그러면 activities 사이에
       물리적으로 불가능한 시간 겹침이 생긴다.
-    - 실제가 추정보다 _PULL_FORWARD_THRESHOLD_MINUTES(60분) 넘게 짧으면: 앞으로
-      당겨서 불필요하게 긴 공백을 줄인다.
-    - 그 사이(60분 이내 여유)는 건드리지 않는다 — 사소한 차이로 일정이 매번
-      흔들리는 걸 방지한다.
+    - 실제가 추정보다 짧아도: 앞으로 당기지 않는다. 점심·저녁처럼 사용자가
+      기대하는 시간 앵커와, 장소를 빼서 생긴 여유 구간을 보존해야 하기 때문이다.
     """
     delta = actual_minutes - estimated_buffer_minutes
-    if delta <= 0 and delta > -_PULL_FORWARD_THRESHOLD_MINUTES:
+    if delta <= 0:
         return activities
 
     shifted = list(activities)
@@ -121,11 +116,7 @@ if __name__ == "__main__":
     pushed = reconcile_schedule(acts, 0, 30, 50)
     assert pushed[1].start_time == "11:20", pushed[1].start_time
 
-    # 여유가 60분 넘게 남음: 추정 90분인데 실제 10분 -> 80분 당겨져야 함
-    slack = reconcile_schedule(acts, 0, 90, 10)
-    assert slack[1].start_time == "09:40", slack[1].start_time
-
-    # 여유가 60분 이내: 그대로 유지
+    # 실제 이동이 짧아도 점심·저녁 앵커와 여유 시간을 보존한다.
     unchanged = reconcile_schedule(acts, 0, 40, 10)
     assert unchanged[1].start_time == "11:00", unchanged[1].start_time
 
