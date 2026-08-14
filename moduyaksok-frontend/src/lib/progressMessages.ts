@@ -22,6 +22,7 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   messages.push('포스트잇을 붙이고 있어요')
   messages.push(`${region} 맛집을 열심히 찾아보고 있어요`)
   messages.push(`${region} 놀거리를 찾아보고 있어요`)
+  messages.push('조건에 맞는 장소를 골라보고 있어요')
 
   const liked = quote(conditions.likedText)
   if (liked) messages.push(`"${liked}" 취향을 일정에 넣고 있어요`)
@@ -29,7 +30,9 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   const disliked = quote(conditions.dislikedText)
   if (disliked) messages.push(`"${disliked}"은/는 일정에서 빼고 있어요`)
 
+  messages.push('식사 시간과 여유 시간을 맞추고 있어요')
   messages.push('이동 동선을 계산하고 있어요')
+  messages.push('서로 다른 일정 후보를 비교하고 있어요')
   messages.push('일정을 다듬고 있어요')
   return messages
 }
