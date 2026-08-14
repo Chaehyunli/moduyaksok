@@ -1105,3 +1105,28 @@ def test_delete_schedule_for_other_users_session_returns_403(client, session, mo
     response = client.delete(f"/schedules/{session_id}", headers=other_headers)
 
     assert response.status_code == 403
+
+
+def test_bulk_delete_schedules_deletes_selected_drafts_and_confirmed(client, session, monkeypatch):
+    """검색·필터 결과에서 고른 일정들은 상태와 관계없이 한 요청으로 삭제한다."""
+    from app.models.schedule import ScheduleSession
+
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    _mock_pipeline_success(monkeypatch)
+    draft_id = client.post("/schedules", json=_CREATE_BODY, headers=headers).json()["session_id"]
+    confirmed_id = client.post("/schedules", json=_CREATE_BODY, headers=headers).json()[
+        "session_id"
+    ]
+    client.post(f"/schedules/{confirmed_id}/confirm", json={"candidate_id": "A"}, headers=headers)
+
+    response = client.post(
+        "/schedules/bulk-delete",
+        json={"session_ids": [draft_id, confirmed_id]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_count": 2}
+    assert session.get(ScheduleSession, UUID(draft_id)) is None
+    assert session.get(ScheduleSession, UUID(confirmed_id)) is None

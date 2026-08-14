@@ -68,7 +68,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -159,6 +159,14 @@ class CandidateRemovalSaveRequest(BaseModel):
 
 class ScheduleTitleRequest(BaseModel):
     title: str
+
+
+class BulkDeleteSchedulesRequest(BaseModel):
+    session_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class BulkDeleteSchedulesResponse(BaseModel):
+    deleted_count: int
 
 
 class ScheduleSummary(BaseModel):
@@ -919,6 +927,38 @@ def update_confirmed_schedule_title(
     )
 
 
+def _delete_schedule_records(session: Session, schedule: ScheduleSession) -> None:
+    """일정과 그에 종속된 모든 데이터를 삭제하되, commit은 호출자가 담당한다."""
+    for model in (ShareLink, FeedbackMessage, ScheduleRequiredPlace, SchedulePlacePool):
+        for row in session.exec(select(model).where(model.session_id == schedule.id)).all():
+            session.delete(row)
+    session.delete(schedule)
+
+
+@router.post("/schedules/bulk-delete", response_model=BulkDeleteSchedulesResponse)
+def bulk_delete_schedules(
+    body: BulkDeleteSchedulesRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> BulkDeleteSchedulesResponse:
+    """선택한 일정들을 한 번에 삭제한다.
+
+    삭제를 시작하기 전에 모든 일정의 존재 여부와 소유권을 검사한다. 하나라도
+    다른 사용자의 일정이거나 존재하지 않으면 아무 일정도 삭제하지 않는다.
+    """
+    if len(set(body.session_ids)) != len(body.session_ids):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "중복된 일정이 포함되어 있습니다."
+        )
+    schedules = [
+        _get_owned_session(session, session_id, current_user) for session_id in body.session_ids
+    ]
+    for schedule in schedules:
+        _delete_schedule_records(session, schedule)
+    session.commit()
+    return BulkDeleteSchedulesResponse(deleted_count=len(schedules))
+
+
 @router.delete("/schedules/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_schedule(
     session_id: UUID,
@@ -934,10 +974,7 @@ def delete_schedule(
     애초에 없으므로 그 루프는 자연히 0건 처리된다.
     """
     schedule = _get_owned_session(session, session_id, current_user)
-    for model in (ShareLink, FeedbackMessage, ScheduleRequiredPlace, SchedulePlacePool):
-        for row in session.exec(select(model).where(model.session_id == session_id)).all():
-            session.delete(row)
-    session.delete(schedule)
+    _delete_schedule_records(session, schedule)
     session.commit()
 
 

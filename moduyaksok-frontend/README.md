@@ -54,6 +54,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | 컴포넌트 | 용도 |
 |---|---|
 | `DoodleButton` | 버튼. `variant="primary\|ghost"`, `size="md\|sm"` |
+| `DoodleCheckbox` | 손그림 체크박스. `v-model`/`modelValue`로 선택 상태를 제어하며, 선택 시 빨간 체크 표시 |
 | `DoodleInput` | 텍스트 입력. `label`, `error`, `step`(숫자 입력 증감 단위) prop |
 | `DoodleSelect` | 커스텀 드롭다운(리스트박스). 옵션 패널까지 손그림 스타일 적용 — 네이티브 `<select>`는 펼침 목록을 CSS로 못 건드려서 직접 구현. `options`(`{value,label}[]`), `placeholder`, `disabled` prop, 키보드 네비게이션(↑↓/Enter/Esc) 지원 (지역 시/도·세부지역 선택 등 — 목록이 길어 `DoodleSelectCard` 대신 씀) |
 | `DoodleTextarea` | 여러 줄 입력 (피드백, 선호/비선호 자유 텍스트 등). `maxlength` prop 주면 우측에 글자수 카운터 표시 |
@@ -85,7 +86,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |
 | `ShareView.vue` | `/schedules/:sessionId/candidates/:candidateId/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |
 | `PublicShareView.vue` | `/share/:slug` | [23_공유_일정_열람](../docs/와이어프레임/23_공유_일정_열람.png) | ✗ (공개) | `DoodleCard`, `DoodleUnderline`, `DoodleMap` |
-| `ConfirmedSchedulesView.vue` | `/confirmed-schedules` | 없음(와이어프레임 표에 누락돼 있던 걸 2026-08-14에 발견 — 표만 보완, 화면 자체는 이미 있었음) | ✓ | `DoodleAlert`, `DoodleBadge`, `DoodleButton`, `DoodleCard` — 화면 제목은 "나의 일정"(2026-08-14, "확정된 일정"에서 변경). 확정 전 draft도 함께 나열하고(`DoodleBadge`로 초안/확정 구분), draft는 이름 수정·삭제 없이 이어서 만들기만 가능 |
+| `ConfirmedSchedulesView.vue` | `/confirmed-schedules` | 없음(와이어프레임 표에 누락돼 있던 걸 2026-08-14에 발견 — 표만 보완, 화면 자체는 이미 있었음) | ✓ | `DoodleAlert`, `DoodleBadge`, `DoodleButton`, `DoodleCard`, `DoodleCheckbox` — 화면 제목은 "나의 일정"(2026-08-14, "확정된 일정"에서 변경). 확정 전 draft도 함께 나열하고(`DoodleBadge`로 초안/확정 구분), draft는 이름 수정·삭제 없이 이어서 만들기만 가능 |
 | `SettingsView.vue` | `/settings` | [25_설정_화면](../docs/와이어프레임/25_설정_화면.png) | ✓ | `DoodleCard`, `DoodleBadge` |
 | `settings/ApiKeyView.vue` | `/settings/api-key` | [26_AI_API_키_관리](../docs/와이어프레임/26_AI_API_키_관리.png) | ✓ | `DoodleCard`, `DoodleBadge`, `DoodleDivider`, `DoodleButton` |
 | `settings/ApiKeyProviderView.vue` | `/settings/api-key/provider` | [27_AI_제공자_선택](../docs/와이어프레임/27_AI_제공자_선택.png) | ✓ | `DoodleSelectCard`, `DoodleButton` |

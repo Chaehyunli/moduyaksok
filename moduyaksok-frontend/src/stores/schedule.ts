@@ -386,8 +386,12 @@ export const useScheduleStore = defineStore('schedule', {
         shareSlug: data.share_slug ?? null,
       }
     },
-    async deleteConfirmedSchedule(sessionId: string) {
+    async deleteSchedule(sessionId: string) {
       await api.delete(`/schedules/${sessionId}`)
+    },
+    async deleteSchedules(sessionIds: string[]): Promise<number> {
+      const { data } = await api.post('/schedules/bulk-delete', { session_ids: sessionIds })
+      return data.deleted_count
     },
     async addRequiredPlace(place: PlacePoolItem) {
       if (!this.sessionId || this.requiredPlaces.some((item) => item.placeId === place.placeId)) {
