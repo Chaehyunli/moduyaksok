@@ -65,6 +65,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `DoodleAlert` | 경고/에러 배너. `#actions` 슬롯으로 대응 버튼 배치 |
 | `DoodleModal` | 모달. `open`, `title` prop, `@close` |
 | `DoodleStepper` | 단계 진행 표시 (다단계 입력 폼용) |
+| `DoodleProgress` | 대기 중 순환 진행 문구 + 인디케이터 바. `messages`(string[]), `intervalMs` prop — 일정 생성/재생성처럼 응답까지 시간이 걸리는 작업에서 문구를 2.2초 간격으로 순환 표시 |
 | `DoodleDivider` | 점선 구분선 |
 | `DoodleStar` / `DoodleArrow` / `DoodleUnderline` | 장식용 손그림 SVG (별, 화살표, 밑줄 강조) |
 
@@ -78,8 +79,8 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 |---|---|---|---|---|
 | `HomeView.vue` | `/` | [01_홈_랜딩_페이지](../docs/와이어프레임/01_홈_랜딩_페이지.png) | ✗ | `DoodleButton`, `DoodleStar`, `DoodleArrow`, `DoodleUnderline`, `StickyNote` |
 | `LoginView.vue` | `/login` | [02_로그인_화면](../docs/와이어프레임/02_로그인_화면.png) | ✗ | `DoodleButton`, `DoodleUnderline` |
-| `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton` |
-| `CandidatesView.vue` | `/schedules` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton`, `DoodleAccordion` — 검색 후보를 태그/카테고리별로 열람하고 장소를 필수 포함 칩으로 추가·해제한 뒤 재생성 |
+| `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton`, `DoodleProgress` |
+| `CandidatesView.vue` | `/schedules` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton`, `DoodleAccordion`, `DoodleProgress` — 검색 후보를 태그/카테고리별로 열람하고 장소를 필수 포함 칩으로 추가·해제한 뒤 재생성 |
 | `CandidateDetailView.vue` | `/schedules/:id` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert`, `DoodleMap`, `DoodleAccordion` |
 | `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |
 | `ShareView.vue` | `/schedules/:id/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |

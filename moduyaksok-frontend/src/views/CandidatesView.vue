@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useScheduleStore } from '../stores/schedule'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
+import DoodleProgress from '../components/doodle/DoodleProgress.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
 import { tagColorForLabel, tagColorStyle, type TagColorStyle } from '../lib/tagColors'
+import { buildProgressMessages } from '../lib/progressMessages'
 import type { Activity, PlacePoolItem } from '../stores/schedule'
 
 const router = useRouter()
+const route = useRoute()
 const store = useScheduleStore()
 
 const rotates = ['-2deg', '1.5deg', '-1deg']
@@ -19,6 +22,13 @@ const changingRequiredPlaceId = ref<string | null>(null)
 const regenerating = ref(false)
 const requiredPlaceError = ref('')
 const scheduleRegion = computed(() => store.conditions?.region ?? '')
+const progressMessages = computed(() =>
+  buildProgressMessages({
+    region: store.conditions?.region ?? '',
+    likedText: store.conditions?.likedText ?? '',
+    dislikedText: store.conditions?.dislikedText ?? '',
+  }),
+)
 const restoringDraft = ref(true)
 // 코스 카드의 장소가 어느 liked 라벨에서 나왔는지 색으로 매칭하는 데 쓴다 —
 // pill 색과 같은 순서(index)를 공유해야 두 화면에서 색이 일치한다.
@@ -31,7 +41,7 @@ function activityTagColor(a: Activity): TagColorStyle | null {
 
 function openCandidate(id: string) {
   store.selectCandidate(id)
-  router.push(`/schedules/${id}`)
+  router.push(`/schedules/${route.params.sessionId}/candidates/${id}`)
 }
 
 function updateExpandedCategory(groupLabel: string, event: Event) {
@@ -80,8 +90,24 @@ async function regenerateSchedule() {
 }
 
 onMounted(async () => {
-  if (!store.sessionId || store.candidates.length === 0) {
-    await store.restoreDraftSchedule()
+  const sessionId = route.params.sessionId as string | undefined
+  if (sessionId) {
+    // URL이 곧 "어느 세션(대화방)"인지 특정하므로, 메모리에 이미 같은 세션이
+    // 로드돼 있지 않으면(다른 세션에서 넘어옴/새로고침/새 탭에 URL 붙여넣기)
+    // 그 세션을 직접 조회한다 — localStorage/최근 draft 추측에 기대지 않는다.
+    if (store.sessionId !== sessionId || store.candidates.length === 0) {
+      try {
+        await store.fetchSchedule(sessionId)
+      } catch {
+        store.scheduleError = '일정을 찾을 수 없거나 열람 권한이 없어요.'
+      }
+    }
+  } else if (!store.scheduleError && (!store.sessionId || store.candidates.length === 0)) {
+    // sessionId 없는 옛 /schedules 진입(하위호환) — 가장 최근 draft를 찾아 정식
+    // URL로 리다이렉트한다. store.scheduleError가 이미 있으면(방금 생성 실패
+    // 직후 이 화면으로 넘어온 경우) 그 메시지를 덮어쓰지 않는다.
+    const restored = await store.restoreDraftSchedule()
+    if (restored && store.sessionId) router.replace(`/schedules/${store.sessionId}`)
   }
   restoringDraft.value = false
 })
@@ -167,6 +193,7 @@ onMounted(async () => {
                     : '다시 생성하면 이전 필수 장소를 고정하지 않은 새 후보를 만들어요.'
                 }}
               </p>
+              <DoodleProgress v-if="regenerating" :messages="progressMessages" class="mt-4" />
             </section>
 
             <DoodleAlert v-if="requiredPlaceError" title="처리하지 못했어요">

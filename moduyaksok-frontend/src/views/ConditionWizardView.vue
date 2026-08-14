@@ -10,6 +10,8 @@ import DoodleSelectCard from '../components/doodle/DoodleSelectCard.vue'
 import DoodleTextarea from '../components/doodle/DoodleTextarea.vue'
 import DoodleStepper from '../components/doodle/DoodleStepper.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
+import DoodleProgress from '../components/doodle/DoodleProgress.vue'
+import { buildProgressMessages } from '../lib/progressMessages'
 
 const router = useRouter()
 const store = useScheduleStore()
@@ -76,6 +78,13 @@ function back() {
 }
 
 const submitting = ref(false)
+const progressMessages = computed(() =>
+  buildProgressMessages({
+    region: regionLabel.value,
+    likedText: form.likedText,
+    dislikedText: form.dislikedText,
+  }),
+)
 
 async function submit() {
   // 이 화면에 들어왔다는 건 라우터 가드(requiresApiKey)를 이미 통과했다는 뜻 —
@@ -92,7 +101,9 @@ async function submit() {
     dislikedText: form.dislikedText.trim(),
   })
   submitting.value = false
-  router.push('/schedules')
+  // 실패 시(scheduleError만 채워지고 sessionId는 null) sessionId 없는 /schedules로
+  // 보낸다 — CandidatesView가 이미 메모리에 있는 scheduleError를 그대로 보여준다.
+  router.push(store.sessionId ? `/schedules/${store.sessionId}` : '/schedules')
 }
 
 const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpose)?.title ?? '')
@@ -184,6 +195,8 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
           <p v-if="form.dislikedText">싫어하는 것: {{ form.dislikedText }}</p>
         </DoodleCard>
       </div>
+
+      <DoodleProgress v-if="submitting" :messages="progressMessages" class="mt-6" />
 
       <div class="mt-10 flex justify-between">
         <DoodleButton v-if="step > 0" variant="ghost" :disabled="submitting" @click="back">이전</DoodleButton>

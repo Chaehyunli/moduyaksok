@@ -23,9 +23,14 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
 
     { path: '/new', name: 'new-schedule', component: ConditionWizardView, meta: { requiresAuth: true, requiresApiKey: true } },
-    { path: '/schedules', name: 'candidates', component: CandidatesView, meta: { requiresAuth: true, requiresApiKey: true } },
-    { path: '/schedules/:id', name: 'candidate-detail', component: CandidateDetailView, meta: { requiresAuth: true, requiresApiKey: true } },
-    { path: '/schedules/:id/share', name: 'candidate-share', component: ShareView, meta: { requiresAuth: true, requiresApiKey: true } },
+    // sessionId가 곧 "대화방" id — URL만으로 어떤 사용자의 어떤 일정 세션인지
+    // 특정할 수 있게 한다(2026-08-14, 이전엔 /schedules가 세션 구분 없이
+    // 프런트 메모리/localStorage에 남은 마지막 세션만 보여줬음). sessionId를
+    // 생략한 /schedules는 하위호환 겸 "가장 최근 draft로" 폴백 용도로 남김
+    // (CandidatesView가 restoreDraftSchedule()로 처리).
+    { path: '/schedules/:sessionId?', name: 'candidates', component: CandidatesView, meta: { requiresAuth: true, requiresApiKey: true } },
+    { path: '/schedules/:sessionId/candidates/:candidateId', name: 'candidate-detail', component: CandidateDetailView, meta: { requiresAuth: true, requiresApiKey: true } },
+    { path: '/schedules/:sessionId/candidates/:candidateId/share', name: 'candidate-share', component: ShareView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/confirmed-schedules', name: 'confirmed-schedules', component: ConfirmedSchedulesView, meta: { requiresAuth: true, requiresApiKey: true } },
 
     { path: '/share/:slug', name: 'public-share', component: PublicShareView },

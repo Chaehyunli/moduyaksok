@@ -49,7 +49,7 @@ async function saveTitle(item: ConfirmedScheduleSummary) {
 async function openSchedule(item: ConfirmedScheduleSummary) {
   try {
     await store.fetchSchedule(item.sessionId)
-    router.push('/schedules')
+    router.push(`/schedules/${item.sessionId}`)
   } catch {
     error.value = '일정을 열지 못했어요. 잠시 후 다시 시도해주세요.'
   }

@@ -17,7 +17,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useScheduleStore()
 
-const storedCandidate = computed(() => store.candidates.find((c) => c.id === route.params.id))
+const storedCandidate = computed(() => store.candidates.find((c) => c.id === route.params.candidateId))
 const previewCandidate = ref<Candidate | null>(null)
 const removalPreviewCandidate = ref<Candidate | null>(null)
 const previewId = ref<string | null>(null)
@@ -48,7 +48,7 @@ const canConfirmSchedule = computed(
   () =>
     !hasExistingShare.value ||
     store.scheduleStatus === 'draft' ||
-    store.routeSelectionDirtyCandidateIds.includes(String(route.params.id)),
+    store.routeSelectionDirtyCandidateIds.includes(String(route.params.candidateId)),
 )
 const regeneratingCandidate = ref(false)
 const refreshingRemovalRoutes = ref(false)
@@ -83,7 +83,14 @@ async function loadRoutes() {
 }
 
 onMounted(async () => {
-  if (!candidate.value) await store.restoreDraftSchedule()
+  const sessionId = route.params.sessionId as string
+  if (!candidate.value && store.sessionId !== sessionId) {
+    try {
+      await store.fetchSchedule(sessionId)
+    } catch {
+      // candidate.value가 계속 undefined로 남아 아래 템플릿의 "찾을 수 없음" 상태로 처리됨
+    }
+  }
   await loadRoutes()
   restoringCandidate.value = false
 })
@@ -134,7 +141,7 @@ async function confirmSchedule() {
   confirming.value = true
   try {
     await store.confirmSchedule(candidate.value.id)
-    router.push(`/schedules/${candidate.value.id}/share`)
+    router.push(`/schedules/${route.params.sessionId}/candidates/${candidate.value.id}/share`)
   } finally {
     confirming.value = false
   }
@@ -242,7 +249,7 @@ function cancelCandidateChanges() {
 <template>
   <div v-if="candidate" class="notebook-bg min-h-dvh px-6 py-10">
     <div class="mx-auto max-w-2xl">
-      <button class="mb-6 font-hand text-base text-ink/60 hover:text-ink" @click="router.push('/schedules')">← 목록으로</button>
+      <button class="mb-6 font-hand text-base text-ink/60 hover:text-ink" @click="router.push(`/schedules/${route.params.sessionId}`)">← 목록으로</button>
 
       <h1 class="mb-1 font-hand text-2xl text-ink">{{ candidate.title }}</h1>
       <p class="mb-6 font-hand text-base text-ink/60">{{ candidate.whyRecommended }}</p>

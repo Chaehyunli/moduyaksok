@@ -10,14 +10,15 @@ const router = useRouter()
 const store = useScheduleStore()
 const copied = ref(false)
 
-const candidate = computed(() => store.candidates.find((c) => c.id === route.params.id))
+const candidate = computed(() => store.candidates.find((c) => c.id === route.params.candidateId))
 const shareUrl = computed(() => (store.shareSlug ? `${window.location.origin}/share/${store.shareSlug}` : ''))
 
-// 확정 응답(share_slug)을 새로고침·네트워크 문제로 놓쳤어도, 세션이 아직 메모리에
-// 남아있으면(SPA 안에서 왔다갔다) 세션을 다시 조회해서 slug를 복구한다.
+// 확정 응답(share_slug)을 새로고침·네트워크 문제로 놓쳤어도 URL의 sessionId로
+// 세션을 다시 조회해 slug를 복구한다(메모리에 남아있을 때만 복구하던 이전
+// 방식은 완전히 새로 연 탭/새로고침에서는 못 살렸다).
 onMounted(async () => {
-  if (!store.shareSlug && store.sessionId) {
-    await store.fetchSchedule(store.sessionId)
+  if (!store.shareSlug) {
+    await store.fetchSchedule(route.params.sessionId as string)
   }
 })
 

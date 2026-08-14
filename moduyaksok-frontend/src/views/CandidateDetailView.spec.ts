@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import CandidateDetailView from './CandidateDetailView.vue'
 
 const store = {
+  sessionId: 'session-1',
   candidates: [{
     id: 'A', title: '필수 장소 포함 코스', whyRecommended: '', routes: [], feasibilityWarning: null,
     activities: [{
@@ -14,13 +15,13 @@ const store = {
   shareSlug: null,
   scheduleStatus: 'draft',
   routeSelectionDirtyCandidateIds: [],
-  restoreDraftSchedule: vi.fn(),
+  fetchSchedule: vi.fn(),
   fetchRoutes: vi.fn(),
   selectRouteOption: vi.fn(),
 }
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ params: { id: 'A' } }),
+  useRoute: () => ({ params: { sessionId: 'session-1', candidateId: 'A' } }),
   useRouter: () => ({ push: vi.fn() }),
 }))
 vi.mock('../stores/schedule', () => ({ useScheduleStore: () => store }))
