@@ -144,11 +144,12 @@ onMounted(async () => {
         <DoodleAccordion
           v-if="store.placePool && store.placePool.candidateCount > 0"
           :expanded="placePoolExpanded"
+          highlight
           class="mb-10"
           @update:expanded="placePoolExpanded = $event"
         >
           <template #header>
-            <span class="text-base text-ink">
+            <span class="text-base">
               일정을 만들기 위해 {{ store.placePool.candidateCount }}개의 후보를 검색해봤어요
             </span>
           </template>
