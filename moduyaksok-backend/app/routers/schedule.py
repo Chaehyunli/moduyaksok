@@ -47,6 +47,17 @@
 # 2026-08-14, create_schedule_routes()에 [step4] logger.info 추가 — Step1~3은
 #             orchestrate.py가 이미 로깅하니(같은 날 추가), 이 라우터가 직접 부르는
 #             Step4(enrich_routes)만 여기서 로깅. 개발 중 콘솔 확인용, 응답에는 안 실림.
+# 2026-08-14(2차), GET /confirmed-schedules가 status="confirmed"만 걸러내던 걸
+#             제거해 draft도 함께 반환하게 변경(사용자 리포트: 확정 전 일정이
+#             목록에 안 보임 — 실제로는 POST /schedules 성공 시점에 이미 draft로
+#             저장돼 있는데 이 목록만 confirmed로 필터링하고 있었음). 응답 모델을
+#             ConfirmedScheduleSummary -> ScheduleSummary로 개명하고 status 필드
+#             추가 — 프런트가 이 값으로 이어서 작업(초안)/공유 화면 이동(확정)을
+#             나눠 처리한다. 엔드포인트 경로(/confirmed-schedules)는 그대로 뒀다 —
+#             프런트 라우트(/confirmed-schedules)와 이름을 맞추는 김에 화면 자체도
+#             "나의 일정"으로 재라벨링(사용자 요청)했지만, API 경로까지 바꾸는 건
+#             호출부 전부(프런트 store·router)를 도미노로 건드리는 범위라 이번엔
+#             안 함 — 필요해지면 그때 같이 옮길 것.
 # ------------------------------------------------------------------
 import logging
 import secrets
@@ -150,12 +161,13 @@ class ScheduleTitleRequest(BaseModel):
     title: str
 
 
-class ConfirmedScheduleSummary(BaseModel):
+class ScheduleSummary(BaseModel):
     session_id: UUID
     title: str
     region: str
     candidate_title: str
     created_at: datetime
+    status: str
     share_slug: str | None = None
 
 
@@ -646,8 +658,8 @@ async def _generate_candidate_replacement(
     return candidate_with_source_categories(session, schedule_session, updated)
 
 
-def _automatic_confirmed_titles(items: list[ScheduleSession]) -> dict[UUID, str]:
-    """같은 지역의 확정 일정은 생성 순서로만 (1), (2)를 붙인다."""
+def _automatic_schedule_titles(items: list[ScheduleSession]) -> dict[UUID, str]:
+    """같은 지역의 일정은 생성 순서로만 (1), (2)를 붙인다."""
     counts: dict[str, int] = {}
     titles: dict[UUID, str] = {}
     for item in sorted(items, key=lambda schedule: schedule.created_at):
@@ -790,18 +802,25 @@ def get_schedule(
     )
 
 
-@router.get("/confirmed-schedules", response_model=list[ConfirmedScheduleSummary])
-def list_confirmed_schedules(
+@router.get("/confirmed-schedules", response_model=list[ScheduleSummary])
+def list_my_schedules(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """내가 확정한 일정만, 목록에 필요한 가벼운 정보로 반환한다."""
+    """내 일정 전부(확정 전 초안 포함)를, 목록에 필요한 가벼운 정보로 반환한다.
+
+    확정하기 전에 새로고침·인터넷 끊김으로 데이터가 날아가 보이는 문제(사용자
+    리포트) — 실제로는 POST /schedules 성공 시점에 이미 draft로 저장돼 있는데
+    (candidate_with_source_categories 참고) 이 목록에서만 status="confirmed"로
+    걸러내고 있어서 안 보였다. draft/confirmed 구분 없이 전부 반환하고, 프런트가
+    status로 이어서 작업할지(초안) 공유 화면으로 갈지(확정) 나눠 처리한다.
+    """
     schedules = session.exec(
         select(ScheduleSession)
-        .where(ScheduleSession.user_id == current_user.id, ScheduleSession.status == "confirmed")
+        .where(ScheduleSession.user_id == current_user.id)
         .order_by(ScheduleSession.created_at)
     ).all()
-    automatic_titles = _automatic_confirmed_titles(schedules)
+    automatic_titles = _automatic_schedule_titles(schedules)
     result = []
     for schedule in reversed(schedules):
         candidate = (
@@ -809,15 +828,21 @@ def list_confirmed_schedules(
             if schedule.confirmed_candidate_id
             else None
         )
+        if candidate is None:
+            drafts = schedule.candidates.get("candidates", [])
+            candidate_title = drafts[0]["title"] if drafts else "일정 초안"
+        else:
+            candidate_title = candidate.title
         result.append(
-            ConfirmedScheduleSummary(
+            ScheduleSummary(
                 session_id=schedule.id,
                 title=str(
                     schedule.conditions.get("display_title") or automatic_titles[schedule.id]
                 ),
                 region=str(schedule.conditions.get("region", "지역 미정")),
-                candidate_title=candidate.title if candidate else "확정 일정",
+                candidate_title=candidate_title,
                 created_at=schedule.created_at,
+                status=schedule.status,
                 share_slug=(
                     session.exec(
                         select(ShareLink.slug).where(ShareLink.session_id == schedule.id)
@@ -854,7 +879,7 @@ def list_draft_schedules(
     ]
 
 
-@router.patch("/schedules/{session_id}/title", response_model=ConfirmedScheduleSummary)
+@router.patch("/schedules/{session_id}/title", response_model=ScheduleSummary)
 def update_confirmed_schedule_title(
     session_id: UUID,
     body: ScheduleTitleRequest,
@@ -881,12 +906,13 @@ def update_confirmed_schedule_title(
         if schedule.confirmed_candidate_id
         else None
     )
-    return ConfirmedScheduleSummary(
+    return ScheduleSummary(
         session_id=schedule.id,
         title=title,
         region=str(schedule.conditions.get("region", "지역 미정")),
         candidate_title=candidate.title if candidate else "확정 일정",
         created_at=schedule.created_at,
+        status=schedule.status,
         share_slug=session.exec(
             select(ShareLink.slug).where(ShareLink.session_id == schedule.id)
         ).first(),
@@ -894,15 +920,20 @@ def update_confirmed_schedule_title(
 
 
 @router.delete("/schedules/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_confirmed_schedule(
+def delete_schedule(
     session_id: UUID,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """일정과 이 일정에 딸린 공유 링크·대화·생성 데이터까지 함께 제거한다."""
+    """일정과 이 일정에 딸린 공유 링크·대화·생성 데이터까지 함께 제거한다.
+
+    confirmed만 삭제 가능하던 제약(2026-08-13 최초 구현 당시엔 "나의 일정"
+    목록이 confirmed만 보여줘서 draft를 지울 UI 자체가 없었음)을 없앴다 —
+    2026-08-14부터 그 목록이 draft도 함께 보여주면서(schedule.md 참고) 만들다
+    만 초안을 정리할 방법이 없다는 지적(사용자)에 따름. draft는 ShareLink가
+    애초에 없으므로 그 루프는 자연히 0건 처리된다.
+    """
     schedule = _get_owned_session(session, session_id, current_user)
-    if schedule.status != "confirmed":
-        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정만 목록에서 삭제할 수 있습니다.")
     for model in (ShareLink, FeedbackMessage, ScheduleRequiredPlace, SchedulePlacePool):
         for row in session.exec(select(model).where(model.session_id == session_id)).all():
             session.delete(row)

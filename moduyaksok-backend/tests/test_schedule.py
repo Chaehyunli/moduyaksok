@@ -266,6 +266,38 @@ def test_list_draft_schedules_returns_current_users_unconfirmed_sessions(
     ]
 
 
+def test_confirmed_schedules_endpoint_includes_drafts(client, session, monkeypatch):
+    """GET /confirmed-schedules는 확정 전 draft도 함께 돌려준다(2026-08-14) —
+    확정하기 전엔 목록에 안 보인다는 사용자 리포트로 status 필터를 없앤 변경.
+    draft는 candidate_title을 첫 후보 제목에서 채우고 share_slug는 null이어야
+    한다.
+    """
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    _mock_pipeline_success(monkeypatch)
+    draft_session_id = client.post("/schedules", json=_CREATE_BODY, headers=headers).json()[
+        "session_id"
+    ]
+    confirmed_session_id = client.post("/schedules", json=_CREATE_BODY, headers=headers).json()[
+        "session_id"
+    ]
+    client.post(
+        f"/schedules/{confirmed_session_id}/confirm",
+        json={"candidate_id": "A"},
+        headers=headers,
+    )
+
+    response = client.get("/confirmed-schedules", headers=headers)
+
+    assert response.status_code == 200
+    by_id = {item["session_id"]: item for item in response.json()}
+    assert by_id[draft_session_id]["status"] == "draft"
+    assert by_id[draft_session_id]["candidate_title"] == "테스트 코스"
+    assert by_id[draft_session_id]["share_slug"] is None
+    assert by_id[confirmed_session_id]["status"] == "confirmed"
+    assert by_id[confirmed_session_id]["share_slug"] is not None
+
+
 def test_create_routes_calls_enrich_routes_and_persists_result(client, session, monkeypatch):
     headers, session_id = _create_session(client, session, monkeypatch)
 
@@ -1036,3 +1068,40 @@ def test_confirm_schedule_applies_selected_options_to_stored_routes(client, sess
     # recommended_option_id("transit-0")가 아니라 사용자가 고른 "walk"로 바뀌어야 한다.
     assert stored_route["selected_option_id"] == "walk"
     assert stored_route["recommended_option_id"] == "transit-0"
+
+
+# ── DELETE /schedules/{id} ──────────────────────────────────────────────
+
+
+def test_delete_draft_schedule_succeeds(client, session, monkeypatch):
+    """2026-08-14부터 draft도 삭제 가능 — "나의 일정" 목록에 draft가 함께 보이면서
+    만들다 만 초안을 정리할 방법이 필요해짐(사용자 리포트)."""
+    from app.models.schedule import ScheduleSession
+
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.delete(f"/schedules/{session_id}", headers=headers)
+
+    assert response.status_code == 204
+    assert session.get(ScheduleSession, UUID(session_id)) is None
+
+
+def test_delete_confirmed_schedule_still_succeeds(client, session, monkeypatch):
+    from app.models.schedule import ScheduleSession
+
+    headers, session_id = _create_session(client, session, monkeypatch)
+    client.post(f"/schedules/{session_id}/confirm", json={"candidate_id": "A"}, headers=headers)
+
+    response = client.delete(f"/schedules/{session_id}", headers=headers)
+
+    assert response.status_code == 204
+    assert session.get(ScheduleSession, UUID(session_id)) is None
+
+
+def test_delete_schedule_for_other_users_session_returns_403(client, session, monkeypatch):
+    _, session_id = _create_session(client, session, monkeypatch)
+    other_headers, _ = _login(client, monkeypatch, google_id="other-user")
+
+    response = client.delete(f"/schedules/{session_id}", headers=other_headers)
+
+    assert response.status_code == 403
