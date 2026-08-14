@@ -479,6 +479,34 @@ def _candidate_pool_without_exclusions(
     ]
 
 
+def _relax_unavailable_liked_tags(
+    conditions: NormalizedConditions, available_places: list[dict]
+) -> NormalizedConditions:
+    """사용자가 뺀 장소로만 충족되던 좋아요 조건은 대체 생성에서 완화한다.
+
+    하트는 처음 일정을 만들 때의 선호 표시이지 사용자가 별도로 고정한 필수 장소가
+    아니다. 따라서 제외 후에도 같은 태그의 다른 장소가 있으면 계속 선호 조건으로
+    유지하되, 후보 풀에 하나도 없으면 그 태그를 하드 커버리지에서 제외한다. 그래야
+    "좋아하지만 이 가게는 빼기"가 409로 막히지 않는다.
+    """
+    available_tags = {
+        tag
+        for place in available_places
+        for tag in (
+            place.get("matched_tags")
+            or ([place["matched_tag"]] if place.get("matched_tag") else [])
+        )
+        if isinstance(tag, str) and tag
+    }
+    relaxed_tags = [
+        tag.model_copy(update={"verifiable": False})
+        if tag.verifiable and tag.tag not in available_tags
+        else tag
+        for tag in conditions.liked_tags
+    ]
+    return conditions.model_copy(update={"liked_tags": relaxed_tags})
+
+
 def _activity_place_ids(candidate: Candidate, place_pool: SchedulePlacePool) -> set[str]:
     """구버전 후보도 이름으로 후보 풀을 대조해 장소 ID를 복구한다."""
     place_id_by_name = {
@@ -651,6 +679,7 @@ async def _generate_candidate_replacement(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "저장된 일정 조건이 없어 다시 만들 수 없습니다."
         )
+    conditions = _relax_unavailable_liked_tags(conditions, available_places)
 
     credential = _get_user_credential(session, current_user.id)
     api_key = decrypt_key(credential.encrypted_key)
@@ -954,15 +983,13 @@ def list_draft_schedules(
 
 
 @router.patch("/schedules/{session_id}/title", response_model=ScheduleSummary)
-def update_confirmed_schedule_title(
+def update_schedule_title(
     session_id: UUID,
     body: ScheduleTitleRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
     schedule = _get_owned_session(session, session_id, current_user)
-    if schedule.status != "confirmed":
-        raise HTTPException(status.HTTP_409_CONFLICT, "확정된 일정의 이름만 수정할 수 있습니다.")
     title = body.title.strip()
     if not title:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "일정 이름을 입력해주세요.")
@@ -980,11 +1007,16 @@ def update_confirmed_schedule_title(
         if schedule.confirmed_candidate_id
         else None
     )
+    if candidate is None:
+        drafts = schedule.candidates.get("candidates", [])
+        candidate_title = drafts[0]["title"] if drafts else "일정 초안"
+    else:
+        candidate_title = candidate.title
     return ScheduleSummary(
         session_id=schedule.id,
         title=title,
         region=str(schedule.conditions.get("region", "지역 미정")),
-        candidate_title=candidate.title if candidate else "확정 일정",
+        candidate_title=candidate_title,
         created_at=schedule.created_at,
         status=schedule.status,
         share_slug=session.exec(

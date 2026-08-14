@@ -57,7 +57,7 @@ async function saveTitle(item: ScheduleSummary) {
   const title = titleDraft.value.trim()
   if (!title) return
   try {
-    const updated = await store.updateConfirmedScheduleTitle(item.sessionId, title)
+    const updated = await store.updateScheduleTitle(item.sessionId, title)
     const index = schedules.value.findIndex((schedule) => schedule.sessionId === item.sessionId)
     if (index >= 0) schedules.value[index] = updated
     editingId.value = null
@@ -214,7 +214,6 @@ onMounted(load)
                 </h2>
                 <p class="mt-1 font-hand text-sm text-ink/60">{{ item.candidateTitle }} · {{ item.region }}</p>
                 <button
-                  v-if="item.status === 'confirmed'"
                   class="mt-2 font-hand text-sm text-red underline underline-offset-2"
                   @click.stop="startEditing(item)"
                 >

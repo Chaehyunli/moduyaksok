@@ -23,24 +23,19 @@ watch(
   },
 )
 
-function commit(raw: string) {
-  draft.value = raw
+// Vue의 v-model은 한글 IME 조합 중에는 input 값을 다시 주입하지 않는다. 이
+// 컴포넌트가 :value와 @input으로 이를 직접 제어하면 다음 음절 조합이 사라져
+// 보일 수 있으므로, 확정된 draft 변화만 부모 상태에 반영한다.
+watch(draft, (raw) => {
   emit('update:modelValue', props.type === 'number' ? Number(raw) : raw)
-}
-
-function onInput(event: Event) {
-  const raw = (event.target as HTMLInputElement).value
-  draft.value = raw
-  if (!composing.value && !(event as InputEvent).isComposing) commit(raw)
-}
+})
 
 function onCompositionStart() {
   composing.value = true
 }
 
-function onCompositionEnd(event: CompositionEvent) {
+function onCompositionEnd() {
   composing.value = false
-  commit((event.target as HTMLInputElement).value)
 }
 </script>
 
@@ -50,15 +45,14 @@ function onCompositionEnd(event: CompositionEvent) {
     <span class="relative block">
       <input
         :type="type"
-        :value="draft"
+        v-model="draft"
         :placeholder="placeholder"
         :step="step"
-        class="doodle-wobble w-full rounded-[2px] border-[2.5px] bg-paper px-4 py-2.5 text-lg placeholder:text-ink/40 focus:outline-none focus:ring-2 focus:ring-red/50"
+        class="w-full rounded-[2px] border-[2.5px] bg-paper px-4 py-2.5 text-lg placeholder:text-ink/40 focus:outline-none focus:ring-2 focus:ring-red/50"
         :class="[
           error ? 'border-red' : 'border-ink',
           type === 'password' && draft ? 'text-transparent caret-ink' : 'text-ink',
         ]"
-        @input="onInput"
         @compositionstart="onCompositionStart"
         @compositionend="onCompositionEnd"
       />

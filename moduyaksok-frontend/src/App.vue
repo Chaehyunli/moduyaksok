@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
+import { useScheduleStore } from './stores/schedule'
 import DoodleUnderline from './components/doodle/DoodleUnderline.vue'
 import LoginModal from './components/doodle/LoginModal.vue'
+import DoodleButton from './components/doodle/DoodleButton.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAuthStore()
+const scheduleStore = useScheduleStore()
+const generationNotice = computed(() => scheduleStore.generationNotice)
+
+function openGeneratedSchedule() {
+  const sessionId = generationNotice.value?.sessionId
+  scheduleStore.clearGenerationNotice()
+  if (sessionId) router.push(`/schedules/${sessionId}`)
+}
 
 // lib/api.ts의 401 인터셉터는 window.location.href로 전체 새로고침을 하기 때문에
 // (진행 중이던 요청 상태를 깨끗이 버리려는 의도) Pinia 상태가 초기화된다 —
@@ -47,6 +57,33 @@ watch(
 
   <div class="pt-14">
     <RouterView />
+  </div>
+
+  <div class="fixed right-5 top-20 z-50 w-[min(22rem,calc(100vw-2.5rem))] font-hand">
+    <div
+      v-if="scheduleStore.isGenerating"
+      class="doodle-wobble rounded-[2px] border-[2.5px] border-ink bg-paper px-4 py-3 text-base text-ink shadow-[3px_4px_0_0_rgba(31,41,55,0.9)]"
+    >
+      일정을 만들고 있어요. 다른 화면을 봐도 계속 진행돼요.
+    </div>
+    <div
+      v-else-if="generationNotice"
+      class="doodle-wobble rounded-[2px] border-[2.5px] border-ink bg-paper px-4 py-3 text-base text-ink shadow-[3px_4px_0_0_rgba(31,41,55,0.9)]"
+    >
+      <p>{{ generationNotice.message }}</p>
+      <div class="mt-3 flex gap-2">
+        <DoodleButton
+          v-if="generationNotice.sessionId"
+          size="sm"
+          @click="openGeneratedSchedule"
+        >
+          후보 확인하기
+        </DoodleButton>
+        <DoodleButton v-else size="sm" variant="ghost" @click="scheduleStore.clearGenerationNotice()">
+          닫기
+        </DoodleButton>
+      </div>
+    </div>
   </div>
 
   <LoginModal />

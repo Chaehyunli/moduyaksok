@@ -101,6 +101,11 @@ export interface ScheduleSummary {
   shareSlug: string | null
 }
 
+export interface GenerationNotice {
+  message: string
+  sessionId: string | null
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapApiActivity(raw: any): Activity {
   return {
@@ -230,6 +235,10 @@ export const useScheduleStore = defineStore('schedule', {
     // 확정된 후보에서 사용자가 교통편을 바꾼 경우도 재확정이 필요한 변경이다.
     routeSelectionDirtyCandidateIds: [] as string[],
     sharedCandidate: null as Candidate | null,
+    // 화면을 이동해도 Pinia 스토어와 Axios 요청은 유지된다. 생성 완료 후 App.vue가
+    // 전역 알림을 띄우고, 사용자가 원할 때 후보 목록으로 이동하게 하는 상태다.
+    isGenerating: false,
+    generationNotice: null as GenerationNotice | null,
   }),
   getters: {
     selectedCandidate(state): Candidate | undefined {
@@ -242,7 +251,8 @@ export const useScheduleStore = defineStore('schedule', {
     },
   },
   actions: {
-    async submitConditions(conditions: Conditions) {
+    async submitConditions(conditions: Conditions): Promise<boolean> {
+      if (this.isGenerating) return false
       this.conditions = conditions
       this.selectedCandidateId = null
       this.scheduleError = null
@@ -253,6 +263,8 @@ export const useScheduleStore = defineStore('schedule', {
       this.appliedRequiredPlaceIds = []
       this.scheduleStatus = 'draft'
       this.routeSelectionDirtyCandidateIds = []
+      this.generationNotice = null
+      this.isGenerating = true
       localStorage.removeItem(ACTIVE_DRAFT_SESSION_KEY)
 
       const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
@@ -273,6 +285,11 @@ export const useScheduleStore = defineStore('schedule', {
         this.requiredPlaces = (data.required_places ?? []).map(mapApiRequiredPlace)
         this.appliedRequiredPlaceIds = data.applied_required_place_ids ?? []
         this.scheduleStatus = data.status ?? 'draft'
+        this.generationNotice = {
+          message: '일정 후보 3개를 만들었어요.',
+          sessionId: data.session_id,
+        }
+        return true
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError =
@@ -280,7 +297,17 @@ export const useScheduleStore = defineStore('schedule', {
         } else {
           this.scheduleError = '일정을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
         }
+        this.generationNotice = {
+          message: this.scheduleError ?? '일정을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.',
+          sessionId: null,
+        }
+        return false
+      } finally {
+        this.isGenerating = false
       }
+    },
+    clearGenerationNotice() {
+      this.generationNotice = null
     },
     selectCandidate(id: string) {
       this.selectedCandidateId = id
@@ -374,7 +401,7 @@ export const useScheduleStore = defineStore('schedule', {
         shareSlug: item.share_slug ?? null,
       }))
     },
-    async updateConfirmedScheduleTitle(sessionId: string, title: string): Promise<ScheduleSummary> {
+    async updateScheduleTitle(sessionId: string, title: string): Promise<ScheduleSummary> {
       const { data } = await api.patch(`/schedules/${sessionId}/title`, { title })
       return {
         sessionId: data.session_id,

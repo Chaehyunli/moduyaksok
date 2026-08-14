@@ -10,6 +10,15 @@ export interface ProgressConditions {
 
 const MAX_QUOTE_LENGTH = 20
 
+function hasFinalConsonant(text: string): boolean {
+  const last = text.trim().charCodeAt(text.trim().length - 1)
+  return last >= 0xac00 && last <= 0xd7a3 && (last - 0xac00) % 28 !== 0
+}
+
+function objectParticle(text: string): string {
+  return `${text}${hasFinalConsonant(text) ? '을' : '를'}`
+}
+
 function quote(text: string): string {
   const trimmed = text.trim()
   if (!trimmed) return ''
@@ -35,4 +44,38 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   messages.push('서로 다른 일정 후보를 비교하고 있어요')
   messages.push('일정을 다듬고 있어요')
   return messages
+}
+
+// 후보 목록에서 필수 장소를 반영해 다시 생성할 때의 문구다. 초기 조건을 다시
+// 해석하는 과정과 달리, 이미 고른 장소를 새 후보에 배치하는 과정에 초점을 둔다.
+export function buildRegenerationProgressMessages(requiredPlaceNames: string[]): string[] {
+  const requiredMessages = requiredPlaceNames.slice(0, 3).map(
+    (name) => `${objectParticle(name)} 일정에 포함하고 있어요`,
+  )
+
+  return [
+    requiredPlaceNames.length
+      ? '필수 장소를 중심으로 새 일정을 짜고 있어요'
+      : '필수 장소 없이 새로운 일정 조합을 찾고 있어요',
+    ...requiredMessages,
+    '필수 장소 사이의 이동 동선을 살펴보고 있어요',
+    '남은 시간에 어울리는 장소를 찾고 있어요',
+    '식사 시간과 머무는 시간을 다시 맞추고 있어요',
+    '서로 다른 일정 후보를 다듬고 있어요',
+  ]
+}
+
+// 상세 화면에서 뺀 장소의 빈 시간과 동선을 기준으로 대체 장소를 찾을 때 쓴다.
+export function buildReplacementProgressMessages(excludedPlaceNames: string[]): string[] {
+  const excludedMessages = excludedPlaceNames.slice(0, 3).map(
+    (name) => `${objectParticle(name)} 뺀 자리를 살펴보고 있어요`,
+  )
+
+  return [
+    ...excludedMessages,
+    '비어 있는 시간에 어울리는 장소를 찾고 있어요',
+    '남은 장소와 가까운 대체 장소를 고르고 있어요',
+    '새 장소까지의 이동 동선을 계산하고 있어요',
+    '바뀐 일정의 시간을 다시 맞추고 있어요',
+  ]
 }

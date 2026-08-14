@@ -10,8 +10,10 @@ import DoodleDivider from '../components/doodle/DoodleDivider.vue'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
+import DoodleProgress from '../components/doodle/DoodleProgress.vue'
 import { activityImage } from '../lib/categoryImages'
 import { useCandidateMapData } from '../composables/useCandidateMapData'
+import { buildReplacementProgressMessages } from '../lib/progressMessages'
 
 const route = useRoute()
 const router = useRouter()
@@ -58,6 +60,13 @@ const hasPendingChanges = computed(
   () => pendingExcludedPlaceIds.value.length > 0 || Boolean(previewCandidate.value),
 )
 const restoringCandidate = ref(true)
+const replacementProgressMessages = computed(() => {
+  const excludedPlaceIds = new Set(pendingExcludedPlaceIds.value)
+  const names = (storedCandidate.value?.activities ?? [])
+    .filter((activity) => activity.placeId && excludedPlaceIds.has(activity.placeId))
+    .map((activity) => activity.name)
+  return buildReplacementProgressMessages(names)
+})
 // 아코디언은 한 번에 하나만 펼쳐진다 — 열려있는 구간의 fromOrder, 없으면 null.
 const expandedSegment = ref<number | null>(null)
 
@@ -355,6 +364,12 @@ function cancelCandidateChanges() {
       </div>
 
       <DoodleDivider class="my-8" />
+
+      <DoodleProgress
+        v-if="regeneratingCandidate"
+        :messages="replacementProgressMessages"
+        class="mb-4"
+      />
 
       <div class="flex flex-wrap gap-3">
         <DoodleButton

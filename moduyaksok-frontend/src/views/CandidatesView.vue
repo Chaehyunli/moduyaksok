@@ -8,7 +8,7 @@ import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleProgress from '../components/doodle/DoodleProgress.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
 import { tagColorForLabel, tagColorStyle, type TagColorStyle } from '../lib/tagColors'
-import { buildProgressMessages } from '../lib/progressMessages'
+import { buildRegenerationProgressMessages } from '../lib/progressMessages'
 import type { Activity, PlacePoolItem } from '../stores/schedule'
 
 const router = useRouter()
@@ -23,11 +23,7 @@ const regenerating = ref(false)
 const requiredPlaceError = ref('')
 const scheduleRegion = computed(() => store.conditions?.region ?? '')
 const progressMessages = computed(() =>
-  buildProgressMessages({
-    region: store.conditions?.region ?? '',
-    likedText: store.conditions?.likedText ?? '',
-    dislikedText: store.conditions?.dislikedText ?? '',
-  }),
+  buildRegenerationProgressMessages(store.requiredPlaces.map((place) => place.name)),
 )
 const restoringDraft = ref(true)
 // 코스 카드의 장소가 어느 liked 라벨에서 나왔는지 색으로 매칭하는 데 쓴다 —

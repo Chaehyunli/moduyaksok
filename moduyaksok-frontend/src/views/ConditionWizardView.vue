@@ -90,7 +90,7 @@ async function submit() {
   // 이 화면에 들어왔다는 건 라우터 가드(requiresApiKey)를 이미 통과했다는 뜻 —
   // API 키 등록 여부는 여기서 다시 확인하지 않는다.
   submitting.value = true
-  await store.submitConditions({
+  const created = await store.submitConditions({
     purpose: form.purpose,
     headcount: form.headcount,
     startTime: form.startTime,
@@ -101,9 +101,17 @@ async function submit() {
     dislikedText: form.dislikedText.trim(),
   })
   submitting.value = false
+  // 생성 중 홈 등 다른 화면으로 이동했다면 전역 알림으로 완료를 알리고, 여기서
+  // 후보 화면으로 강제 이동시키지 않는다.
+  if (router.currentRoute.value.name !== 'new-schedule') return
   // 실패 시(scheduleError만 채워지고 sessionId는 null) sessionId 없는 /schedules로
   // 보낸다 — CandidatesView가 이미 메모리에 있는 scheduleError를 그대로 보여준다.
-  router.push(store.sessionId ? `/schedules/${store.sessionId}` : '/schedules')
+  if (created && store.sessionId) {
+    store.clearGenerationNotice()
+    router.push(`/schedules/${store.sessionId}`)
+    return
+  }
+  router.push('/schedules')
 }
 
 const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpose)?.title ?? '')
@@ -202,8 +210,8 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         <DoodleButton v-if="step > 0" variant="ghost" :disabled="submitting" @click="back">이전</DoodleButton>
         <span v-else />
         <DoodleButton v-if="step < totalSteps - 1" :disabled="!canNext" @click="next">다음</DoodleButton>
-        <DoodleButton v-else :disabled="submitting" @click="submit">
-          {{ submitting ? '일정을 만드는 중이에요...' : '일정 추천 요청' }}
+        <DoodleButton v-else :disabled="submitting || store.isGenerating" @click="submit">
+          {{ submitting || store.isGenerating ? '일정을 만드는 중이에요...' : '일정 추천 요청' }}
         </DoodleButton>
       </div>
     </div>

@@ -27,6 +27,7 @@ from app.pipeline.schemas import (
     Candidate,
     InfeasibleResponse,
     NormalizedConditions,
+    PreferenceTag,
     RouteOption,
     RouteSegment,
     ScheduleResponse,
@@ -835,6 +836,38 @@ def test_candidate_preview_rejects_required_place(client, session, monkeypatch):
     )
 
     assert response.status_code == 409
+
+
+def test_replacement_relaxes_only_liked_tag_without_another_available_place():
+    from app.routers.schedule import _relax_unavailable_liked_tags
+
+    conditions = _FAKE_CONDITIONS.model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(tag="와플", verifiable=True),
+                PreferenceTag(tag="카페", verifiable=True),
+            ]
+        }
+    )
+
+    relaxed = _relax_unavailable_liked_tags(
+        conditions,
+        [{"title": "다른 카페", "matched_tags": ["카페"]}],
+    )
+
+    assert [tag.verifiable for tag in relaxed.liked_tags] == [False, True]
+
+
+def test_update_draft_schedule_title_succeeds(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.patch(
+        f"/schedules/{session_id}/title", json={"title": "부평 데이트 초안"}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "부평 데이트 초안"
+    assert response.json()["status"] == "draft"
 
 
 def test_add_same_required_place_is_idempotent(client, session, monkeypatch):

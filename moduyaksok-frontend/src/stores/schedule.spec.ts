@@ -32,6 +32,31 @@ describe('일정 상세 수정 API', () => {
     apiPost.mockReset()
   })
 
+  it('일정 생성은 화면 이동 뒤에도 전역 생성 상태와 완료 알림을 남긴다', async () => {
+    const store = useScheduleStore()
+    let resolveRequest: (value: any) => void
+    apiPost.mockReturnValueOnce(new Promise((resolve) => { resolveRequest = resolve }))
+
+    const pending = store.submitConditions({
+      purpose: 'date', headcount: 2, startTime: '10:00', endTime: '18:00',
+      region: '서울 강남', budgetPerPerson: 50000, likedText: '전시', dislikedText: '',
+    })
+    expect(store.isGenerating).toBe(true)
+
+    resolveRequest!({
+      data: {
+        session_id: 'session-created', candidates: [], place_pool: null,
+        required_places: [], applied_required_place_ids: [], status: 'draft',
+      },
+    })
+
+    await expect(pending).resolves.toBe(true)
+    expect(store.isGenerating).toBe(false)
+    expect(store.generationNotice).toEqual({
+      message: '일정 후보 3개를 만들었어요.', sessionId: 'session-created',
+    })
+  })
+
   it('장소 제거 미리보기는 후보 목록을 바꾸지 않고 정확한 제외 ID를 보낸다', async () => {
     const store = useScheduleStore()
     store.sessionId = 'session-1'
