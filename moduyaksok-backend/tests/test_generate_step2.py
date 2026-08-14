@@ -732,8 +732,16 @@ def test_candidate_plans_assign_different_real_meal_anchors_to_each_option():
         "버거2",
         "버거3",
     }
+    # 햄버거·콩국수는 둘 다 is_meal=True라 항상 같은 조합(required_meal_tags)으로
+    # 묶여 나오므로 세 plan 모두에 콩국수집이 그대로 남는다.
     assert all(dict(plan.required_tag_anchors)["콩국수"] == "콩국수집" for plan in plans)
-    assert all(dict(plan.required_tag_anchors)["와플"] == "와플집" for plan in plans)
+    # 와플(비식사, 독립 태그)은 2026-08-14부터 매번 안 나온다 — _select_candidate_plans가
+    # "이미 뽑힌 plan과 앵커가 얼마나 겹치는지"를 앵커 총 개수보다 먼저 보게 되면서,
+    # 두 번째·세 번째 픽은 "와플집까지 재사용해 앵커가 3개인 plan"보다 "콩국수집만
+    # 재사용해 앵커가 2개인 plan"을 더 낮은 중복으로 보고 우선한다(사용자 관측:
+    # "경기 수원"에서 후보 3개가 방탈출·와플 앵커를 거의 그대로 재사용하던 문제의
+    # 수정). 와플집 후보 자체가 하나뿐이니 최소 한 plan에는 여전히 등장해야 한다.
+    assert sum(dict(plan.required_tag_anchors).get("와플") == "와플집" for plan in plans) == 1
 
 
 def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():

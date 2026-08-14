@@ -880,11 +880,24 @@ def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]
                     if place.get("source_category")
                 }
             )
+            # "아직 안 쓴 실제 앵커 수" -> "이미 뽑힌 후보와의 앵커 중복"을 앵커 총
+            # 개수보다 먼저 본다(2026-08-14, 사용자 관측: "경기 수원"에서 3개 후보가
+            # 방탈출·와플 앵커를 거의 그대로 재사용). 원래는 anchor 총 개수
+            # (len(anchor_names))가 1순위였는데, _tag_anchor_variants의 "다양화
+            # 장소" 보정(실제 태그 매칭이 부족한 클러스터에서 앵커 수를 채우려고
+            # 무관한 장소를 하나 더 얹는 장치)이 앵커 개수만 부풀려서, 이미 두
+            # 앵커를 재사용하면서 다양화 장소만 바꾼 플랜이 "새 앵커 수는 같지만
+            # (다양화 1개) 총 개수가 더 많다"는 이유로, 진짜 다른 방탈출/와플
+            # 조합(앵커는 적어도 겹침이 0인)보다 계속 먼저 뽑히는 부작용이 있었다.
+            # max_anchor_overlap을 총 개수보다 먼저 봐야 "겹침 0인 후보"가
+            # "겹침은 있지만 다양화로 개수만 많은 후보"를 확실히 이긴다. 첫
+            # 픽에서는 selected가 비어 있어 overlap이 항상 0이라 이 재정렬이
+            # 첫 후보 품질에는 영향이 없고, 두 번째·세 번째 픽부터 실제로 갈린다.
             return (
-                len(anchor_names),
-                len(set(plan.required_meal_tags) - covered_meal_tags),
                 len(anchor_names - used_anchor_names),
                 -max_anchor_overlap,
+                len(anchor_names),
+                len(set(plan.required_meal_tags) - covered_meal_tags),
                 -plan.cluster_radius_meters,
                 -max_overlap,
                 categories,

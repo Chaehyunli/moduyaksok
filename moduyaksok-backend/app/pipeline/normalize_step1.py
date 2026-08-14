@@ -30,6 +30,14 @@
 #             있음"과 점심/저녁 한 끼를 채울 수 있음을 구분한다. 이후 Step2가
 #             시간대별 식사 슬롯 수만큼만 식사 태그를 고르고, 와플·소금빵 같은
 #             간식은 별도 활동 태그로 포함시킬 수 있는 근거다.
+# 2026-08-14, "방탈출" 같은 놀거리 카테고리가 verifiable=false(activity_level)로
+#             잘못 분류돼 태그 검색이 아예 안 돌고(naver_local_search.py) 하트
+#             표시가 안 붙는 문제를 실측(사용자 리포트 + normalize_conditions 직접
+#             호출로 재현: "방탈출" -> verifiable=False, kind=activity_level 확인).
+#             기존 few-shot 5개가 전부 음식류/분위기 예시뿐이라 방탈출·보드게임카페·
+#             전시 같은 "구체적 장소 카테고리형" 선호를 모델이 분류할 근거가 없었던
+#             게 원인 — verifiable=true 설명에 장소 카테고리 예시를 추가하고, 이
+#             패턴을 직접 겨냥하는 예시 6번 추가(place_type, verifiable=true).
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -43,12 +51,14 @@ from app.services.structured_llm import call_structured
 # solar-pro로 교체돼(2026-08-12) 문제가 해소됐다 — LOW로 되돌림(2026-08-12).
 TIER = ModelTier.LOW
 
-# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 5개는 각각:
+# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 6개는 각각:
 #   1. 기본 — 명시된 항목만 추출, verifiable=True
 #   2. 부정 표현 — "빼고/못 먹어요"의 대상이 disliked로 가야 함
 #   3. 빈 입력 — 아무것도 지어내면 안 됨 (실제 관측된 할루시네이션 버그를 직접 겨냥)
 #   4. 주관적 취향 — 분위기/혼잡도는 verifiable=False
-#   5. verifiable 태그가 상한(MAX_VERIFIABLE_TAGS)보다 많이 언급 — 중요한 것만
+#   5. 놀거리 카테고리(방탈출 등) — 주관적 활동 취향이 아니라 verifiable=True,
+#      place_type이어야 함 (2026-08-14 실측된 오분류를 직접 겨냥)
+#   6. verifiable 태그가 상한(MAX_VERIFIABLE_TAGS)보다 많이 언급 — 중요한 것만
 #      남기고 나머진 버려야 함
 # MAX_VERIFIABLE_TAGS를 문자열로 두 번 박아넣지 않고 f-string으로 주입 — 상한이
 # 바뀔 때(2026-08-11(2차)에 3 -> 5로 한 번 바뀌었음) 프롬프트 문구를 깜빡하고
@@ -61,8 +71,10 @@ _SYSTEM_PROMPT = f"""\
 # Task
 - "좋아하는 것" / "싫어하는 것" 원문에 실제로 언급된 항목만 태그로 추출해라.
 - 각 태그가 다음 중 어디에 해당하는지 verifiable로 표시해라:
-  - true: 음식 종류, 구체적 장소/브랜드명 등 장소 카테고리·메뉴 데이터로 나중에 \
-확인 가능한 객관적 태그 (예: "해산물", "파스타", "스타벅스")
+  - true: 음식 종류, 구체적 장소/브랜드명, 방탈출·보드게임카페·전시·영화관·공연장· \
+액티비티 같은 구체적 장소 카테고리(활동 자체의 좋고 싫음이 아니라 "그 카테고리의 \
+장소"를 가리키는 말) 등 장소 카테고리·메뉴 데이터로 나중에 확인 가능한 객관적 \
+태그 (예: "해산물", "파스타", "스타벅스", "방탈출")
   - false: 분위기, 혼잡도, 가격대 느낌 등 확인할 데이터가 없는 주관적 태그 \
 (예: "사람 많은 곳", "조용한 분위기", "힙한 곳")
 - "빼고", "못 먹어요", "싫어요" 같은 부정 표현의 대상은 disliked_tags로 분류해라 \
@@ -110,6 +122,16 @@ priority: 4}}]
 preference_kind: "atmosphere", priority: 4}}], \
 disliked_tags=[{{tag: "사람 많은 곳", verifiable: false, is_meal: false, \
 preference_kind: "crowd", priority: 4}}]
+
+입력: 좋아하는 것: 방탈출 좋아해요. 매운 음식도 좋아요 / 싫어하는 것: (없음)
+출력: liked_tags=[{{tag: "매운 음식", verifiable: true, is_meal: false, \
+preference_kind: "food_property", priority: 3}}, \
+{{tag: "방탈출", verifiable: true, is_meal: false, preference_kind: "place_type", \
+priority: 3}}], disliked_tags=[] \
+("방탈출"은 "재밌는 거 하고 싶어요" 같은 막연한 활동 취향(activity_level, \
+verifiable=false)이 아니라 실제 검색 가능한 구체적 장소 카테고리(place_type)라 \
+verifiable=true다 — 전시/보드게임카페/영화관/공연장/액티비티도 같은 방식으로 \
+verifiable=true, place_type으로 분류할 것)
 
 입력: 좋아하는 것: 저는 무조건 파스타예요. 스시도 좋고, 마라탕도 자주 먹고, 초밥이랑 \
 라멘도 자주 먹어요. 타코나 케밥도 가끔 생각나긴 하는데 그정도까진 아니에요 / \

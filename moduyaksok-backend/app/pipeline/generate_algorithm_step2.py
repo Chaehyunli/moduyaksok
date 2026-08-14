@@ -8,6 +8,7 @@ from hashlib import sha256
 from itertools import combinations, islice, permutations
 
 from app.pipeline.generate_step2 import (
+    _MEAL_CATEGORIES,
     PERSPECTIVES,
     _build_candidate_plans,
     _is_meal_place,
@@ -24,6 +25,14 @@ _MAX_PLACES = 5
 _BEAM_WIDTH = 80
 _PER_PLAN_RESULTS = 12
 _MAX_TRAVEL_MINUTES = 15
+
+# 식사류(한식~고깃집)·카페류를 뺀 "놀거리" 카테고리. 이 카테고리가 후보 풀에
+# 하나라도 있는데 beam search가 식사·카페만으로 자리를 채우는 경향이 있어서
+# (2026-08-14, 사용자 관측 — 일정이 먹거리 위주로 쏠림) 점수 가중치(soft) +
+# 완성 조건(hard) 둘 다에 반영한다. 후보 풀에 이 카테고리가 아예 없는 지역까지
+# 강제하면 "구리" 사례처럼 조합 자체가 안 나와 409로 떨어지므로, 하드 조건은
+# 후보 풀에 실제로 있을 때만 적용한다(아래 _generate_for_plan의 activity_available).
+_ACTIVITY_CATEGORIES = frozenset({"액티비티", "방탈출", "보드게임카페", "전시", "공연장", "영화관"})
 
 _PRICE_RANGES: dict[str, tuple[int, int]] = {
     "한식": (10_000, 25_000),
@@ -158,6 +167,7 @@ def _score_place(
     perspective_index: int,
     soft_scores: dict[str, PlacePreferenceScore],
     tag_weights: dict[str, int],
+    meal_slots: int,
 ) -> float:
     tags = set(_place_matched_tags(place))
     new_tags = tags - state.covered_tags
@@ -174,6 +184,18 @@ def _score_place(
     disliked_soft_value = soft.disliked_score * 12 if soft else 0
     soft_value = liked_soft_value - disliked_soft_value
     category_bonus = 5 if category not in state.categories else -2
+    if category in _ACTIVITY_CATEGORIES and category not in state.categories:
+        category_bonus += 4
+    # 식사 슬롯이 아직 안 찼으면(state.meal_count < meal_slots) 식사 카테고리를
+    # 활동 카테고리 보너스보다 우선 챙기도록 추가 가산 — 안 그러면(2026-08-14
+    # 실측) 활동 카테고리 보너스(+4)가 식사 카테고리의 "새 카테고리" 보너스(+5)와
+    # 거의 맞먹어서, meal_tags가 없는 조건(좋아요 태그가 전부 비식사)에서 beam이
+    # 식사 자리를 활동 장소로 채우다가 최종 meal_count가 하드 요구치(_has_missing_
+    # meal_slot과 같은 기준)에 못 미쳐 조합 전체가 드롭되는 사례가 나왔다("서울
+    # 홍대", 좋아요: 와플·방탈출). 슬롯이 다 차면(meal_count >= meal_slots) 이
+    # 가산은 사라져 이후엔 다시 일반 다양성 경쟁으로 돌아간다.
+    if category in _MEAL_CATEGORIES and state.meal_count < meal_slots:
+        category_bonus += 6
     preference_bonus = sum(tag_weights.get(tag, 1) * 6 for tag in new_tags)
     price_penalty = _price_range(place)[0] / 10_000
 
@@ -407,6 +429,7 @@ def _generate_for_plan(
                             perspective_index,
                             soft_scores,
                             tag_weights,
+                            meal_slots,
                         ),
                     )
                 )
@@ -417,11 +440,17 @@ def _generate_for_plan(
 
     required_coverage = _minimum_preference_coverage(conditions)
     liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
+    # 식사 슬롯 외에 자리가 남는데(wanted > meal_slots) 후보 풀에 놀거리 카테고리가
+    # 실제로 있다면 최소 1곳은 포함시킨다 — 없는 지역까지 강제하면 조합 자체가
+    # 안 나와 409로 떨어지므로(2026-08-14, "구리" 반경 확장과 같은 이유) 있을 때만.
+    activity_available = any(_category(place) in _ACTIVITY_CATEGORIES for place in places)
+    requires_activity = activity_available and wanted > meal_slots
     complete = [
         state
         for state in beams
         if len(state.place_ids) == wanted
         and state.meal_count >= meal_slots
+        and (not requires_activity or state.categories & _ACTIVITY_CATEGORIES)
         and len((set(state.covered_tags) | set(precovered_liked_tags)) & liked_tags)
         >= required_coverage
     ]

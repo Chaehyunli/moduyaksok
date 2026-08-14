@@ -107,6 +107,66 @@ def test_algorithm_returns_three_valid_and_diverse_candidates():
     assert max(overlaps) <= 0.5
 
 
+def test_algorithm_includes_activity_category_when_room_and_available():
+    """식사 슬롯 외에 자리가 남고 후보 풀에 놀거리 카테고리가 있으면, 취향
+    태그가 활동 카테고리를 가리키지 않아도(여기서는 순수 음식 태그만 줌) 최소
+    한 곳은 액티비티/방탈출/보드게임카페/전시/공연장/영화관 중 하나가 들어가야
+    한다 — 안 그러면 식사·카페류로만 채워지는 게 이 balancing 로직이 막으려는
+    상황이다(2026-08-14, 사용자 관측: 일정이 먹거리 위주로 쏠림)."""
+    conditions = _conditions().model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(
+                    tag="마라탕",
+                    verifiable=True,
+                    is_meal=True,
+                    preference_kind="food_menu",
+                    priority=5,
+                ),
+            ],
+        }
+    )
+    activity_categories = {"액티비티", "방탈출", "보드게임카페", "전시", "공연장", "영화관"}
+
+    labeled = generate_algorithm_candidates("upstage", "unused", conditions, _places())
+
+    assert labeled
+    for _, draft in labeled:
+        assert any(activity.source_category in activity_categories for activity in draft.activities)
+
+
+def test_algorithm_meets_meal_slots_when_liked_tags_are_all_non_meal():
+    """meal_tags가 비어도(좋아요 태그가 전부 non-meal) beam search가 필수 식사
+    슬롯(점심+저녁 2곳)을 실제로 채워야 한다. 식사 태그가 하나도 없으면 두 식사
+    슬롯 다 "자연 경쟁"으로 채워지는데, 활동 카테고리 점수 가산이 식사 카테고리의
+    새-카테고리 보너스와 맞먹어서 beam이 식사 대신 활동 장소로 자리를 채우다가
+    최종 meal_count 미달로 조합 전체가 드롭되는 사례가 실측됐다(2026-08-14,
+    "서울 홍대" 재현: 좋아요=와플·방탈출, 둘 다 is_meal=False)."""
+    conditions = _conditions().model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(
+                    tag="전시",
+                    verifiable=True,
+                    is_meal=False,
+                    preference_kind="place_type",
+                    priority=3,
+                ),
+            ],
+        }
+    )
+    meal_categories = {"한식", "중식", "일식", "양식", "분식", "고깃집"}
+
+    labeled = generate_algorithm_candidates("upstage", "unused", conditions, _places())
+
+    assert labeled
+    for _, draft in labeled:
+        meal_count = sum(
+            activity.source_category in meal_categories for activity in draft.activities
+        )
+        assert meal_count >= 2, [a.source_category for a in draft.activities]
+
+
 def test_ensure_place_ids_preserves_search_result_metadata():
     from app.services.naver_local_search import PlaceSearchResult
 
