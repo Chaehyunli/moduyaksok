@@ -3,6 +3,7 @@ import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { api } from '../../lib/api'
+import { googleLoginErrorMessage } from '../../lib/authErrors'
 import DoodleModal from './DoodleModal.vue'
 
 declare global {
@@ -44,19 +45,37 @@ async function handleCredential(resp: { credential: string }) {
     const redirect = store.loginRedirect
     store.closeLoginModal()
     router.push(redirect)
-  } catch {
-    error.value = '로그인에 실패했어요. 다시 시도해주세요.'
+  } catch (err) {
+    error.value = googleLoginErrorMessage(err)
   } finally {
     loading.value = false
   }
 }
 
-function renderGoogleButton() {
+async function waitForGoogleIdentity(timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (!window.google && Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  return window.google
+}
+
+async function renderGoogleButton() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
-  if (!clientId || !window.google || !buttonEl.value) return
+  if (!clientId) {
+    error.value = 'Google 로그인 설정이 누락됐어요. 관리자에게 문의해주세요.'
+    return
+  }
+  // index.html의 GSI 스크립트는 async로 로드된다. 모달이 먼저 열리더라도
+  // SDK가 준비될 때까지 기다려 로드 순서에 따른 간헐적 버튼 누락을 막는다.
+  const google = await waitForGoogleIdentity()
+  if (!google || !buttonEl.value || !store.showLoginModal) {
+    renderFailed.value = true
+    return
+  }
   renderFailed.value = false
-  window.google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
-  window.google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
+  google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+  google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
   setTimeout(() => {
     if (!buttonEl.value || buttonEl.value.childElementCount > 0) return
     if (sessionStorage.getItem(RENDER_RETRY_KEY)) {

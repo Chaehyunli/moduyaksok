@@ -5,9 +5,14 @@
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 #
 # ------------------------------------------------------------------
+from datetime import UTC, datetime, timedelta
+
+from jose import jwt
 from sqlmodel import select
 
+from app.config import settings
 from app.models.user import User
+from app.services.auth import ALGORITHM, SESSION_COOKIE_NAME
 
 
 def _mock_verify_ok(monkeypatch, google_id="google-123", email="test@example.com", name="테스터"):
@@ -74,6 +79,38 @@ def test_get_me_with_session_cookie_returns_current_user(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["email"] == "test@example.com"
+
+
+def test_get_me_refreshes_session_near_expiry(client, session, monkeypatch):
+    _mock_verify_ok(monkeypatch)
+    client.post("/auth/google", json={"id_token": "fake"})
+    user = session.exec(select(User).where(User.google_id == "google-123")).one()
+    near_expiry = jwt.encode(
+        {"sub": str(user.id), "exp": datetime.now(UTC) + timedelta(minutes=10)},
+        settings.jwt_secret_key,
+        algorithm=ALGORITHM,
+    )
+    client.cookies.set(SESSION_COOKIE_NAME, near_expiry)
+
+    response = client.get("/me")
+
+    assert response.status_code == 200
+    assert "session=" in response.headers["set-cookie"]
+    refreshed = response.cookies[SESSION_COOKIE_NAME]
+    payload = jwt.decode(refreshed, settings.jwt_secret_key, algorithms=[ALGORITHM])
+    assert datetime.fromtimestamp(payload["exp"], tz=UTC) > datetime.now(UTC) + timedelta(
+        minutes=110
+    )
+
+
+def test_get_me_does_not_refresh_fresh_session(client, monkeypatch):
+    _mock_verify_ok(monkeypatch)
+    client.post("/auth/google", json={"id_token": "fake"})
+
+    response = client.get("/me")
+
+    assert response.status_code == 200
+    assert "set-cookie" not in response.headers
 
 
 def test_logout_clears_session_cookie(client, monkeypatch):

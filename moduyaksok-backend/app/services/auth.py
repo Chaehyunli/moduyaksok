@@ -8,7 +8,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, Response, status
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from jose import JWTError, jwt
@@ -20,8 +20,22 @@ from app.models.user import User
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
+SESSION_REFRESH_THRESHOLD_MINUTES = 30
 
 SESSION_COOKIE_NAME = "session"
+
+
+def session_cookie_options() -> dict:
+    """Return matching cookie options for login, refresh, and logout."""
+    is_development = settings.env == "development"
+    return {
+        "key": SESSION_COOKIE_NAME,
+        "httponly": True,
+        "secure": not is_development,
+        "samesite": "lax" if is_development else "none",
+        "path": "/",
+        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
 
 
 def verify_google_id_token(id_token: str) -> dict:
@@ -48,6 +62,7 @@ def create_access_token(user_id: UUID) -> str:
 
 def get_current_user(
     request: Request,
+    response: Response,
     session: Session = Depends(get_session),
 ) -> User:
     token = request.cookies.get(SESSION_COOKIE_NAME)
@@ -56,9 +71,15 @@ def get_current_user(
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[ALGORITHM])
         user_id = UUID(payload["sub"])
+        expires_at = datetime.fromtimestamp(payload["exp"], tz=UTC)
     except (JWTError, ValueError, KeyError) as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰이 유효하지 않습니다.") from exc
     user = session.get(User, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "사용자를 찾을 수 없습니다.")
+    # 활동 중인 사용자가 갑자기 로그아웃되지 않도록 만료 직전에 세션을 연장한다.
+    # 이미 만료된 JWT는 위 jwt.decode에서 거부되므로 새 세션으로 되살아나지 않는다.
+    refresh_after = timedelta(minutes=SESSION_REFRESH_THRESHOLD_MINUTES)
+    if expires_at - datetime.now(UTC) <= refresh_after:
+        response.set_cookie(value=create_access_token(user.id), **session_cookie_options())
     return user
