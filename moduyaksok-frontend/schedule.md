@@ -10,7 +10,7 @@
 | 전체 유저플로우 화면·라우팅 (목업 데이터 기반) | ✅ | 2026-08-06 | 🔴 | `stores/app.ts` 목업, 각 view에 연동 TODO 표시됨 |
 | 전역 고정 로고·홈 이동 | ✅ | 2026-08-06 | 🟡 | `App.vue` |
 | 백엔드 연결 상태 표시 (axios, `/health`) | ✅ | 2026-08-06 | - | `lib/api.ts` |
-| Google 로그인 연동 (`POST /auth/google` 실연결) | ✅ | 2026-08-07 | 🔴 | Google Identity Services SDK(`index.html` 스크립트) + `LoginView`에서 발급받은 id_token으로 실제 로그인. JWT는 `localStorage`에 저장해 새로고침 유지 |
+| Google 로그인 연동 (`POST /auth/google` 실연결) | ✅ | 2026-08-07 | 🔴 | Google Identity Services SDK(`index.html` 스크립트) + `LoginModal`에서 발급받은 id_token으로 실제 로그인. JWT는 백엔드가 `HttpOnly` 세션 쿠키로 발급하며, 앱은 `/me`로 로그인 상태를 복구 (2026-08-14 보안 전환) |
 | API 키 등록 연동 (`POST`/`GET`/`DELETE /me/llm-credential`) | ✅ | 2026-08-12 | 🔴 | `ApiKeyEditView`/`ApiKeyView` 실제 API 호출로 교체, 제공자별 정규식 형식 검증 추가, 등록 상태 `localStorage` 유지. 입력 필드는 기본 `type="password"`로 마스킹, "보기" 토글로 확인 가능(2026-08-12 추가) |
 | API 키 테스트 버튼 (`POST /me/llm-credential/test`) | ✅ | 2026-08-07 | 🟡 | `ApiKeyView`에 "키 테스트" 버튼 추가, 응답/실패 메시지 인라인 표시 |
 | 지역 입력을 자연어 텍스트 → 시/도·세부지역 드롭다운으로 변경 | ✅ | 2026-08-07 | 🟡 | `ConditionWizardView`, 새 `DoodleSelect` 컴포넌트(옵션 패널까지 손그림 스타일 입힌 커스텀 리스트박스, 네이티브 select 아님) + `lib/regions.ts`. 세부지역 비우면 시/도 전체로 검색 |
