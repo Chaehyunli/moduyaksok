@@ -146,7 +146,11 @@ function segmentBetween(fromOrder: number, toOrder: number): RouteSegment | unde
 
 function selectOption(fromOrder: number, optionId: string) {
   if (!candidate.value) return
-  const editablePreview = previewCandidate.value ?? removalPreviewCandidate.value
+  // 저장 전 미리보기 후보는 스토어의 저장된 후보와 별도 객체다. 장소 대체/제외뿐
+  // 아니라 순서 변경 미리보기에서도 이 객체를 직접 갱신해야, 선택한 교통편이
+  // 즉시 화면·지도에 반영되고 저장 요청의 selected_options에도 포함된다.
+  const editablePreview =
+    reorderPreviewCandidate.value ?? previewCandidate.value ?? removalPreviewCandidate.value
   if (editablePreview) {
     const segment = editablePreview.routes.find((r) => r.fromOrder === fromOrder)
     if (segment) segment.selectedOptionId = optionId
