@@ -37,7 +37,7 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   if (liked) messages.push(`"${liked}" 취향을 일정에 넣고 있어요`)
 
   const disliked = quote(conditions.dislikedText)
-  if (disliked) messages.push(`"${disliked}"은/는 일정에서 빼고 있어요`)
+  if (disliked) messages.push(`"${disliked}" 취향을 일정에서 빼고 있어요`)
 
   messages.push('식사 시간과 여유 시간을 맞추고 있어요')
   messages.push('이동 동선을 계산하고 있어요')
