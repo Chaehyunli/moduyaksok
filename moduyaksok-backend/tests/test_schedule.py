@@ -67,7 +67,7 @@ def _login(client, monkeypatch, google_id="schedule-test-google-id") -> tuple[di
     )
     response = client.post("/auth/google", json={"id_token": "fake"})
     body = response.json()
-    return {"Authorization": f"Bearer {body['access_token']}"}, UUID(body["user"]["id"])
+    return {}, UUID(body["id"])
 
 
 def _register_credential(session, user_id: UUID) -> None:

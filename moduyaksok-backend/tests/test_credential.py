@@ -40,7 +40,7 @@ def _login(client, monkeypatch) -> tuple[dict, UUID]:
     )
     response = client.post("/auth/google", json={"id_token": "fake"})
     body = response.json()
-    return {"Authorization": f"Bearer {body['access_token']}"}, UUID(body["user"]["id"])
+    return {}, UUID(body["id"])
 
 
 def _credential_for(session, user_id: UUID) -> LLMCredential | None:

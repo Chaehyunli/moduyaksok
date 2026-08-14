@@ -7,13 +7,20 @@
 # ------------------------------------------------------------------
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.config import settings
 from app.db import get_session
 from app.models.user import User
-from app.services.auth import create_access_token, get_current_user, verify_google_id_token
+from app.services.auth import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    SESSION_COOKIE_NAME,
+    create_access_token,
+    get_current_user,
+    verify_google_id_token,
+)
 
 router = APIRouter()
 
@@ -30,16 +37,23 @@ class UserOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: UserOut
+def _session_cookie_options() -> dict:
+    """로컬 HTTP와 운영(Vercel ↔ Render) HTTPS 모두에서 동작하는 쿠키 설정."""
+    is_development = settings.env == "development"
+    return {
+        "key": SESSION_COOKIE_NAME,
+        "httponly": True,
+        "secure": not is_development,
+        "samesite": "lax" if is_development else "none",
+        "path": "/",
+        "max_age": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
 
 
-@router.post("/auth/google", response_model=TokenResponse)
+@router.post("/auth/google", response_model=UserOut)
 def login_with_google(
-    body: GoogleLoginRequest, session: Session = Depends(get_session)
-) -> TokenResponse:
+    body: GoogleLoginRequest, response: Response, session: Session = Depends(get_session)
+) -> UserOut:
     try:
         claims = verify_google_id_token(body.id_token)
     except ValueError as exc:
@@ -56,7 +70,23 @@ def login_with_google(
     session.refresh(user)
 
     token = create_access_token(user.id)
-    return TokenResponse(access_token=token, user=UserOut.model_validate(user))
+    response.set_cookie(value=token, **_session_cookie_options())
+    return UserOut.model_validate(user)
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout() -> Response:
+    """브라우저 세션 쿠키를 즉시 제거한다."""
+    options = _session_cookie_options()
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path=options["path"],
+        httponly=options["httponly"],
+        secure=options["secure"],
+        samesite=options["samesite"],
+    )
+    return response
 
 
 @router.get("/me", response_model=UserOut)

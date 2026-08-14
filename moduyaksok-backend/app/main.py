@@ -22,29 +22,49 @@
 # ------------------------------------------------------------------
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import app.models  # noqa: F401 — SQLModel 메타데이터에 테이블 등록
 from app.routers import auth, credential, health, schedule, share
+from app.services.auth import SESSION_COOKIE_NAME
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+ALLOWED_FRONTEND_ORIGINS = {"http://localhost:5173", "https://moduyaksok.vercel.app"}
 
 app = FastAPI(
     title="모두약속 API",
     description="개인화된 만남 일정 추천 웹 서비스 백엔드. "
-    "GET /me, POST /me/llm-credential 등 인증이 필요한 엔드포인트는 "
-    "우측 상단 Authorize에 로그인 응답으로 받은 access_token을 Bearer로 넣으면 테스트 가능.",
+    "Google 로그인 성공 시 발급되는 HttpOnly 세션 쿠키로 인증합니다.",
     version="0.1.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://moduyaksok.vercel.app"],
+    allow_origins=list(ALLOWED_FRONTEND_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def reject_cross_site_cookie_writes(request: Request, call_next):
+    """쿠키 인증에서 외부 사이트의 상태 변경 요청(CSRF)을 막는다.
+
+    인증 쿠키가 포함된 POST/PUT/PATCH/DELETE는 우리 프런트 Origin에서만 허용한다.
+    GET 등 읽기 요청과 로그인 전 요청에는 적용하지 않는다.
+    """
+    if (
+        request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.cookies.get(SESSION_COOKIE_NAME)
+        and request.headers.get("origin") not in ALLOWED_FRONTEND_ORIGINS
+    ):
+        return JSONResponse(status_code=403, content={"detail": "허용되지 않은 요청 출처입니다."})
+    return await call_next(request)
+
 
 app.include_router(health.router, tags=["헬스체크"])
 app.include_router(auth.router, tags=["인증"])

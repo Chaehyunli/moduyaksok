@@ -54,5 +54,7 @@ def session():
 def client(session):
     app.dependency_overrides[get_session] = lambda: session
     with TestClient(app) as test_client:
+        # 실제 SPA가 보내는 Origin을 기본으로 넣어 쿠키 기반 CSRF 검증을 함께 테스트한다.
+        test_client.headers.update({"Origin": "http://localhost:5173"})
         yield test_client
     app.dependency_overrides.clear()

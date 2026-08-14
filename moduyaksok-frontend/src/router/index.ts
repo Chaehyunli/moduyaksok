@@ -43,6 +43,9 @@ export const router = createRouter({
 
 router.beforeEach(async (to) => {
   const store = useAuthStore()
+  // 새로고침 뒤 Pinia 상태는 비어 있지만 HttpOnly 쿠키에는 세션이 남아 있을 수 있다.
+  // 라우트 권한을 판단하기 전에 서버가 세션을 확인하도록 한다.
+  await store.restoreSession()
   if (to.meta.requiresAuth && !store.loggedIn) {
     // 별도 /login 페이지로 보내는 대신, 메인 화면으로 보내고 그 위에 로그인
     // 모달을 띄운다(App.vue의 LoginModal) — 로그인 성공하면 원래 가려던

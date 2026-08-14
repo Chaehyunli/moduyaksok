@@ -17,18 +17,20 @@ def _mock_verify_ok(monkeypatch, google_id="google-123", email="test@example.com
     )
 
 
-def test_google_login_creates_user_and_returns_token(client, session, monkeypatch):
+def test_google_login_creates_user_and_sets_httponly_session_cookie(client, session, monkeypatch):
     _mock_verify_ok(monkeypatch)
 
     response = client.post("/auth/google", json={"id_token": "fake"})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["token_type"] == "bearer"
-    assert body["access_token"]
-    assert body["user"]["email"] == "test@example.com"
-    assert body["user"]["name"] == "테스터"
-    assert "picture_url" not in body["user"]
+    assert body["email"] == "test@example.com"
+    assert body["name"] == "테스터"
+    assert "picture_url" not in body
+    assert "access_token" not in body
+    cookie = response.headers["set-cookie"]
+    assert "session=" in cookie
+    assert "HttpOnly" in cookie
 
     user = session.exec(select(User).where(User.google_id == "google-123")).first()
     assert user is not None
@@ -43,7 +45,7 @@ def test_google_login_upserts_existing_user(client, session, monkeypatch):
     response = client.post("/auth/google", json={"id_token": "fake"})
 
     assert response.status_code == 200
-    assert response.json()["user"]["name"] == "바뀐이름"
+    assert response.json()["name"] == "바뀐이름"
     users = session.exec(select(User).where(User.google_id == "google-123")).all()
     assert len(users) == 1
 
@@ -64,12 +66,31 @@ def test_get_me_without_token_returns_401(client):
     assert response.status_code == 401
 
 
-def test_get_me_with_valid_token_returns_current_user(client, monkeypatch):
+def test_get_me_with_session_cookie_returns_current_user(client, monkeypatch):
     _mock_verify_ok(monkeypatch)
     login_response = client.post("/auth/google", json={"id_token": "fake"})
-    token = login_response.json()["access_token"]
-
-    response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
+    assert login_response.status_code == 200
+    response = client.get("/me")
 
     assert response.status_code == 200
     assert response.json()["email"] == "test@example.com"
+
+
+def test_logout_clears_session_cookie(client, monkeypatch):
+    _mock_verify_ok(monkeypatch)
+    client.post("/auth/google", json={"id_token": "fake"})
+
+    response = client.post("/auth/logout")
+
+    assert response.status_code == 204
+    assert 'session=""' in response.headers["set-cookie"]
+    assert client.get("/me").status_code == 401
+
+
+def test_cross_site_request_with_session_cookie_is_rejected(client, monkeypatch):
+    _mock_verify_ok(monkeypatch)
+    client.post("/auth/google", json={"id_token": "fake"})
+
+    response = client.post("/auth/logout", headers={"Origin": "https://attacker.example"})
+
+    assert response.status_code == 403

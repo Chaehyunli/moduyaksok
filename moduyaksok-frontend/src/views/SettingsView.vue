@@ -8,8 +8,8 @@ import DoodleButton from '../components/doodle/DoodleButton.vue'
 const router = useRouter()
 const store = useAuthStore()
 
-function handleLogout() {
-  store.logout()
+async function handleLogout() {
+  await store.logout()
   router.push('/')
 }
 </script>

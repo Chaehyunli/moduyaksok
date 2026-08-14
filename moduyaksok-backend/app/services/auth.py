@@ -8,8 +8,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from jose import JWTError, jwt
@@ -22,7 +21,7 @@ from app.models.user import User
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+SESSION_COOKIE_NAME = "session"
 
 
 def verify_google_id_token(id_token: str) -> dict:
@@ -48,15 +47,14 @@ def create_access_token(user_id: UUID) -> str:
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    request: Request,
     session: Session = Depends(get_session),
 ) -> User:
-    if credentials is None:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "인증이 필요합니다.")
     try:
-        payload = jwt.decode(
-            credentials.credentials, settings.jwt_secret_key, algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[ALGORITHM])
         user_id = UUID(payload["sub"])
     except (JWTError, ValueError, KeyError) as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "토큰이 유효하지 않습니다.") from exc

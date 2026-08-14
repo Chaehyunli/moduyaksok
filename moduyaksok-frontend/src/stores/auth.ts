@@ -11,8 +11,10 @@ type ApiKeyProvider = 'anthropic' | 'openai' | 'upstage'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    loggedIn: !!localStorage.getItem('access_token'),
-    userName: localStorage.getItem('user_name') ?? '',
+    // 인증 여부는 localStorage가 아니라 HttpOnly 세션 쿠키를 /me로 검증한 결과다.
+    loggedIn: false,
+    initialized: false,
+    userName: '',
     apiKeyRegistered: !!localStorage.getItem('api_key_masked'),
     apiKeyProvider: (localStorage.getItem('api_key_provider') || null) as ApiKeyProvider | null,
     apiKeyMasked: localStorage.getItem('api_key_masked') ?? '',
@@ -24,11 +26,24 @@ export const useAuthStore = defineStore('auth', {
     loginRedirect: '/new',
   }),
   actions: {
-    login(accessToken: string, user: AuthUser) {
-      localStorage.setItem('access_token', accessToken)
-      localStorage.setItem('user_name', user.name ?? user.email)
+    login(user: AuthUser) {
       this.loggedIn = true
+      this.initialized = true
       this.userName = user.name ?? user.email
+    },
+    async restoreSession() {
+      if (this.initialized) return
+      // 쿠키 전환 전 버전이 남긴 인증 정보는 더 이상 사용하지 않으며 즉시 정리한다.
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('user_name')
+      try {
+        const { data } = await api.get<AuthUser>('/me', { skipAuthRedirect: true } as any)
+        this.login(data)
+      } catch {
+        this.loggedIn = false
+      } finally {
+        this.initialized = true
+      }
     },
     openLoginModal(redirect: string = '/new') {
       this.loginRedirect = redirect
@@ -37,12 +52,21 @@ export const useAuthStore = defineStore('auth', {
     closeLoginModal() {
       this.showLoginModal = false
     },
-    logout() {
+    async logout() {
+      // 쿠키의 원문은 JavaScript에서 읽을 수 없으므로 서버에게 만료를 요청한다.
+      try {
+        await api.post('/auth/logout', undefined, { skipAuthRedirect: true } as any)
+      } finally {
+        this.clearLocalSessionState()
+      }
+    },
+    clearLocalSessionState() {
       localStorage.removeItem('access_token')
       localStorage.removeItem('user_name')
       localStorage.removeItem('api_key_masked')
       localStorage.removeItem('api_key_provider')
       this.loggedIn = false
+      this.initialized = true
       this.userName = ''
       this.apiKeyRegistered = false
       this.apiKeyProvider = null

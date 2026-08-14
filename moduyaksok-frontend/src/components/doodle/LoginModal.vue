@@ -29,7 +29,7 @@ async function handleCredential(resp: { credential: string }) {
   error.value = ''
   try {
     const { data } = await api.post('/auth/google', { id_token: resp.credential })
-    store.login(data.access_token, data.user)
+    store.login(data)
     const redirect = store.loginRedirect
     store.closeLoginModal()
     router.push(redirect)
