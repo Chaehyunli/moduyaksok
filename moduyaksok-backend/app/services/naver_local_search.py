@@ -74,7 +74,9 @@
 # ------------------------------------------------------------------
 import asyncio
 import hashlib
+import logging
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -83,6 +85,8 @@ from app.config import settings
 from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, PreferenceTag
 from app.services.naver_map_url import build_naver_map_url
 from app.services.rate_limiter import acquire_call_slot, reserve_daily_budget
+
+logger = logging.getLogger(__name__)
 
 # 검색어와 일치하는 부분에 네이버가 <b> 태그를 강조 표시로 넣어서 돌려준다(실측
 # 확인, 2026-08-09) — Step2 프롬프트에 그대로 넣으면 LLM이 HTML 태그를 실제
@@ -225,7 +229,14 @@ def _build_queries(
     ]
     base.extend((f"{region} {tag}", _KIND_LIKED, tag) for tag in liked)
     base.extend((f"{region} {tag}", _KIND_DISLIKED, tag) for tag in disliked)
-    return [(query, kind, value, sort) for query, kind, value in base for sort in _SORTS]
+    # 일반 카테고리는 정확도순 5곳이면 일정 재료가 충분하다. 좋아요/싫어요 태그는
+    # 놓치면 하드 조건 판정이 달라지므로 두 정렬을 유지한다. 기본 15개 카테고리와
+    # 좋아요 2개·싫어요 1개라면 36회에서 21회로 줄어든다.
+    return [
+        (query, kind, value, sort)
+        for query, kind, value in base
+        for sort in ((_SORT_RANDOM,) if kind == _KIND_CATEGORY else _SORTS)
+    ]
 
 
 def _merge_results(
@@ -376,6 +387,7 @@ async def search_places_for_region(
     만들어 쓰는 값을 그대로 넘겨받는다 — rate_limiter의 라운드로빈이 이 값으로
     "어느 요청에서 나온 호출들인지" 묶어서 다른 요청과 공평하게 나눠 갖는다.
     """
+    started = time.perf_counter()
     queries = _build_queries(region, liked_tags or [], disliked_tags or [])
     granted = await reserve_daily_budget(
         "naver_search", len(queries), settings.naver_daily_call_limit
@@ -399,7 +411,15 @@ async def search_places_for_region(
     # 있으므로 raise하지 않는다.
     if not merged and any_failed:
         raise NaverSearchError("모든 카테고리·태그 조회가 실패해 병합할 결과가 없습니다.")
-    return PlaceSearchResult(
+    result = PlaceSearchResult(
         list(merged.values()),
         _build_search_groups(queries, results_per_query, set(merged)),
     )
+    logger.info(
+        "place_search region=%s query_count=%s result_count=%s elapsed_seconds=%.3f",
+        region,
+        len(queries),
+        len(result),
+        time.perf_counter() - started,
+    )
+    return result

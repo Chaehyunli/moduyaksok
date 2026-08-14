@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from app.pipeline.generate_algorithm_step2 import (
+    _minimum_preference_coverage,
     ensure_place_ids,
     generate_algorithm_candidates,
 )
@@ -167,6 +168,79 @@ def test_algorithm_meets_meal_slots_when_liked_tags_are_all_non_meal():
         assert meal_count >= 2, [a.source_category for a in draft.activities]
 
 
+def _single_tag_places(tagged_count: int) -> list[dict]:
+    places = [
+        {
+            "title": f"와플집 {index}",
+            "category": "카페,디저트>와플",
+            "source_category": "카페",
+            "matched_tags": ["와플"],
+            "mapx": str(1_270_000_000 + index * 500),
+            "mapy": str(375_000_000 + index * 500),
+        }
+        for index in range(tagged_count)
+    ]
+    places.extend(
+        {
+            "title": f"일반 장소 {index}",
+            "category": category,
+            "source_category": category,
+            "mapx": str(1_270_003_000 + index * 500),
+            "mapy": str(375_003_000 + index * 500),
+        }
+        for index, category in enumerate(
+            ("전시", "영화관", "보드게임카페", "액티비티", "베이커리", "공연장")
+        )
+    )
+    return ensure_place_ids(places)
+
+
+def _single_tag_conditions() -> NormalizedConditions:
+    return _conditions().model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 14, 0), datetime(2026, 8, 15, 18, 0)),
+            "liked_tags": [
+                PreferenceTag(
+                    tag="와플",
+                    verifiable=True,
+                    is_meal=False,
+                    preference_kind="food_menu",
+                )
+            ],
+        }
+    )
+
+
+def test_candidates_use_distinct_places_for_same_liked_tag_when_alternatives_exist():
+    labeled = generate_algorithm_candidates(
+        "upstage", "unused", _single_tag_conditions(), _single_tag_places(3)
+    )
+
+    assert len(labeled) == 3
+    liked_places = [
+        next(activity.name for activity in draft.activities if "와플" in activity.matched_tags)
+        for _, draft in labeled
+    ]
+    assert len(set(liked_places)) == 3
+
+
+def test_candidates_allow_same_liked_place_when_no_alternative_exists():
+    labeled = generate_algorithm_candidates(
+        "upstage", "unused", _single_tag_conditions(), _single_tag_places(1)
+    )
+
+    assert len(labeled) == 3
+    liked_places = [
+        next(activity.name for activity in draft.activities if "와플" in activity.matched_tags)
+        for _, draft in labeled
+    ]
+    assert liked_places == ["와플집 0"] * 3
+
+
+def test_preference_coverage_requires_strict_majority_for_even_count():
+    assert _minimum_preference_coverage(_conditions()) == 2
+
+
 def test_ensure_place_ids_preserves_search_result_metadata():
     from app.services.naver_local_search import PlaceSearchResult
 
@@ -254,3 +328,77 @@ def test_verifiable_disliked_place_is_filtered_but_required_place_wins():
     )
     assert required
     assert required_id in {activity.place_id for activity in required[0][1].activities}
+
+
+def test_required_meal_place_replaces_same_tag_and_keeps_other_liked_tag():
+    conditions = _conditions().model_copy(
+        update={
+            "time_range": (datetime(2026, 8, 15, 15, 0), datetime(2026, 8, 15, 21, 0)),
+            "liked_tags": [
+                PreferenceTag(
+                    tag="초밥",
+                    verifiable=True,
+                    is_meal=True,
+                    preference_kind="food_menu",
+                ),
+                PreferenceTag(tag="와플", verifiable=True, preference_kind="food_menu"),
+            ],
+        }
+    )
+    places = ensure_place_ids(
+        [
+            {
+                "place_id": "required-sushi",
+                "title": "사용자가 고른 초밥집",
+                "category": "음식점>일식>초밥",
+                "matched_tags": ["초밥"],
+                "mapx": "1270000000",
+                "mapy": "375000000",
+            },
+            {
+                "title": "가까운 한식집",
+                "source_category": "한식",
+                "mapx": "1270001000",
+                "mapy": "375000100",
+            },
+            {
+                "title": "조금 먼 와플집",
+                "category": "카페,디저트>와플",
+                "matched_tags": ["와플"],
+                "mapx": "1270360000",
+                "mapy": "375000000",
+            },
+            {
+                "title": "전시관",
+                "source_category": "전시",
+                "mapx": "1270359000",
+                "mapy": "375000100",
+            },
+            {
+                "title": "보드게임카페",
+                "source_category": "보드게임카페",
+                "mapx": "1270358000",
+                "mapy": "375000200",
+            },
+        ]
+    )
+
+    labeled = generate_algorithm_candidates(
+        "upstage",
+        "unused",
+        conditions,
+        places,
+        ("required-sushi",),
+        ("초밥",),
+    )
+
+    assert labeled
+    for _, draft in labeled:
+        names = {activity.name for activity in draft.activities}
+        assert "사용자가 고른 초밥집" in names
+        assert "조금 먼 와플집" in names
+        required_meal = next(
+            activity for activity in draft.activities if activity.place_id == "required-sushi"
+        )
+        assert required_meal.start_time < "19:00"
+        assert required_meal.end_time > "18:00"

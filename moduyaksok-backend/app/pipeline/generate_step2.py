@@ -507,9 +507,19 @@ def _non_meal_tag_names(conditions: NormalizedConditions) -> tuple[str, ...]:
 
 
 def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
-    """검증 가능한 좋아요 태그 1~5개에 대해 최소 1, 1, 1, 2, 2개를 요구한다."""
-    verified_count = len(_meal_tag_names(conditions)) + len(_non_meal_tag_names(conditions))
-    return max(1, verified_count // 2) if verified_count else 0
+    """검증 가능한 좋아요 태그의 가능한 범위 내 과반수를 요구한다.
+
+    식사 태그는 점심·저녁 슬롯 수보다 많이 강제하지 않는다. 예를 들어 저녁만
+    포함된 일정에서 식사 선호가 세 종류여도 식당 세 곳을 넣지는 않는다.
+    """
+    meal_count = len(_meal_tag_names(conditions))
+    non_meal_count = len(_non_meal_tag_names(conditions))
+    verified_count = meal_count + non_meal_count
+    if not verified_count:
+        return 0
+    meal_capacity = max(1, len(_required_meal_windows(conditions.time_range)))
+    feasible_count = non_meal_count + min(meal_count, meal_capacity)
+    return min(verified_count // 2 + 1, feasible_count)
 
 
 def _is_eligible_tag_anchor(place: dict, tag: str, required_meal_tags: tuple[str, ...]) -> bool:
@@ -789,7 +799,8 @@ def _plans_for_cluster(
     precovered_liked_tags: tuple[str, ...] = (),
 ) -> list[_CandidatePlan]:
     precovered = set(precovered_liked_tags)
-    meal_tags = tuple(tag for tag in _meal_tag_names(conditions) if tag not in precovered)
+    all_meal_tags = _meal_tag_names(conditions)
+    meal_tags = tuple(tag for tag in all_meal_tags if tag not in precovered)
     non_meal_tags = tuple(tag for tag in _non_meal_tag_names(conditions) if tag not in precovered)
     meal_slots = len(_required_meal_windows(conditions.time_range))
     places = cluster.places
@@ -810,7 +821,9 @@ def _plans_for_cluster(
             or not (set(_place_matched_tags(place)) & precovered)
         )
 
-    if sum(_is_meal_place(place, meal_tags) for place in places) < meal_slots:
+    # precovered 식사 태그는 추가 앵커 대상에서는 빼지만, 사용자가 고른 필수
+    # 식사 장소 자체는 점심/저녁 수용량 계산에 계속 포함해야 한다.
+    if sum(_is_meal_place(place, all_meal_tags) for place in places) < meal_slots:
         return []
 
     chosen_meal_count = min(meal_slots, len(meal_tags))
@@ -855,17 +868,24 @@ def _plan_anchor_names(plan: _CandidatePlan) -> frozenset[str]:
     return frozenset(name for _, name in plan.required_tag_anchors)
 
 
+def _plan_preference_anchor_names(plan: _CandidatePlan) -> frozenset[str]:
+    """일반 다양화 장소를 제외한 실제 선호 태그 대표 장소만 반환한다."""
+    return frozenset(name for tag, name in plan.required_tag_anchors if tag != "다양화 장소")
+
+
 def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]:
     """식사 태그·실제 앵커·생활권·후보 풀 다양성 순으로 최대 3개를 고른다."""
     selected: list[_CandidatePlan] = []
     remaining = list(plans)
     covered_meal_tags: set[str] = set()
     used_anchor_names: set[str] = set()
+    used_preference_anchor_names: set[str] = set()
     while remaining and len(selected) < _MAX_CANDIDATE_PLANS:
 
-        def score(plan: _CandidatePlan) -> tuple[int, int, int, int, int, int, int, int]:
+        def score(plan: _CandidatePlan) -> tuple[int, ...]:
             titles = _plan_titles(plan)
             anchor_names = _plan_anchor_names(plan)
+            preference_anchor_names = _plan_preference_anchor_names(plan)
             max_overlap = max(
                 (len(titles & _plan_titles(existing)) for existing in selected), default=0
             )
@@ -894,10 +914,12 @@ def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]
             # 픽에서는 selected가 비어 있어 overlap이 항상 0이라 이 재정렬이
             # 첫 후보 품질에는 영향이 없고, 두 번째·세 번째 픽부터 실제로 갈린다.
             return (
+                len(set(plan.required_meal_tags) - covered_meal_tags),
+                len(preference_anchor_names - used_preference_anchor_names),
                 len(anchor_names - used_anchor_names),
                 -max_anchor_overlap,
+                len(preference_anchor_names),
                 len(anchor_names),
-                len(set(plan.required_meal_tags) - covered_meal_tags),
                 -plan.cluster_radius_meters,
                 -max_overlap,
                 categories,
@@ -908,6 +930,7 @@ def _select_candidate_plans(plans: list[_CandidatePlan]) -> list[_CandidatePlan]
         selected.append(chosen)
         covered_meal_tags.update(chosen.required_meal_tags)
         used_anchor_names.update(_plan_anchor_names(chosen))
+        used_preference_anchor_names.update(_plan_preference_anchor_names(chosen))
         remaining.remove(chosen)
     return selected
 
@@ -929,6 +952,9 @@ def _build_candidate_plans(
     seen: set[
         tuple[frozenset[str], tuple[str, ...], tuple[str, ...], tuple[tuple[str, str], ...]]
     ] = set()
+    uncovered_liked_tags = (
+        set(_meal_tag_names(conditions)) | set(_non_meal_tag_names(conditions))
+    ) - set(precovered_liked_tags)
     for radius in _CLUSTER_RADIUS_STEPS_METERS:
         for cluster in _temporary_clusters(place_candidates, radius, meal_tags, required_place_ids):
             for plan in _plans_for_cluster(
@@ -945,8 +971,17 @@ def _build_candidate_plans(
                     all_plans.append(plan)
         # 후보 원본 수가 3개를 넘는지가 아니라, 실제 장소 앵커까지 다른 계획을
         # 세 개 고를 수 있을 때만 더 넓은 반경 탐색을 멈춘다.
-        if len(_select_candidate_plans(all_plans)) >= _MAX_CANDIDATE_PLANS:
-            break
+        selected_so_far = _select_candidate_plans(all_plans)
+        if len(selected_so_far) >= _MAX_CANDIDATE_PLANS:
+            # 일반 장소만 다른 계획 세 개를 만들었다고 반경 확장을 멈추면, 조금
+            # 더 먼 생활권에 있는 같은 선호 태그의 다른 가게를 보지 못한다. 실제
+            # 선호 앵커 조합까지 세 가지일 때만 조기 종료한다. 선호 태그가 없으면
+            # 일반 장소 다양성만으로 기존처럼 바로 종료한다.
+            preference_signatures = {
+                tuple(sorted(_plan_preference_anchor_names(plan))) for plan in selected_so_far
+            }
+            if not uncovered_liked_tags or len(preference_signatures) >= _MAX_CANDIDATE_PLANS:
+                break
 
     selected = _select_candidate_plans(all_plans)
     return [

@@ -744,6 +744,45 @@ def test_candidate_plans_assign_different_real_meal_anchors_to_each_option():
     assert sum(dict(plan.required_tag_anchors).get("와플") == "와플집" for plan in plans) == 1
 
 
+def test_candidate_plans_expand_radius_for_distinct_preference_anchors():
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "liked_tags": [PreferenceTag(tag="와플", verifiable=True, is_meal=False)],
+        }
+    )
+    places = [
+        {
+            "title": "가까운 와플집",
+            "source_category": "카페",
+            "matched_tags": ["와플"],
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "title": "조금 먼 와플집",
+            "source_category": "카페",
+            "matched_tags": ["와플"],
+            "mapx": "1270000000",
+            "mapy": "375117000",
+        },
+        *[
+            {
+                "title": f"일반 장소 {index}",
+                "source_category": category,
+                "mapx": str(1270000000 + index * 500),
+                "mapy": str(375000000 + index * 500),
+            }
+            for index, category in enumerate(("한식", "중식", "전시", "보드게임카페", "영화관"))
+        ],
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    waffle_anchors = {dict(plan.required_tag_anchors)["와플"] for plan in plans}
+    assert waffle_anchors == {"가까운 와플집", "조금 먼 와플집"}
+    assert any(plan.cluster_radius_meters == 1_500 for plan in plans)
+
+
 def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():
     conditions = _CONDITIONS.model_copy(
         update={"liked_tags": [PreferenceTag(tag="햄버거", verifiable=True, is_meal=True)]}

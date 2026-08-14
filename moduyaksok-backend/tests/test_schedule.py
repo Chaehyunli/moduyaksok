@@ -19,6 +19,8 @@
 from datetime import datetime
 from uuid import UUID
 
+import pytest
+
 from app.models.llm_credential import LLMCredential
 from app.pipeline.schemas import (
     Activity,
@@ -145,6 +147,20 @@ def test_create_schedule_without_registered_key_returns_404(client, monkeypatch)
 
     assert response.status_code == 404
     assert "등록된 API 키가 없습니다" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("field", ["liked_text", "disliked_text"])
+def test_create_schedule_rejects_preference_text_over_fifty_characters(
+    client, session, monkeypatch, field
+):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    body = {**_CREATE_BODY, field: "가" * 51}
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] == field
 
 
 def test_create_schedule_success_returns_candidates_and_persists_session(
@@ -443,6 +459,34 @@ def _make_candidate_contain_pool_place(session, session_id: str, place_id: str) 
     schedule.candidates = candidates
     session.add(schedule)
     session.commit()
+
+
+def test_pending_required_liked_place_supersedes_same_tag_during_replacement():
+    from types import SimpleNamespace
+
+    from app.routers.schedule import _replacement_place_sets
+
+    pool = SimpleNamespace(
+        places={
+            "places": [
+                {"place_id": "required-sushi", "title": "필수 초밥", "matched_tags": ["초밥"]},
+                {"place_id": "old-sushi", "title": "기존 초밥", "matched_tags": ["초밥"]},
+                {"place_id": "old-waffle", "title": "기존 와플", "matched_tags": ["와플"]},
+                {"place_id": "keep", "title": "유지할 장소"},
+            ]
+        }
+    )
+
+    retained, fixed, superseded = _replacement_place_sets(
+        pool,
+        {"old-sushi", "old-waffle", "keep"},
+        {"required-sushi"},
+        {"old-waffle"},
+    )
+
+    assert superseded == {"old-sushi"}
+    assert retained == {"keep"}
+    assert fixed == {"keep", "required-sushi"}
 
 
 def test_add_required_place_persists_and_get_schedule_returns_it(client, session, monkeypatch):

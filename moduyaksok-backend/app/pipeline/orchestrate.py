@@ -44,6 +44,7 @@
 # ------------------------------------------------------------------
 import asyncio
 import logging
+import time
 
 from app.config import settings
 from app.pipeline.generate_algorithm_step2 import (
@@ -113,6 +114,8 @@ async def generate_schedule_candidates(
 
     region = raw_input.get("region", "")
     logger.info("[step1] 조건 정규화 시작 - %s", region)
+    total_started = time.perf_counter()
+    stage_started = time.perf_counter()
     conditions = await loop.run_in_executor(
         None, normalize_conditions, provider, api_key, raw_input
     )
@@ -122,8 +125,14 @@ async def generate_schedule_candidates(
         len(conditions.liked_tags),
         len(conditions.disliked_tags),
     )
-
     logger.info("[step1] 장소 검색(네이버 HUB API) 시작 - %s", region)
+    logger.info(
+        "schedule_stage session_id=%s stage=normalize elapsed_seconds=%.3f",
+        session_id,
+        time.perf_counter() - stage_started,
+    )
+
+    stage_started = time.perf_counter()
     place_candidates = ensure_place_ids(
         await search_places_for_region(
             conditions.region,
@@ -135,13 +144,27 @@ async def generate_schedule_candidates(
     logger.info(
         "[step1] 장소 검색(네이버 HUB API) 완료 - %s, 총 %d건", region, len(place_candidates)
     )
+    logger.info(
+        "schedule_stage session_id=%s stage=place_search elapsed_seconds=%.3f count=%s",
+        session_id,
+        time.perf_counter() - stage_started,
+        len(place_candidates),
+    )
 
+    stage_started = time.perf_counter()
     result = await regenerate_schedule_candidates(
         provider,
         api_key,
         session_id,
         conditions,
         place_candidates,
+    )
+    logger.info(
+        "schedule_stage session_id=%s stage=generate_and_synthesize "
+        "elapsed_seconds=%.3f total_seconds=%.3f",
+        session_id,
+        time.perf_counter() - stage_started,
+        time.perf_counter() - total_started,
     )
     return result, conditions, place_candidates
 
@@ -163,6 +186,7 @@ async def regenerate_schedule_candidates(
     재사용할 수 있다. ``required_place_ids``는 Step2와 Step3 양쪽에서 하드 제약으로
     전달돼 모든 결과에 실제 포함될 때만 반환된다.
     """
+    started = time.perf_counter()
     loop = asyncio.get_running_loop()
     place_candidates = ensure_place_ids(place_candidates)
     if settings.schedule_generator_mode == "hybrid":
@@ -198,6 +222,12 @@ async def regenerate_schedule_candidates(
         )
         result_count = len(result.candidates) if isinstance(result, ScheduleResponse) else 0
         logger.info("[step3] 후보 검증/병합 완료 - %d개 확정", result_count)
+        logger.info(
+            "schedule_regeneration session_id=%s draft_count=%s elapsed_seconds=%.3f",
+            session_id,
+            len(labeled_drafts),
+            time.perf_counter() - started,
+        )
         return result
 
     labeled_drafts = await (

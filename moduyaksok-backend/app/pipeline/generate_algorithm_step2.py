@@ -70,6 +70,7 @@ class _ScoredDraft:
     quality_score: float
     place_ids: frozenset[str]
     category_sequence: tuple[str, ...]
+    liked_tag_place_ids: frozenset[tuple[str, str]]
 
 
 def ensure_place_ids(places: list[dict]) -> list[dict]:
@@ -150,8 +151,19 @@ def _travel_minutes(a: dict, b: dict) -> int:
 
 
 def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
-    count = sum(tag.verifiable for tag in conditions.liked_tags)
-    return max(1, count // 2) if count else 0
+    verified = [tag for tag in conditions.liked_tags if tag.verifiable]
+    count = len(verified)
+    # "과반수"는 절반 이상이 아니라 절반 초과다. 특히 태그가 2개일 때
+    # 기존 ceil(2 / 2)=1은 정확히 절반만 반영해도 통과시키는 오류였다. 다만
+    # 식사 선호는 점심·저녁 슬롯 수보다 많이 넣으면 식당만 도는 일정이 되므로,
+    # 실제로 담을 수 있는 서로 다른 선호 수를 상한으로 둔다.
+    if not count:
+        return 0
+    meal_count = sum(tag.is_meal for tag in verified)
+    non_meal_count = count - meal_count
+    meal_capacity = max(1, len(_required_meal_windows(conditions.time_range)))
+    feasible_count = non_meal_count + min(meal_count, meal_capacity)
+    return min(count // 2 + 1, feasible_count)
 
 
 def _target_place_count(conditions: NormalizedConditions, fixed_count: int) -> int:
@@ -302,7 +314,16 @@ def _draft_for_state(
     perspective_index: int,
 ) -> _ScoredDraft:
     selected = [places_by_id[place_id] for place_id in state.place_ids]
+    liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
     meal_tags = tuple(tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal)
+    # 필수 장소가 이미 식사 좋아요 태그를 충족하면 계획 단계에서는 그 태그가
+    # precovered로 빠진다. 그래도 시간 배정 단계에서는 해당 장소를 점심/저녁
+    # 앵커로 유지해야 일반 활동처럼 오후 애매한 시각에 배치되지 않는다.
+    fixed_meal_names = {
+        place.get("title", "")
+        for place in selected
+        if _place_id(place) in fixed_ids and _is_meal_place(place, meal_tags)
+    }
     ordered = _best_order(selected, fixed_ids, meal_tags, conditions)
     place_selections = [
         PlaceSelectionDraft(
@@ -321,7 +342,8 @@ def _draft_for_state(
             list(plan.place_candidates),
             meal_anchor_names=frozenset(
                 name for tag, name in plan.required_tag_anchors if tag in plan.required_meal_tags
-            ),
+            )
+            | frozenset(fixed_meal_names),
         ),
         rationale=(
             f"{label}을 중심으로 필수 장소와 좋아하는 조건을 지키면서 "
@@ -339,6 +361,12 @@ def _draft_for_state(
         quality_score=state.score,
         place_ids=frozenset(state.place_ids),
         category_sequence=tuple(_category(place) for place in ordered),
+        liked_tag_place_ids=frozenset(
+            (tag, _place_id(place))
+            for place in selected
+            for tag in _place_matched_tags(place)
+            if tag in liked_tags
+        ),
     )
 
 
@@ -485,6 +513,31 @@ def _set_score(items: tuple[_ScoredDraft, ...], unavoidable_ids: set[str]) -> fl
     return quality - penalty
 
 
+def _liked_place_diversity(
+    items: tuple[_ScoredDraft, ...], unavoidable_ids: set[str]
+) -> tuple[int, int]:
+    """선호 태그별 대표 장소의 다양성을 일반 장소 다양성보다 먼저 평가한다.
+
+    같은 와플 태그에 검색 대안이 여러 개 있는데도 세 후보가 모두 한 가게를
+    공유하던 원인은 전체 장소 Jaccard에서 공통 선호 장소 1개의 비중이 작았기
+    때문이다. 태그별 고유 장소 수를 최우선으로 최대화하면 대안이 있는 만큼 서로
+    다른 가게를 쓰고, 대안이 하나뿐이면 가능한 값이 동일하므로 기존 품질 점수가
+    자연스럽게 다음 비교 기준이 된다. 필수 장소는 모든 후보에 들어가야 하므로
+    다양성 계산에서 제외한다.
+    """
+    places_by_tag: dict[str, set[str]] = {}
+    assignment_count = 0
+    for item in items:
+        for tag, place_id in item.liked_tag_place_ids:
+            if place_id in unavoidable_ids:
+                continue
+            places_by_tag.setdefault(tag, set()).add(place_id)
+            assignment_count += 1
+    unique_count = sum(len(place_ids) for place_ids in places_by_tag.values())
+    repeated_count = assignment_count - unique_count
+    return unique_count, -repeated_count
+
+
 def _select_diverse_set(
     drafts: list[_ScoredDraft], limit: int, unavoidable_ids: set[str]
 ) -> list[_ScoredDraft]:
@@ -496,7 +549,13 @@ def _select_diverse_set(
     if len(pool) <= limit:
         return pool
     return list(
-        max(combinations(pool, limit), key=lambda items: _set_score(items, unavoidable_ids))
+        max(
+            combinations(pool, limit),
+            key=lambda items: (
+                _liked_place_diversity(items, unavoidable_ids),
+                _set_score(items, unavoidable_ids),
+            ),
+        )
     )
 
 
