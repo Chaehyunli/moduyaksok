@@ -16,14 +16,6 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- 손그림 흔들림 보더용 SVG 필터: 페이지 전역에서 한 번만 선언 -->
-  <svg width="0" height="0" class="absolute">
-    <filter id="doodle-wobble">
-      <feTurbulence type="fractalNoise" baseFrequency="0.012 0.028" numOctaves="2" seed="7" result="noise" />
-      <feDisplacementMap in="SourceGraphic" in2="noise" scale="3.2" xChannelSelector="R" yChannelSelector="G" />
-    </filter>
-  </svg>
-
   <!-- 모든 화면에 고정으로 떠 있는 로고. 클릭하면 항상 홈으로 -->
   <header class="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b-2 border-dashed border-ink/15 bg-paper/95 px-6 backdrop-blur-sm">
     <RouterLink to="/" class="relative font-hand text-lg text-ink">
