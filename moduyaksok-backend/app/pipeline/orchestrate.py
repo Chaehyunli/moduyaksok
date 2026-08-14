@@ -37,8 +37,13 @@
 #             변경 — 라우터가 SchedulePlacePool(신규 테이블, app/models/schedule.py)
 #             을 같이 저장하려면 Step1 결과(conditions)와 장소 검색 결과
 #             (place_candidates)가 필요한데, 지금까진 이 함수 밖으로 안 나갔다.
+# 2026-08-14, 각 Step 전환마다 logger.info("[stepN] ...") 추가 — 개발 중 콘솔에서
+#             지금 파이프라인이 어느 단계인지 바로 보려는 용도(운영 모니터링 목적
+#             아님, 응답에는 안 실림). 이 파일이 이미 "여러 Step을 잇는" 역할이라
+#             각 Step 파일 내부를 안 건드리고 여기 한 곳에서만 로깅.
 # ------------------------------------------------------------------
 import asyncio
+import logging
 
 from app.config import settings
 from app.pipeline.generate_algorithm_step2 import (
@@ -58,6 +63,8 @@ from app.pipeline.schemas import (
 )
 from app.pipeline.synthesize_step3 import synthesize_and_validate
 from app.services.naver_local_search import search_places_for_region
+
+logger = logging.getLogger(__name__)
 
 
 def _missing_perspectives(
@@ -104,10 +111,19 @@ async def generate_schedule_candidates(
     """
     loop = asyncio.get_running_loop()
 
+    region = raw_input.get("region", "")
+    logger.info("[step1] 조건 정규화 시작 - %s", region)
     conditions = await loop.run_in_executor(
         None, normalize_conditions, provider, api_key, raw_input
     )
+    logger.info(
+        "[step1] 조건 정규화 완료 - %s (좋아요 %d개, 싫어요 %d개 태그)",
+        region,
+        len(conditions.liked_tags),
+        len(conditions.disliked_tags),
+    )
 
+    logger.info("[step1] 장소 검색(네이버 HUB API) 시작 - %s", region)
     place_candidates = ensure_place_ids(
         await search_places_for_region(
             conditions.region,
@@ -115,6 +131,9 @@ async def generate_schedule_candidates(
             conditions.disliked_tags,
             session_id=session_id,
         )
+    )
+    logger.info(
+        "[step1] 장소 검색(네이버 HUB API) 완료 - %s, 총 %d건", region, len(place_candidates)
     )
 
     result = await regenerate_schedule_candidates(
@@ -147,6 +166,7 @@ async def regenerate_schedule_candidates(
     loop = asyncio.get_running_loop()
     place_candidates = ensure_place_ids(place_candidates)
     if settings.schedule_generator_mode == "hybrid":
+        logger.info("[step2] 후보 초안 생성 시작 - %s", conditions.region)
         labeled_drafts = await loop.run_in_executor(
             None,
             generate_algorithm_candidates,
@@ -158,12 +178,16 @@ async def regenerate_schedule_candidates(
             precovered_liked_tags,
         )
         if not labeled_drafts:
+            logger.info("[step2] 후보 초안 생성 실패 - %s, 조합 부족", conditions.region)
             return InfeasibleResponse(
                 detail="조건을 만족하는 일정 후보를 만들 수 없어요.",
                 reason="필수 장소·식사·좋아요·동선 조건을 동시에 만족하는 장소 조합이 부족합니다.",
                 adjustable_conditions=["required_places", "time_range", "region"],
             )
-        return await loop.run_in_executor(
+        logger.info("[step2] 후보 초안 생성 완료 - %d개 관점", len(labeled_drafts))
+
+        logger.info("[step3] 후보 검증/병합 시작 - %d개 초안", len(labeled_drafts))
+        result = await loop.run_in_executor(
             None,
             synthesize_and_validate,
             provider,
@@ -172,6 +196,9 @@ async def regenerate_schedule_candidates(
             conditions,
             [draft for _, draft in labeled_drafts],
         )
+        result_count = len(result.candidates) if isinstance(result, ScheduleResponse) else 0
+        logger.info("[step3] 후보 검증/병합 완료 - %d개 확정", result_count)
+        return result
 
     labeled_drafts = await (
         generate_candidates_with_perspectives(

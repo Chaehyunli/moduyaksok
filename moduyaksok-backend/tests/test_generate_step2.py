@@ -876,7 +876,9 @@ def test_required_place_reclusters_around_selected_place_and_keeps_it_in_every_p
             "place_id": "far-cafe",
             "title": "먼 카페",
             "source_category": "카페",
-            "mapx": "1270300000",
+            # must-cafe에서 약 6.2km — 최대 반경(5km, 2026-08-14에 2.5km에서 확장)
+            # 밖이어야 이 테스트가 검증하려는 "먼 곳은 제외" 케이스가 유지된다.
+            "mapx": "1270700000",
             "mapy": "375000000",
         },
     ]

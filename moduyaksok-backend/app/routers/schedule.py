@@ -44,7 +44,11 @@
 #             튜플을 반환하게 바뀌어서, create_schedule()이 ScheduleSession과 같은
 #             트랜잭션에서 SchedulePlacePool(신규 테이블)도 같이 저장한다 — 나중에
 #             피드백 단계가 이미 검색한 장소·태그를 재사용할 수 있게 미리 쌓아둠.
+# 2026-08-14, create_schedule_routes()에 [step4] logger.info 추가 — Step1~3은
+#             orchestrate.py가 이미 로깅하니(같은 날 추가), 이 라우터가 직접 부르는
+#             Step4(enrich_routes)만 여기서 로깅. 개발 중 콘솔 확인용, 응답에는 안 실림.
 # ------------------------------------------------------------------
+import logging
 import secrets
 from datetime import datetime
 from functools import partial
@@ -82,6 +86,8 @@ from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
 from app.services.naver_local_search import NaverSearchError, place_id_for
 from app.services.naver_map_url import build_naver_map_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -737,7 +743,11 @@ async def create_schedule_routes(
     start_raw, end_raw = schedule_session.conditions["time_range"]
     time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
 
+    logger.info("[step4] 경로 보강(ODsay/NCP Maps) 시작 - 후보 %s", body.candidate_id)
     enriched = await enrich_routes(candidate, time_range)
+    logger.info(
+        "[step4] 경로 보강 완료 - 후보 %s, %d개 구간", body.candidate_id, len(enriched.routes)
+    )
 
     _replace_candidate(schedule_session, enriched)
     session.add(schedule_session)
