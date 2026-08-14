@@ -13,6 +13,8 @@
 from datetime import datetime
 from uuid import UUID
 
+from sqlmodel import select
+
 from app.models.llm_credential import LLMCredential
 from app.pipeline.schemas import NormalizedConditions
 from app.services.credential import encrypt_key
@@ -133,6 +135,36 @@ def test_get_shared_schedule_requires_no_auth_header(client, session, monkeypatc
 
 def test_get_shared_schedule_unknown_slug_returns_404(client):
     response = client.get("/share/doesnotexist")
+
+    assert response.status_code == 404
+
+
+def test_owner_style_share_url_resolves_without_login(client, session, monkeypatch):
+    slug = _create_and_confirm_session(client, session, monkeypatch)
+    from app.models.schedule import ShareLink
+
+    share_link = session.exec(select(ShareLink).where(ShareLink.slug == slug)).one()
+    # helper가 만든 로그인 쿠키를 제거해도 공개 URL 변환이 가능해야 한다.
+    client.cookies.clear()
+
+    response = client.get(
+        f"/public-share-links/{share_link.session_id}/candidates/A"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"slug": slug}
+
+
+def test_owner_style_share_url_rejects_unconfirmed_candidate(client, session, monkeypatch):
+    slug = _create_and_confirm_session(client, session, monkeypatch)
+    from app.models.schedule import ShareLink
+
+    share_link = session.exec(select(ShareLink).where(ShareLink.slug == slug)).one()
+    client.cookies.clear()
+
+    response = client.get(
+        f"/public-share-links/{share_link.session_id}/candidates/B"
+    )
 
     assert response.status_code == 404
 

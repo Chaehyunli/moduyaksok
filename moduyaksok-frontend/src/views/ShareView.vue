@@ -1,47 +1,39 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { api } from '../lib/api'
 import { useScheduleStore } from '../stores/schedule'
-import DoodleButton from '../components/doodle/DoodleButton.vue'
-import DoodleCard from '../components/doodle/DoodleCard.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useScheduleStore()
-const copied = ref(false)
+const notFound = ref(false)
 
-const candidate = computed(() => store.candidates.find((c) => c.id === route.params.candidateId))
-const shareUrl = computed(() => (store.shareSlug ? `${window.location.origin}/share/${store.shareSlug}` : ''))
-
-// 확정 응답(share_slug)을 새로고침·네트워크 문제로 놓쳤어도 URL의 sessionId로
-// 세션을 다시 조회해 slug를 복구한다(메모리에 남아있을 때만 복구하던 이전
-// 방식은 완전히 새로 연 탭/새로고침에서는 못 살렸다).
+// 이 경로는 확정 직후 주소창에 남던 과거의 소유자용 URL이다. 로그인 여부와
+// 관계없이 확정 후보만 공개 resolver로 확인하고, 실제 공유 주소인 /share/:slug로
+// 바꿔 주소창 복사·새로고침도 항상 공개 링크를 사용하게 한다.
 onMounted(async () => {
-  if (!store.shareSlug) {
-    await store.fetchSchedule(route.params.sessionId as string)
+  const sessionId = route.params.sessionId as string
+  const candidateId = route.params.candidateId as string
+  if (store.sessionId === sessionId && store.shareSlug) {
+    await router.replace(`/share/${store.shareSlug}`)
+    return
+  }
+  try {
+    const { data } = await api.get<{ slug: string }>(
+      `/public-share-links/${sessionId}/candidates/${candidateId}`,
+      { skipAuthRedirect: true } as any,
+    )
+    await router.replace(`/share/${data.slug}`)
+  } catch {
+    notFound.value = true
   }
 })
-
-async function copyLink() {
-  await navigator.clipboard.writeText(shareUrl.value)
-  copied.value = true
-  setTimeout(() => (copied.value = false), 1500)
-}
 </script>
 
 <template>
-  <div v-if="candidate" class="notebook-bg min-h-dvh px-6 py-10">
-    <div class="mx-auto max-w-lg text-center">
-      <h1 class="mb-2 font-hand text-2xl text-ink">일정이 확정됐어요</h1>
-      <p class="mb-8 font-hand text-base text-ink/60">{{ candidate.title }}</p>
-
-      <DoodleCard v-if="shareUrl" class="space-y-4">
-        <p class="break-all font-hand text-lg text-ink">{{ shareUrl }}</p>
-        <div class="flex flex-wrap justify-center gap-3">
-          <DoodleButton size="sm" @click="copyLink">{{ copied ? '복사됨!' : '링크 복사' }}</DoodleButton>
-          <DoodleButton size="sm" variant="ghost" @click="router.push(`/share/${store.shareSlug}`)">공유 화면 보기</DoodleButton>
-        </div>
-      </DoodleCard>
-    </div>
+  <div class="notebook-bg flex min-h-dvh items-center justify-center px-6 py-10">
+    <p v-if="notFound" class="font-hand text-lg text-ink/60">이 공유 링크를 찾을 수 없어요.</p>
+    <p v-else class="font-hand text-lg text-ink/60">공유 일정을 불러오는 중...</p>
   </div>
 </template>

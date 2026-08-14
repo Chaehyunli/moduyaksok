@@ -68,7 +68,7 @@ tests/           pytest
 | `auth.py` | `POST /auth/google`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>현재 로그인 사용자 조회 | `services/auth.py`, `models/user.py` |
 | `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
 | `schedule.py` | `POST /schedules`<br>`POST`/`DELETE /schedules/{id}/required-places`<br>`POST /schedules/{id}/regenerate`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm` | Step1→2→3 실행해 경로 없는 후보 생성, 검색 풀과 정규화 조건을 저장<br>후보 풀의 장소를 `ScheduleRequiredPlace` 제약으로 추가·해제하고, 새 검색 없이 그 장소를 모두 포함하는 후보로 재생성(성공할 때만 기존 후보 교체)<br>사용자가 고른 후보 1개에 Step4 실행해 이동 옵션 저장<br>세션 조회·후보 확정과 공유 링크 발급 | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `services/naver_local_search.py`, `models/schedule.py` |
-| `share.py` | `GET /share/{slug}` | slug로 확정된 후보 하나만 공개 조회(로그인 불필요) — 다른 후보·조건·사용자 정보는 노출 안 함. `schedule._find_candidate()` 재사용, 응답은 기존 `Candidate` 스키마 그대로(새 응답 모델 안 만듦). confirm 이전엔 `ShareLink` 자체가 없어 자동 404 (2026-08-10) | `routers/schedule.py`(`_find_candidate`), `models/schedule.py` |
+| `share.py` | `GET /share/{slug}`<br>`GET /public-share-links/{session_id}/candidates/{candidate_id}` | slug로 확정된 후보 하나만 공개 조회(로그인 불필요)<br>확정 직후 남는 소유자 형식 URL을 공개 slug로 변환. URL의 후보가 실제 확정 후보와 일치할 때만 slug를 반환하며 초안·다른 후보는 404 | `routers/schedule.py`(`_find_candidate`), `models/schedule.py` |
 
 ## 서비스 (`app/services/`)
 

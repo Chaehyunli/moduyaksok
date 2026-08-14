@@ -28,7 +28,9 @@ export const router = createRouter({
     // (CandidatesView가 restoreDraftSchedule()로 처리).
     { path: '/schedules/:sessionId?', name: 'candidates', component: CandidatesView, meta: { requiresAuth: true, requiresApiKey: true } },
     { path: '/schedules/:sessionId/candidates/:candidateId', name: 'candidate-detail', component: CandidateDetailView, meta: { requiresAuth: true, requiresApiKey: true } },
-    { path: '/schedules/:sessionId/candidates/:candidateId/share', name: 'candidate-share', component: ShareView, meta: { requiresAuth: true, requiresApiKey: true } },
+    // 확정 직후 주소창에 남는 기존 공유 완료 URL도 외부에서 열 수 있어야 한다.
+    // ShareView가 공개 resolver로 slug를 확인한 뒤 /share/:slug로 즉시 전환한다.
+    { path: '/schedules/:sessionId/candidates/:candidateId/share', name: 'candidate-share', component: ShareView },
     { path: '/confirmed-schedules', name: 'confirmed-schedules', component: ConfirmedSchedulesView, meta: { requiresAuth: true, requiresApiKey: true } },
 
     { path: '/share/:slug', name: 'public-share', component: PublicShareView },
