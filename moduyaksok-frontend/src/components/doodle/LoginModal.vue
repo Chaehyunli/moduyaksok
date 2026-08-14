@@ -4,6 +4,11 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { api } from '../../lib/api'
 import { googleLoginErrorMessage } from '../../lib/authErrors'
+import {
+  GOOGLE_LOGIN_REDIRECT_KEY,
+  googleRedirectLoginUri,
+  needsGoogleRedirect,
+} from '../../lib/mobileAuth'
 import DoodleModal from './DoodleModal.vue'
 
 declare global {
@@ -11,7 +16,12 @@ declare global {
     google?: {
       accounts: {
         id: {
-          initialize(config: { client_id: string; callback: (resp: { credential: string }) => void }): void
+          initialize(config: {
+            client_id: string
+            callback?: (resp: { credential: string }) => void
+            ux_mode?: 'popup' | 'redirect'
+            login_uri?: string
+          }): void
           renderButton(parent: HTMLElement, options: { theme?: string; size?: string; width?: number }): void
         }
       }
@@ -74,7 +84,16 @@ async function renderGoogleButton() {
     return
   }
   renderFailed.value = false
-  google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+  if (needsGoogleRedirect()) {
+    sessionStorage.setItem(GOOGLE_LOGIN_REDIRECT_KEY, store.loginRedirect)
+    google.accounts.id.initialize({
+      client_id: clientId,
+      ux_mode: 'redirect',
+      login_uri: googleRedirectLoginUri(import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'),
+    })
+  } else {
+    google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+  }
   google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
   setTimeout(() => {
     if (!buttonEl.value || buttonEl.value.childElementCount > 0) return

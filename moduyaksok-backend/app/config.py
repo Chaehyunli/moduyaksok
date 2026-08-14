@@ -46,6 +46,7 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = "dev-secret-change-me"
     google_client_id: str = ""
+    frontend_url: str = ""
 
     credential_encryption_key: str = ""
 

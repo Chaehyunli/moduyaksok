@@ -15,6 +15,19 @@ Vite 모드별 env 파일을 씀 — `npm run dev`는 `.env.development`, `npm r
 민감정보가 없어(공개 클라이언트 ID·공개 API URL) 저장소에 커밋되어 있다 — 새 변수
 추가할 땐 `.env.example`도 같이 갱신할 것.
 
+운영의 `VITE_API_BASE_URL`은 `/api`다. `vercel.json`이 이 경로를 Render 백엔드로
+프록시해 세션 쿠키를 Vercel 기준 first-party 쿠키로 저장한다. Google 로그인은
+데스크톱·Android에서 popup callback을 유지하고, ITP가 적용되는 iPhone/iPad에서는
+`/api/auth/google/redirect`를 이용하는 전체 화면 redirect 방식으로 전환한다.
+
+Google Cloud Console의 OAuth 웹 클라이언트에는 다음 값을 **승인된 리디렉션 URI**로
+등록해야 한다(승인된 JavaScript 원본과 별도 설정).
+
+```text
+https://moduyaksok.vercel.app/api/auth/google/redirect
+http://localhost:8000/auth/google/redirect
+```
+
 ## 디자인 시스템 — 손그림 낙서 노트
 
 홈 화면부터 시작해 이 컨셉으로 전체 UI를 통일한다: **노트에 낙서하듯 편하게 약속을 계획한다**는 제품 메시지를 화면 톤에도 그대로 반영.

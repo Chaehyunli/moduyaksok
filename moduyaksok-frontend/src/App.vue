@@ -6,6 +6,7 @@ import { useScheduleStore } from './stores/schedule'
 import DoodleUnderline from './components/doodle/DoodleUnderline.vue'
 import LoginModal from './components/doodle/LoginModal.vue'
 import DoodleButton from './components/doodle/DoodleButton.vue'
+import { GOOGLE_LOGIN_REDIRECT_KEY } from './lib/mobileAuth'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +32,27 @@ watch(
     store.openLoginModal((route.query.redirect as string) || '/new')
     const { login: _login, redirect: _redirect, ...rest } = route.query
     router.replace({ path: route.path, query: rest })
+  },
+  { immediate: true },
+)
+
+// iOS의 Google redirect 로그인은 전체 페이지를 떠났다가 이 쿼리로 돌아온다.
+// 세션 쿠키 복원을 확인한 뒤, 로그인 모달을 열 때 기억해둔 원래 목적지로 이동한다.
+watch(
+  () => route.query.google_login,
+  async (result) => {
+    if (result !== 'success') return
+    const redirect = sessionStorage.getItem(GOOGLE_LOGIN_REDIRECT_KEY) || '/new'
+    sessionStorage.removeItem(GOOGLE_LOGIN_REDIRECT_KEY)
+    await store.restoreSession()
+    if (store.loggedIn) {
+      store.closeLoginModal()
+      await router.replace(redirect)
+      return
+    }
+    store.openLoginModal(redirect)
+    const { google_login: _googleLogin, ...rest } = route.query
+    await router.replace({ path: route.path, query: rest })
   },
   { immediate: true },
 )

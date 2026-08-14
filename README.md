@@ -166,7 +166,7 @@ pytest -q
 ```
 
 기본 `pytest`는 provider와 외부 API를 mock하며 과금되는 DeepEval 평가 17개를 자동으로
-제외합니다. 현재 기본 테스트는 369개입니다.
+제외합니다. 현재 기본 테스트는 374개입니다.
 
 실제 LLM 품질 평가는 별도로 실행합니다. API 사용 비용이 발생할 수 있습니다.
 
@@ -183,12 +183,14 @@ npm run build
 ```
 
 `npm run build`는 Vue·TypeScript 타입 검사와 프로덕션 번들을 함께 검증합니다. 현재
-프런트엔드 테스트는 13개입니다.
+프런트엔드 테스트는 17개입니다.
 
 ## 인증과 보안 메모
 
 - Google `id_token`은 로그인 시점에만 백엔드에서 검증합니다.
 - 이후 인증은 JavaScript에서 읽을 수 없는 `HttpOnly` 세션 쿠키를 사용합니다.
+- 운영 API는 Vercel의 `/api`를 통해 프록시해 모바일에서도 first-party 세션 쿠키를
+  사용하며, iOS Google 로그인은 ITP 호환 redirect 방식으로 처리합니다.
 - 사용자 AI API 키는 Fernet으로 암호화해 DB에 저장하고 화면에는 마스킹 값만 표시합니다.
 - 상태 변경 쿠키 요청은 허용된 프런트엔드 Origin만 통과하도록 검사합니다.
 - 운영 비밀값과 실제 사용자 API 키는 저장소에 커밋하지 않습니다.

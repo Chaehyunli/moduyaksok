@@ -66,6 +66,58 @@ def test_google_login_invalid_token_returns_401(client, monkeypatch):
     assert response.status_code == 401
 
 
+def test_google_redirect_login_sets_session_cookie_and_returns_to_frontend(
+    client, monkeypatch
+):
+    _mock_verify_ok(monkeypatch)
+    client.cookies.set("g_csrf_token", "csrf-value")
+
+    response = client.post(
+        "/auth/google/redirect",
+        content="credential=fake&g_csrf_token=csrf-value",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "http://localhost:5173/?google_login=success"
+    assert "session=" in response.headers["set-cookie"]
+
+
+def test_google_redirect_login_rejects_csrf_mismatch(client, monkeypatch):
+    _mock_verify_ok(monkeypatch)
+    client.cookies.set("g_csrf_token", "cookie-value")
+
+    response = client.post(
+        "/auth/google/redirect",
+        content="credential=fake&g_csrf_token=body-value",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+
+
+def test_google_redirect_login_accepts_google_origin_with_existing_session(
+    client, monkeypatch
+):
+    _mock_verify_ok(monkeypatch)
+    client.post("/auth/google", json={"id_token": "fake"})
+    client.cookies.set("g_csrf_token", "csrf-value")
+
+    response = client.post(
+        "/auth/google/redirect",
+        content="credential=fake&g_csrf_token=csrf-value",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://accounts.google.com",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+
+
 def test_get_me_without_token_returns_401(client):
     response = client.get("/me")
     assert response.status_code == 401

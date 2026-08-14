@@ -59,6 +59,9 @@ async def reject_cross_site_cookie_writes(request: Request, call_next):
     """
     if (
         request.method not in {"GET", "HEAD", "OPTIONS"}
+        # Google redirect 로그인은 accounts.google.com에서 오는 POST다. 이 경로는
+        # auth 라우터가 g_csrf_token 이중 토큰을 별도로 검증한다.
+        and request.url.path != "/auth/google/redirect"
         and request.cookies.get(SESSION_COOKIE_NAME)
         and request.headers.get("origin") not in ALLOWED_FRONTEND_ORIGINS
     ):
