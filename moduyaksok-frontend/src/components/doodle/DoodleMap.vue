@@ -130,7 +130,7 @@ function render() {
         map,
         zIndex: 100 + marker.order,
         icon: {
-          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--color-ink);color:var(--color-paper);font-family:sans-serif;font-size:13px;transform:${transform};box-shadow:${marker.clustered ? '0 0 0 2px var(--color-paper)' : 'none'};">${marker.order}</div>`,
+          content: `<div style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:var(--color-ink);color:var(--color-paper);font-family:var(--font-hand);font-size:13px;transform:${transform};box-shadow:${marker.clustered ? '0 0 0 2px var(--color-paper)' : 'none'};">${marker.order}</div>`,
           anchor: new naver.maps.Point(12, 12),
         },
       }),
