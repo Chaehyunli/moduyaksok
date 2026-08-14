@@ -91,12 +91,13 @@ export interface Conditions {
   dislikedText: string
 }
 
-export interface ConfirmedScheduleSummary {
+export interface ScheduleSummary {
   sessionId: string
   title: string
   region: string
   candidateTitle: string
   createdAt: string
+  status: 'draft' | 'confirmed'
   shareSlug: string | null
 }
 
@@ -359,7 +360,9 @@ export const useScheduleStore = defineStore('schedule', {
         return false
       }
     },
-    async fetchConfirmedSchedules(): Promise<ConfirmedScheduleSummary[]> {
+    // 확정 전 draft도 함께 돌려준다(2026-08-14) — 확정하기 전엔 "나의 일정"
+    // 목록에 안 보인다는 리포트로 백엔드 status 필터를 없앤 변경에 맞춤.
+    async fetchMySchedules(): Promise<ScheduleSummary[]> {
       const { data } = await api.get('/confirmed-schedules')
       return data.map((item: any) => ({
         sessionId: item.session_id,
@@ -367,10 +370,11 @@ export const useScheduleStore = defineStore('schedule', {
         region: item.region,
         candidateTitle: item.candidate_title,
         createdAt: item.created_at,
+        status: item.status,
         shareSlug: item.share_slug ?? null,
       }))
     },
-    async updateConfirmedScheduleTitle(sessionId: string, title: string): Promise<ConfirmedScheduleSummary> {
+    async updateConfirmedScheduleTitle(sessionId: string, title: string): Promise<ScheduleSummary> {
       const { data } = await api.patch(`/schedules/${sessionId}/title`, { title })
       return {
         sessionId: data.session_id,
@@ -378,6 +382,7 @@ export const useScheduleStore = defineStore('schedule', {
         region: data.region,
         candidateTitle: data.candidate_title,
         createdAt: data.created_at,
+        status: data.status,
         shareSlug: data.share_slug ?? null,
       }
     },

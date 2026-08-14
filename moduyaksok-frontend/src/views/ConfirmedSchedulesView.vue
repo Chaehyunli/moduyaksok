@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useScheduleStore, type ConfirmedScheduleSummary } from '../stores/schedule'
+import { useScheduleStore, type ScheduleSummary } from '../stores/schedule'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
+import DoodleBadge from '../components/doodle/DoodleBadge.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 
 const router = useRouter()
 const store = useScheduleStore()
-const schedules = ref<ConfirmedScheduleSummary[]>([])
+const schedules = ref<ScheduleSummary[]>([])
 const loading = ref(true)
 const error = ref('')
 const editingId = ref<string | null>(null)
@@ -20,20 +21,20 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    schedules.value = await store.fetchConfirmedSchedules()
+    schedules.value = await store.fetchMySchedules()
   } catch {
-    error.value = '확정된 일정을 불러오지 못했어요. 잠시 후 다시 시도해주세요.'
+    error.value = '일정을 불러오지 못했어요. 잠시 후 다시 시도해주세요.'
   } finally {
     loading.value = false
   }
 }
 
-function startEditing(item: ConfirmedScheduleSummary) {
+function startEditing(item: ScheduleSummary) {
   editingId.value = item.sessionId
   titleDraft.value = item.title
 }
 
-async function saveTitle(item: ConfirmedScheduleSummary) {
+async function saveTitle(item: ScheduleSummary) {
   const title = titleDraft.value.trim()
   if (!title) return
   try {
@@ -46,7 +47,7 @@ async function saveTitle(item: ConfirmedScheduleSummary) {
   }
 }
 
-async function openSchedule(item: ConfirmedScheduleSummary) {
+async function openSchedule(item: ScheduleSummary) {
   try {
     await store.fetchSchedule(item.sessionId)
     router.push(`/schedules/${item.sessionId}`)
@@ -55,16 +56,23 @@ async function openSchedule(item: ConfirmedScheduleSummary) {
   }
 }
 
-function viewConfirmedSchedule(item: ConfirmedScheduleSummary) {
-  if (item.shareSlug) router.push(`/share/${item.shareSlug}`)
+// 확정 일정은 공유 화면으로, 아직 확정 전(draft)인 일정은 이어서 만들던
+// 화면으로 보낸다 — draft는 shareSlug 자체가 없다.
+function openCard(item: ScheduleSummary) {
+  if (item.status === 'confirmed') {
+    if (item.shareSlug) router.push(`/share/${item.shareSlug}`)
+  } else {
+    openSchedule(item)
+  }
 }
 
-function toggleMenu(item: ConfirmedScheduleSummary) {
+function toggleMenu(item: ScheduleSummary) {
   openMenuId.value = openMenuId.value === item.sessionId ? null : item.sessionId
 }
 
-async function removeSchedule(item: ConfirmedScheduleSummary) {
-  if (!window.confirm(`“${item.title}” 일정과 대화방, 공유 링크를 모두 삭제할까요?`)) return
+async function removeSchedule(item: ScheduleSummary) {
+  const detail = item.status === 'confirmed' ? '일정과 대화방, 공유 링크를' : '일정과 대화방을'
+  if (!window.confirm(`“${item.title}” ${detail} 모두 삭제할까요?`)) return
   deletingId.value = item.sessionId
   try {
     await store.deleteConfirmedSchedule(item.sessionId)
@@ -82,8 +90,8 @@ onMounted(load)
 <template>
   <div class="notebook-bg min-h-dvh px-6 py-10">
     <main class="mx-auto max-w-2xl">
-      <p class="mb-2 font-hand text-lg text-ink/65">내가 확정하고 공유한 약속</p>
-      <h1 class="mb-8 font-hand text-2xl text-ink">확정된 일정</h1>
+      <p class="mb-2 font-hand text-lg text-ink/65">지금까지 만든 일정, 확정 전 초안까지 모두</p>
+      <h1 class="mb-8 font-hand text-2xl text-ink">나의 일정</h1>
       <DoodleAlert v-if="error" title="처리하지 못했어요" class="mb-5">{{ error }}</DoodleAlert>
       <p v-if="loading" class="font-hand text-ink/60">불러오는 중...</p>
       <div v-else-if="schedules.length" class="space-y-4">
@@ -91,7 +99,7 @@ onMounted(load)
           v-for="item in schedules"
           :key="item.sessionId"
           class="!bg-transparent cursor-pointer transition-colors hover:!bg-paper"
-          @click="editingId !== item.sessionId && viewConfirmedSchedule(item)"
+          @click="editingId !== item.sessionId && openCard(item)"
         >
           <div class="flex flex-wrap items-start justify-between gap-4">
             <div class="min-w-0 flex-1">
@@ -101,9 +109,20 @@ onMounted(load)
                 <div class="mt-3 flex gap-2"><DoodleButton size="sm" @click.stop="saveTitle(item)">저장</DoodleButton><DoodleButton size="sm" variant="ghost" @click.stop="editingId = null">취소</DoodleButton></div>
               </template>
               <template v-else>
-                <h2 class="font-hand text-xl text-ink">{{ item.title }}</h2>
+                <h2 class="flex items-center gap-2 font-hand text-xl text-ink">
+                  {{ item.title }}
+                  <DoodleBadge :tone="item.status === 'confirmed' ? 'ok' : 'warn'">
+                    {{ item.status === 'confirmed' ? '확정' : '초안' }}
+                  </DoodleBadge>
+                </h2>
                 <p class="mt-1 font-hand text-sm text-ink/60">{{ item.candidateTitle }} · {{ item.region }}</p>
-                <button class="mt-2 font-hand text-sm text-red underline underline-offset-2" @click.stop="startEditing(item)">이름 수정</button>
+                <button
+                  v-if="item.status === 'confirmed'"
+                  class="mt-2 font-hand text-sm text-red underline underline-offset-2"
+                  @click.stop="startEditing(item)"
+                >
+                  이름 수정
+                </button>
               </template>
             </div>
             <div class="relative flex shrink-0 items-center gap-2" @click.stop>
@@ -116,7 +135,7 @@ onMounted(load)
           </div>
         </DoodleCard>
       </div>
-      <DoodleCard v-else class="text-center"><p class="font-hand text-lg text-ink">아직 확정된 일정이 없어요.</p><DoodleButton class="mt-4" @click="router.push('/new')">일정 만들기</DoodleButton></DoodleCard>
+      <DoodleCard v-else class="text-center"><p class="font-hand text-lg text-ink">아직 만든 일정이 없어요.</p><DoodleButton class="mt-4" @click="router.push('/new')">일정 만들기</DoodleButton></DoodleCard>
     </main>
   </div>
 </template>
