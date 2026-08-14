@@ -6,6 +6,7 @@
 - 프런트엔드: [https://moduyaksok.vercel.app](https://moduyaksok.vercel.app)
 - 백엔드 API: [https://moduyaksok.onrender.com](https://moduyaksok.onrender.com)
 - API 문서: [https://moduyaksok.onrender.com/docs](https://moduyaksok.onrender.com/docs)
+- 배포 URL: [https://moduyaksok.vercel.app/](https://moduyaksok.vercel.app/)
 
 ## 주요 기능
 
