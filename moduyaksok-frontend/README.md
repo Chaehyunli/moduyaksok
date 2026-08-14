@@ -83,8 +83,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton`, `DoodleProgress` |
 | `CandidatesView.vue` | `/schedules/:sessionId?` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton`, `DoodleAccordion`, `DoodleProgress` — 검색 후보를 태그/카테고리별로 열람하고 장소를 필수 포함 칩으로 추가·해제한 뒤 재생성. `sessionId`가 곧 세션(대화방) id — 없으면 최근 draft로 리다이렉트 |
 | `CandidateDetailView.vue` | `/schedules/:sessionId/candidates/:candidateId` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert`, `DoodleMap`, `DoodleAccordion` |
-| `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |
-| `ShareView.vue` | `/schedules/:sessionId/candidates/:candidateId/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |
+| `ShareView.vue` | `/schedules/:sessionId/candidates/:candidateId/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) | ✓ | `DoodleButton`, `DoodleCard` |
 | `PublicShareView.vue` | `/share/:slug` | [23_공유_일정_열람](../docs/와이어프레임/23_공유_일정_열람.png) | ✗ (공개) | `DoodleCard`, `DoodleUnderline`, `DoodleMap` |
 | `ConfirmedSchedulesView.vue` | `/confirmed-schedules` | 없음(와이어프레임 표에 누락돼 있던 걸 2026-08-14에 발견 — 표만 보완, 화면 자체는 이미 있었음) | ✓ | `DoodleAlert`, `DoodleBadge`, `DoodleButton`, `DoodleCard`, `DoodleCheckbox` — 화면 제목은 "나의 일정"(2026-08-14, "확정된 일정"에서 변경). 확정 전 draft도 함께 나열하고(`DoodleBadge`로 초안/확정 구분), draft는 이름 수정·삭제 없이 이어서 만들기만 가능 |
 | `SettingsView.vue` | `/settings` | [25_설정_화면](../docs/와이어프레임/25_설정_화면.png) | ✓ | `DoodleCard`, `DoodleBadge` |
@@ -94,16 +93,14 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `settings/ApiKeySavedView.vue` | `/settings/api-key/saved` | [29_API_키_저장_완료](../docs/와이어프레임/29_API_키_저장_완료.png) | ✓ | `DoodleCard`, `DoodleButton` |
 | `KitchenSinkView.vue` | `/kitchen-sink` | 없음 (컴포넌트 라이브러리 참고용, 상품 화면 아님) | ✗ | 전체 `doodle/` 컴포넌트 |
 
-**와이어프레임과 다르게 합친 부분:** 02/03(로그인 화면·실패 안내)은 별도 라우트 없이 `LoginModal`의 인라인 상태로, 13/14(장소 상세·이동 동선)는 `CandidateDetailView` 안에, 17~20(수정 관련 하위 화면들)은 `FeedbackView` 안에 각각 별도 라우트 대신 상태 전환으로 넣었다. 사용자 입장에서 페이지 이동이 너무 잦아지는 걸 막기 위한 선택. 별도 라우트가 필요해지면(딥링크, 뒤로가기 단위 세분화 등) 그때 쪼개면 된다.
+**와이어프레임과 다르게 합친 부분:** 02/03(로그인 화면·실패 안내)은 별도 라우트 없이 `LoginModal`의 인라인 상태로, 13/14(장소 상세·이동 동선)는 `CandidateDetailView` 안에 각각 별도 라우트 대신 상태 전환으로 넣었다. 사용자 입장에서 페이지 이동이 너무 잦아지는 걸 막기 위한 선택. 별도 라우트가 필요해지면(딥링크, 뒤로가기 단위 세분화 등) 그때 쪼개면 된다.
 
 **아직 안 만든 것:** 와이어프레임에 있는 화면 중 실제 라우트로 못 옮긴 건 없다. `/auth/google`,
 `/me/llm-credential`, 일정 생성 플로우(`POST /schedules`, `POST .../routes`,
 `POST .../confirm`, `GET /schedules/{id}`)는 실제 백엔드에 연결됐다(2026-08-10). 공유
 (`GET /schedules/{id}`의 `share_slug`, `GET /share/{slug}`)도 이미 실제로 붙어 있어
 `ShareView`/`PublicShareView`는 목업 데이터가 아니다(2026-08-10). 후보 목록에서
-장소를 골라 필수 포함으로 재생성하는 흐름도 실제 API에 연결됐다(2026-08-12). 자유
-텍스트 피드백(`POST .../feedback`)은 아직 백엔드 라우터 자체가 없어서
-`FeedbackView`만 목업으로 남아있다.
+장소를 골라 필수 포함으로 재생성하는 흐름도 실제 API에 연결됐다(2026-08-12).
 
 ### 새 화면 만들 때
 

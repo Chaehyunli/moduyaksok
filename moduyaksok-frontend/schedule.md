@@ -19,11 +19,9 @@
 | 예산 입력 1,000원 단위 step | ✅ | 2026-08-07 | - | `DoodleInput`에 `step` prop 추가, `ConditionWizardView` 예산 필드에 적용 |
 | 일정 생성 연동 (`POST /schedules`) | ✅ | 2026-08-10 | 🔴 | `stores/app.ts`의 `buildMockCandidates`를 실제 API 호출로 교체. 위저드에 날짜 선택 UI가 없어 오늘 날짜(지났으면 내일)로 자동 보정(`buildTimeRange`, ponytail — 나중에 날짜 선택 UI 추가할 것). 409(조건 불만족)/그 외 오류를 `scheduleError`로 통일해 `CandidatesView`가 같은 알림으로 보여줌 |
 | 일정 상세·동선 연동 (`POST /schedules/{id}/routes`) | ✅ | 2026-08-10 | 🟡 | `CandidateDetailView` 진입 시 자동으로 경로 조회, 구간마다 도보/대중교통/자차 옵션을 목록으로 보여주고 클릭으로 선택(`selectRouteOption` — 서버에 저장 안 함, 확정 전까지는 로컬 상태로만 유지). `info_needs_check`인 활동은 네이버 지도 링크로 자기확인 유도 |
-| 피드백 연동 (`POST /schedules/{id}/feedback`) | ⬜ | | 🔴 | `FeedbackView` |
 | 후보 목록에서 필수 장소 선택·재생성 | ✅ | 2026-08-12 | 🔴 | `CandidatesView`의 좋아요/카테고리 장소마다 "일정에 추가하기" 제공. 선택한 장소는 좋아요 검색 결과 위의 강조 칩으로 영속 표시하고 ×로 해제 가능. "다시 일정 생성하기"는 선택 장소를 모두 포함한 후보를 새로 받으며, 실패하면 기존 후보를 유지한 채 이유를 표시 |
 | 확정 연동 (`POST /schedules/{id}/confirm`) | ✅ | 2026-08-10 | 🟡 | `CandidateDetailView`의 "이 일정 확정하기" 버튼에서 호출 후 공유 화면으로 이동 |
 | 공유 연동 (`GET /schedules/{id}`의 `share_slug`, `GET /share/{slug}`) | ✅ | 2026-08-10 | 🟡 | `ShareView`, `PublicShareView`. `POST /schedules/{id}/confirm` 응답의 `share_slug`를 그대로 쓰고(별도 "링크 생성" 엔드포인트 없음), `ShareView`는 새로고침 등으로 슬러그를 놓치면 `GET /schedules/{id}`를 다시 불러 복구(`fetchSchedule`, 세션이 메모리에 남아있을 때만). `createShareLink`(랜덤 slug 목업)는 제거 |
-| 이미지·PDF 다운로드 구현 | ⬜ | | 🟡 | `ShareView`에 버튼만 있고 미구현 |
 | 배포 설정 (Vercel) | ✅ | 2026-08-09 | - | `moduyaksok.vercel.app`. SPA 새로고침 404 방지용 `vercel.json` rewrite 추가 |
 | 만남 목적 "기타" 옵션 추가 | ✅ | 2026-08-11 | 🟡 | `ConditionWizardView`의 `PURPOSES`에 date/friends/family/party 외 `other`("기타")가 빠져있던 걸 발견(백엔드 `purpose` Literal엔 이미 있었음) — 사용자가 지적해 추가 |
 | 지역 목록에 서울 "용산" 추가 | ✅ | 2026-08-11 | - | `lib/regions.ts`의 `REGIONS.서울`에 누락돼 있던 걸 발견해 추가. 당시 백엔드 `app/services/regions.py`(광역 지역 자동 확장용)도 같은 목록으로 복제해뒀었는데, 그 파일은 이후 지역 범위가 단일 지역으로 축소되며 삭제됨(아래 "지역 입력을 다중 지역 → ..." 항목 참고) — 지금은 `lib/regions.ts`가 시/도·세부지역 선택 UI에만 쓰이는 유일한 목록 |
