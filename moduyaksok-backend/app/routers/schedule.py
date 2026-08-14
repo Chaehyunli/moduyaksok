@@ -58,6 +58,14 @@
 #             "나의 일정"으로 재라벨링(사용자 요청)했지만, API 경로까지 바꾸는 건
 #             호출부 전부(프런트 store·router)를 도미노로 건드리는 범위라 이번엔
 #             안 함 — 필요해지면 그때 같이 옮길 것.
+# 2026-08-14(3차), 후보 상세 화면 드래그 순서 변경용 POST .../reorder/preview,
+#             POST .../reorder/save 추가(설계:
+#             docs/superpowers/specs/2026-08-14-candidate-reorder-transport-design.md).
+#             장소 제외(removal) preview/save와 같은 뼈대를 따르되,
+#             _candidate_reordered()가 순서만 재배열한다 — 각 활동의 원래
+#             체류시간은 보존하고 시작 시각은 time_range 시작부터 gap=0으로 다시
+#             이어붙여서, 기존 enrich_routes()의 reconcile_schedule() 보정이 구간마다
+#             실제 이동시간만큼 자동으로 벌려주게 만들었다(그 함수는 한 줄도 안 고침).
 # ------------------------------------------------------------------
 import logging
 import secrets
@@ -155,6 +163,15 @@ class CandidatePreviewSaveRequest(BaseModel):
 
 class CandidateRemovalSaveRequest(BaseModel):
     excluded_place_ids: list[str]
+    selected_options: list[SelectedOption] = []
+
+
+class CandidateReorderRequest(BaseModel):
+    ordered_positions: list[int]
+
+
+class CandidateReorderSaveRequest(BaseModel):
+    ordered_positions: list[int]
     selected_options: list[SelectedOption] = []
 
 
@@ -547,6 +564,37 @@ def _candidate_without_places(candidate: Candidate, excluded_place_ids: set[str]
     for order, activity in enumerate(remaining, start=1):
         activity.order = order
     return candidate.model_copy(update={"activities": remaining, "routes": []}, deep=True)
+
+
+def _candidate_reordered(
+    candidate: Candidate, ordered_positions: list[int], anchor_start: datetime
+) -> Candidate:
+    """activities를 ordered_positions(현재 order 값을 새 순서로 나열한 리스트) 순서로
+    재배열한다. 각 활동의 원래 체류시간은 보존하되, 시작 시각은 순서 변경으로
+    무의미해진 원래 값 대신 anchor_start(세션 time_range 시작)부터 빈틈없이(gap=0)
+    다시 이어붙인다 — enrich_routes()가 그 뒤 구간마다 실제 이동시간만큼
+    reconcile_schedule()로 벌려주므로 여기서 이동시간을 미리 추정할 필요가 없다.
+    """
+    by_order = {activity.order: activity for activity in candidate.activities}
+    reordered = [by_order[position].model_copy(deep=True) for position in ordered_positions]
+
+    cursor = anchor_start
+    for order, activity in enumerate(reordered, start=1):
+        duration = datetime.strptime(activity.end_time, "%H:%M") - datetime.strptime(
+            activity.start_time, "%H:%M"
+        )
+        activity.order = order
+        activity.start_time = cursor.strftime("%H:%M")
+        cursor += duration
+        activity.end_time = cursor.strftime("%H:%M")
+
+    return candidate.model_copy(update={"activities": reordered, "routes": []}, deep=True)
+
+
+def _validate_ordered_positions(candidate: Candidate, ordered_positions: list[int]) -> None:
+    expected = set(range(1, len(candidate.activities) + 1))
+    if len(ordered_positions) != len(expected) or set(ordered_positions) != expected:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "장소 순서가 올바르지 않습니다.")
 
 
 def _place_replacements_in_removed_slots(
@@ -1372,6 +1420,66 @@ async def save_candidate_removal(
         candidate_id,
         existing_exclusions | requested_exclusions,
     )
+    _remove_candidate_preview(schedule_session, candidate_id)
+    if schedule_session.status == "confirmed":
+        schedule_session.status = "draft"
+        schedule_session.confirmed_candidate_id = None
+    session.add(schedule_session)
+    session.commit()
+    return candidate_with_source_categories(session, schedule_session, enriched)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/reorder/preview",
+    response_model=Candidate,
+)
+async def preview_candidate_reorder(
+    session_id: UUID,
+    candidate_id: str,
+    body: CandidateReorderRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """드래그로 바뀐 순서대로 활동을 재배열하고 교통편을 다시 계산하되 저장은 하지 않는다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    _validate_ordered_positions(current_candidate, body.ordered_positions)
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    updated = _candidate_reordered(visible_candidate, body.ordered_positions, time_range[0])
+    return await enrich_routes(updated, time_range)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/reorder/save",
+    response_model=Candidate,
+)
+async def save_candidate_reorder(
+    session_id: UUID,
+    candidate_id: str,
+    body: CandidateReorderSaveRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """드래그로 바뀐 순서와 그 순서의 교통편 선택을 저장한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    _validate_ordered_positions(current_candidate, body.ordered_positions)
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    updated = _candidate_reordered(visible_candidate, body.ordered_positions, time_range[0])
+    enriched = await enrich_routes(updated, time_range)
+    _apply_selected_options(enriched, body.selected_options)
+
+    _replace_candidate(schedule_session, enriched)
     _remove_candidate_preview(schedule_session, candidate_id)
     if schedule_session.status == "confirmed":
         schedule_session.status = "draft"

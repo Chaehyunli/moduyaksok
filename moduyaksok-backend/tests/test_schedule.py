@@ -975,6 +975,99 @@ def test_save_candidate_removal_keeps_fewer_places_and_renumbers(client, session
     assert stored.conditions["candidate_exclusions"]["A"] == [excluded_place_id]
 
 
+def test_candidate_reorder_preview_reorders_activities_and_rebases_times(
+    client, session, monkeypatch
+):
+    """드래그로 순서를 뒤집으면(2, 1) order/이름이 새 순서로 바뀌고, 각 활동의
+    체류시간(1시간)은 보존한 채 time_range 시작(10:00)부터 gap 없이 다시
+    이어붙는지 확인한다 — 저장은 안 하므로 DB는 그대로여야 한다.
+    """
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich(candidate, _time_range):
+        assert [a.order for a in candidate.activities] == [1, 2]
+        assert [a.name for a in candidate.activities] == ["장소2", "장소1"]
+        assert [a.start_time for a in candidate.activities] == ["10:00", "11:00"]
+        assert [a.end_time for a in candidate.activities] == ["11:00", "12:00"]
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/reorder/preview",
+        json={"ordered_positions": [2, 1]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert [a["name"] for a in response.json()["activities"]] == ["장소2", "장소1"]
+
+    from app.models.schedule import ScheduleSession
+
+    persisted = session.get(ScheduleSession, UUID(session_id))
+    assert [a["order"] for a in persisted.candidates["candidates"][0]["activities"]] == [1, 2]
+
+
+def test_candidate_reorder_preview_rejects_non_permutation(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/reorder/preview",
+        json={"ordered_positions": [1, 1]},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+def test_candidate_reorder_for_other_users_session_returns_403(client, session, monkeypatch):
+    _, session_id = _create_session(client, session, monkeypatch)
+    other_headers, _ = _login(client, monkeypatch, google_id="another-user")
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/reorder/preview",
+        json={"ordered_positions": [1, 2]},
+        headers=other_headers,
+    )
+
+    assert response.status_code == 403
+
+
+def test_save_candidate_reorder_persists_new_order_and_resets_confirmed_status(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    confirm = client.post(
+        f"/schedules/{session_id}/confirm", json={"candidate_id": "A"}, headers=headers
+    )
+    assert confirm.status_code == 200
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/reorder/save",
+        json={"ordered_positions": [2, 1]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert [a["name"] for a in response.json()["activities"]] == ["장소2", "장소1"]
+
+    from app.models.schedule import ScheduleSession
+
+    session.expire_all()
+    stored = session.get(ScheduleSession, UUID(session_id))
+    assert stored.status == "draft"
+    assert stored.confirmed_candidate_id is None
+    assert [a["name"] for a in stored.candidates["candidates"][0]["activities"]] == [
+        "장소2",
+        "장소1",
+    ]
+
+
 def test_regenerate_passes_persisted_required_place_and_replaces_candidates(
     client, session, monkeypatch
 ):

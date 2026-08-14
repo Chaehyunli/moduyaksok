@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { VueDraggable } from 'vue-draggable-plus'
 import { useScheduleStore } from '../stores/schedule'
 import type { Activity, Candidate, RouteSegment } from '../stores/schedule'
 import { tagColorForLabel } from '../lib/tagColors'
@@ -22,9 +23,12 @@ const store = useScheduleStore()
 const storedCandidate = computed(() => store.candidates.find((c) => c.id === route.params.candidateId))
 const previewCandidate = ref<Candidate | null>(null)
 const removalPreviewCandidate = ref<Candidate | null>(null)
+const reorderPreviewCandidate = ref<Candidate | null>(null)
 const previewId = ref<string | null>(null)
 const pendingExcludedPlaceIds = ref<string[]>([])
+const pendingOrderedPositions = ref<number[] | null>(null)
 const candidate = computed(() => {
+  if (reorderPreviewCandidate.value) return reorderPreviewCandidate.value
   if (previewCandidate.value) return previewCandidate.value
   if (removalPreviewCandidate.value) return removalPreviewCandidate.value
   if (!storedCandidate.value || pendingExcludedPlaceIds.value.length === 0) {
@@ -42,6 +46,18 @@ const candidate = computed(() => {
   }
 })
 
+// 카드 목록의 드래그 순서는 이 배열이 정본이다 — candidate.value.activities와
+// 별개 참조라 VueDraggable이 드롭 즉시(네트워크 응답을 기다리지 않고) 직접
+// 재배열한다. candidate가 바뀔 때(미리보기 도착·저장·취소)마다 다시 동기화한다.
+const draggableActivities = ref<Activity[]>([])
+watch(
+  () => candidate.value?.activities,
+  (activities) => {
+    draggableActivities.value = activities ? [...activities] : []
+  },
+  { immediate: true },
+)
+
 const loadingRoutes = ref(false)
 const routesError = ref('')
 const confirming = ref(false)
@@ -57,7 +73,20 @@ const refreshingRemovalRoutes = ref(false)
 const savingCandidate = ref(false)
 const feedbackError = ref('')
 const hasPendingChanges = computed(
-  () => pendingExcludedPlaceIds.value.length > 0 || Boolean(previewCandidate.value),
+  () =>
+    pendingExcludedPlaceIds.value.length > 0 ||
+    Boolean(previewCandidate.value) ||
+    Boolean(reorderPreviewCandidate.value),
+)
+// 다른 변경(대체/제외) 미리보기가 떠 있거나 저장 중이면 드래그 자체를 막는다 —
+// 한 번에 한 종류의 변경만 미리보기 상태로 둔다는 원칙(§2, 설계 문서 참고).
+const dragDisabled = computed(
+  () =>
+    pendingExcludedPlaceIds.value.length > 0 ||
+    Boolean(previewCandidate.value) ||
+    regeneratingCandidate.value ||
+    refreshingRemovalRoutes.value ||
+    savingCandidate.value,
 )
 const restoringCandidate = ref(true)
 const replacementProgressMessages = computed(() => {
@@ -164,6 +193,7 @@ async function excludePlace(placeId: string | null) {
       (activity) => activity.placeId === placeId && activity.isRequired,
     ) ||
     previewCandidate.value ||
+    reorderPreviewCandidate.value ||
     refreshingRemovalRoutes.value
   ) return
   feedbackError.value = ''
@@ -208,12 +238,58 @@ async function regenerateCandidate() {
   }
 }
 
+// 드롭마다 바로 요청을 쏘지 않고 500ms 묶어서 보낸다 — 저장 없이 연속으로
+// 드래그해도 되게 지원해야 하는데, 매 드롭마다 ODsay/NCP 호출까지 나가는
+// enrich_routes()를 그대로 태우면 짧은 시간에 여러 번 재계산이 발생해 응답이
+// 낭비되고 ODsay 일일 호출 예산도 불필요하게 깎인다. 디바운스 중에도 카드
+// 목록(draggableActivities)은 즉시 반영되므로 드래그 조작감은 그대로다.
+let reorderRequestSeq = 0
+let reorderDebounceTimer: ReturnType<typeof setTimeout> | undefined
+
+function onReorderEnd() {
+  const orderedPositions = draggableActivities.value.map((a) => a.order)
+  clearTimeout(reorderDebounceTimer)
+  reorderDebounceTimer = setTimeout(() => previewReorder(orderedPositions), 500)
+}
+
+onUnmounted(() => clearTimeout(reorderDebounceTimer))
+
+async function previewReorder(orderedPositions: number[]) {
+  if (!storedCandidate.value) return
+  // 디바운스로도 두 요청이 겹쳐 in-flight 상태로 남을 수 있다(응답이 느리면
+  // 500ms 안에 다음 요청이 또 나감) — 네트워크 응답은 보낸 순서대로 도착한다는
+  // 보장이 없으므로, 시퀀스 번호로 가장 나중에 보낸 요청의 응답만 반영하고
+  // 먼저 보냈지만 늦게 도착한 응답은 버린다.
+  const seq = ++reorderRequestSeq
+  feedbackError.value = ''
+  try {
+    const preview = await store.previewCandidateReorder(storedCandidate.value.id, orderedPositions)
+    if (seq !== reorderRequestSeq) return
+    reorderPreviewCandidate.value = preview
+    pendingOrderedPositions.value = orderedPositions
+  } catch (error: any) {
+    if (seq !== reorderRequestSeq) return
+    feedbackError.value = error.response?.data?.detail ?? '바뀐 순서의 교통편을 다시 계산하지 못했어요.'
+    draggableActivities.value = candidate.value ? [...candidate.value.activities] : []
+  }
+}
+
 async function saveCandidate() {
   if (!storedCandidate.value || !hasPendingChanges.value) return
   savingCandidate.value = true
   feedbackError.value = ''
   try {
-    if (previewCandidate.value && previewId.value) {
+    if (reorderPreviewCandidate.value && pendingOrderedPositions.value) {
+      const selectedOptions = reorderPreviewCandidate.value.routes.map((segment) => ({
+        from_order: segment.fromOrder,
+        option_id: segment.selectedOptionId,
+      }))
+      await store.saveCandidateReorder(
+        storedCandidate.value.id,
+        pendingOrderedPositions.value,
+        selectedOptions,
+      )
+    } else if (previewCandidate.value && previewId.value) {
       const selectedOptions = previewCandidate.value.routes.map((segment) => ({
         from_order: segment.fromOrder,
         option_id: segment.selectedOptionId,
@@ -236,8 +312,10 @@ async function saveCandidate() {
     }
     previewCandidate.value = null
     removalPreviewCandidate.value = null
+    reorderPreviewCandidate.value = null
     previewId.value = null
     pendingExcludedPlaceIds.value = []
+    pendingOrderedPositions.value = null
   } catch (error: any) {
     feedbackError.value = error.response?.data?.detail ?? '변경한 일정을 저장하지 못했어요.'
   } finally {
@@ -248,8 +326,10 @@ async function saveCandidate() {
 function cancelCandidateChanges() {
   previewCandidate.value = null
   removalPreviewCandidate.value = null
+  reorderPreviewCandidate.value = null
   previewId.value = null
   pendingExcludedPlaceIds.value = []
+  pendingOrderedPositions.value = null
   feedbackError.value = ''
   expandedSegment.value = null
 }
@@ -272,7 +352,10 @@ function cancelCandidateChanges() {
       <DoodleAlert v-if="feedbackError" title="일정을 바꾸지 못했어요" class="mb-6">
         {{ feedbackError }}
       </DoodleAlert>
-      <DoodleAlert v-if="previewCandidate" title="변경된 일정 미리보기" class="mb-6">
+      <DoodleAlert v-if="reorderPreviewCandidate" title="바뀐 순서 미리보기" class="mb-6">
+        새 순서로 이동 경로를 다시 계산했어요. 아래의 저장 버튼을 눌러야 실제로 반영돼요.
+      </DoodleAlert>
+      <DoodleAlert v-else-if="previewCandidate" title="변경된 일정 미리보기" class="mb-6">
         아직 저장되지 않았어요. 아래의 저장 버튼을 눌러야 목록과 새로고침 후 화면에도 반영돼요.
       </DoodleAlert>
       <DoodleAlert
@@ -286,13 +369,26 @@ function cancelCandidateChanges() {
 
       <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
 
-      <div class="space-y-3">
-        <template v-for="(a, i) in candidate.activities" :key="`${a.placeId ?? a.name}-${a.order}`">
+      <VueDraggable
+        v-model="draggableActivities"
+        :disabled="dragDisabled"
+        handle=".drag-handle"
+        :animation="150"
+        :force-fallback="true"
+        :fallback-tolerance="3"
+        class="space-y-3"
+        @end="onReorderEnd"
+      >
+        <div v-for="(a, i) in draggableActivities" :key="a.placeId ?? a.name">
           <DoodleCard :style="activityAccentStyle(a)">
             <div class="flex items-start gap-3">
+              <span
+                class="drag-handle mt-1 shrink-0 font-hand text-lg leading-none text-ink/40"
+                :class="dragDisabled ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'"
+              >⠿</span>
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 font-hand text-lg text-ink">
-                  <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-ink bg-red text-sm text-paper">{{ a.order }}</span>
+                  <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-ink bg-red text-sm text-paper">{{ i + 1 }}</span>
                   {{ a.name }}
                 </p>
                 <p class="font-hand text-sm text-ink/60">
@@ -313,7 +409,7 @@ function cancelCandidateChanges() {
             <div v-if="a.placeId && !a.isRequired" class="mt-3 flex justify-end">
               <DoodleButton
                 size="sm"
-                :disabled="Boolean(previewCandidate) || refreshingRemovalRoutes"
+                :disabled="Boolean(previewCandidate) || Boolean(reorderPreviewCandidate) || refreshingRemovalRoutes"
                 @click="excludePlace(a.placeId)"
               >
                 이 장소 빼기
@@ -321,22 +417,22 @@ function cancelCandidateChanges() {
             </div>
           </DoodleCard>
 
-          <div v-if="i < candidate.activities.length - 1" class="pl-2">
+          <div v-if="i < draggableActivities.length - 1" class="mt-3 pl-2">
             <p v-if="loadingRoutes || refreshingRemovalRoutes" class="font-hand text-sm text-ink/50">이동 경로를 찾는 중...</p>
-            <template v-else-if="segmentBetween(a.order, candidate.activities[i + 1].order)">
+            <template v-else-if="segmentBetween(a.order, draggableActivities[i + 1].order)">
               <DoodleAccordion
                 :expanded="expandedSegment === a.order"
                 @update:expanded="expandedSegment = expandedSegment === a.order ? null : a.order"
               >
                 <template #header>
-                  🚌 {{ selectedOptionSummary(segmentBetween(a.order, candidate.activities[i + 1].order)!) }}
+                  🚌 {{ selectedOptionSummary(segmentBetween(a.order, draggableActivities[i + 1].order)!) }}
                 </template>
                 <div
-                  v-for="opt in segmentBetween(a.order, candidate.activities[i + 1].order)!.options"
+                  v-for="opt in segmentBetween(a.order, draggableActivities[i + 1].order)!.options"
                   :key="opt.optionId"
                   class="mb-1 flex cursor-pointer items-center gap-2 font-hand text-sm"
                   :class="
-                    segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                    segmentBetween(a.order, draggableActivities[i + 1].order)!.selectedOptionId ===
                     opt.optionId
                       ? 'text-red'
                       : 'text-ink/60 hover:text-ink'
@@ -344,7 +440,7 @@ function cancelCandidateChanges() {
                   @click="selectOption(a.order, opt.optionId)"
                 >
                   <span>{{
-                    segmentBetween(a.order, candidate.activities[i + 1].order)!.selectedOptionId ===
+                    segmentBetween(a.order, draggableActivities[i + 1].order)!.selectedOptionId ===
                     opt.optionId
                       ? '● '
                       : '○ '
@@ -360,8 +456,8 @@ function cancelCandidateChanges() {
             </template>
             <p v-else class="font-hand text-sm text-ink/40">이동 경로 정보 없음</p>
           </div>
-        </template>
-      </div>
+        </div>
+      </VueDraggable>
 
       <DoodleDivider class="my-8" />
 

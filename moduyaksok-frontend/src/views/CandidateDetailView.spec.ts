@@ -40,6 +40,7 @@ describe('CandidateDetailView 필수 장소', () => {
           DoodleMap: true,
           DoodleAccordion: true,
           DoodleDivider: true,
+          VueDraggable: { template: '<div><slot /></div>' },
         },
       },
     })

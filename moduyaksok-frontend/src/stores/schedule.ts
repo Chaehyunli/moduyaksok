@@ -520,6 +520,36 @@ export const useScheduleStore = defineStore('schedule', {
       )
       return saved
     },
+    async previewCandidateReorder(
+      candidateId: string,
+      orderedPositions: number[],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/reorder/preview`,
+        { ordered_positions: orderedPositions },
+      )
+      return mapApiCandidate(data)
+    },
+    async saveCandidateReorder(
+      candidateId: string,
+      orderedPositions: number[],
+      selectedOptions: { from_order: number; option_id: string }[] = [],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/reorder/save`,
+        { ordered_positions: orderedPositions, selected_options: selectedOptions },
+      )
+      const saved = mapApiCandidate(data)
+      const index = this.candidates.findIndex((candidate) => candidate.id === candidateId)
+      if (index !== -1) this.candidates[index] = saved
+      this.scheduleStatus = 'draft'
+      this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
+        (id) => id !== candidateId,
+      )
+      return saved
+    },
     async fetchSharedSchedule(slug: string) {
       // 이전 slug 조회 결과가 남아있으면, 새 slug가 실패했을 때 화면이 옛 데이터를
       // 계속 보여주는 문제가 생긴다 — 조회 시작 시점에 먼저 비운다.
