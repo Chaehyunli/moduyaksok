@@ -74,7 +74,7 @@ const steps = [
       <!-- 푸터 -->
       <footer class="border-t-2 border-dashed border-ink/20 py-8 text-center font-hand text-sm text-ink/50">
         <p>모두약속</p>
-        <p class="mt-1 text-xs text-ink/40">Designed by chaehyunlim</p>
+        <p class="mt-1 text-xs text-ink/40">Producted && Designed by limch</p>
       </footer>
     </div>
   </div>
