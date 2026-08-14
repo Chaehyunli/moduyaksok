@@ -9,6 +9,14 @@
 #             좌표 기반 직선거리 추정치로 활동 사이 버퍼를 잡는다 — 이후 Step4가
 #             실제 ODsay 이동시간을 채우면 reconcile_schedule()로 그 구간 이후
 #             활동들의 시간을 실제값 기준으로 밀거나 당긴다.
+# 2026-08-14, 사용자 관측: 제주처럼 자차가 기본인 지역은 대중교통 속도(18km/h)
+#             기준 추정이 실제보다 훨씬 느리게 잡혀 _MAX_TRAVEL_MINUTES(15분,
+#             generate_algorithm_step2.py/synthesize_step3.py)에 걸려 "조건 불만족"
+#             이 과도하게 나옴. 분(minute) 임계값을 올리는 대신 근본 원인(속도
+#             가정)을 고쳤다 — is_car_dependent_region()으로 자차 기본 지역을
+#             판별해 estimate_buffer_minutes()가 그 지역엔 더 빠른 자차 속도를
+#             쓰게 함. 지역 목록은 사용자가 실제로 문제 삼은 곳(제주·강원)부터 —
+#             필요해지면 넓힐 것.
 # ------------------------------------------------------------------
 import math
 from datetime import datetime, timedelta
@@ -22,9 +30,19 @@ _EARTH_RADIUS_M = 6_371_000
 _DETOUR_FACTOR = 1.3  # 도로가 직선이 아니므로 직선거리에 곱하는 보정치
 _WALK_SPEED_M_PER_MIN = 75.0  # 도보 약 4.5km/h
 _TRANSIT_SPEED_M_PER_MIN = 300.0  # 대중교통 체감 평균(대기·환승 포함) 약 18km/h
-_WALK_TRANSIT_THRESHOLD_M = 1000  # 보정된 거리가 이 이하면 도보, 초과면 대중교통으로 가정
+_CAR_SPEED_M_PER_MIN = 700.0  # 자차 체감 평균(신호·정차 포함) 약 42km/h — 대중교통의 약 2.3배
+_WALK_TRANSIT_THRESHOLD_M = 1000  # 보정된 거리가 이 이하면 도보, 초과면 대중교통/자차로 가정
 _SAFETY_MARGIN = 1.2  # Step2 시점 추정치는 불확실하니 20% 여유를 더 얹는다(2026-08-10 결정)
 _MIN_BUFFER_MINUTES = 5
+
+# 대중교통망이 성겨 자차가 사실상 기본 이동수단인 시/도. region은 항상
+# "시/도 세부지역"(예: "제주 제주시") 형식이라 첫 단어만 비교하면 된다.
+_CAR_DEPENDENT_PROVINCES = frozenset({"제주", "강원"})
+
+
+def is_car_dependent_region(region: str) -> bool:
+    province = region.split()[0] if region.strip() else ""
+    return province in _CAR_DEPENDENT_PROVINCES
 
 
 def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -36,17 +54,22 @@ def haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> 
     return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(a))
 
 
-def estimate_buffer_minutes(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
+def estimate_buffer_minutes(
+    lat1: float, lon1: float, lat2: float, lon2: float, car_dependent: bool = False
+) -> int:
     """Step2가 두 활동 사이에 배정할 이동 버퍼(분). ODsay 호출 없이 좌표만으로
     계산하는 근사치 — 실제 이동시간은 사용자가 후보를 고른 뒤 Step4가 채운다.
+    car_dependent=True면 대중교통 대신 자차 속도로 계산한다(도보 판정 기준인
+    _WALK_TRANSIT_THRESHOLD_M 이내는 그대로 도보).
     """
     distance = haversine_distance_m(lat1, lon1, lat2, lon2)
     effective_distance = distance * _DETOUR_FACTOR
-    speed = (
-        _WALK_SPEED_M_PER_MIN
-        if effective_distance <= _WALK_TRANSIT_THRESHOLD_M
-        else _TRANSIT_SPEED_M_PER_MIN
-    )
+    if effective_distance <= _WALK_TRANSIT_THRESHOLD_M:
+        speed = _WALK_SPEED_M_PER_MIN
+    elif car_dependent:
+        speed = _CAR_SPEED_M_PER_MIN
+    else:
+        speed = _TRANSIT_SPEED_M_PER_MIN
     estimated_minutes = effective_distance / speed
     return max(_MIN_BUFFER_MINUTES, math.ceil(estimated_minutes * _SAFETY_MARGIN))
 
@@ -95,6 +118,15 @@ if __name__ == "__main__":
 
     close_minutes = estimate_buffer_minutes(37.497942, 127.027621, 37.4985, 127.0280)
     assert close_minutes < minutes, "가까운 거리가 먼 거리보다 버퍼가 커선 안 됨"
+
+    # 자차 지역 판별과, 같은 거리에서 자차 추정이 대중교통 추정보다 짧은지 확인.
+    assert is_car_dependent_region("제주 제주시")
+    assert is_car_dependent_region("강원 강릉")
+    assert not is_car_dependent_region("서울 강남")
+    car_minutes = estimate_buffer_minutes(
+        37.497942, 127.027621, 37.5648, 126.9765, car_dependent=True
+    )
+    assert car_minutes < minutes, "자차 추정이 대중교통 추정보다 짧아야 함"
 
     acts = [
         ActivityDraft(

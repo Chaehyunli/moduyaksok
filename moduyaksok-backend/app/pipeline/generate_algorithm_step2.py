@@ -19,7 +19,7 @@ from app.pipeline.generate_step2 import (
 )
 from app.pipeline.schemas import CandidateDraft, NormalizedConditions, PlaceSelectionDraft
 from app.pipeline.score_preferences_step2 import PlacePreferenceScore, score_soft_preferences
-from app.pipeline.travel_estimate import estimate_buffer_minutes
+from app.pipeline.travel_estimate import estimate_buffer_minutes, is_car_dependent_region
 
 _MAX_PLACES = 5
 _BEAM_WIDTH = 80
@@ -143,11 +143,11 @@ def _matches_verifiable_dislike(place: dict, conditions: NormalizedConditions) -
     )
 
 
-def _travel_minutes(a: dict, b: dict) -> int:
+def _travel_minutes(a: dict, b: dict, car_dependent: bool = False) -> int:
     a_coord, b_coord = _coords(a), _coords(b)
     if not a_coord or not b_coord:
         return 30
-    return estimate_buffer_minutes(*a_coord, *b_coord)
+    return estimate_buffer_minutes(*a_coord, *b_coord, car_dependent=car_dependent)
 
 
 def _minimum_preference_coverage(conditions: NormalizedConditions) -> int:
@@ -180,11 +180,12 @@ def _score_place(
     soft_scores: dict[str, PlacePreferenceScore],
     tag_weights: dict[str, int],
     meal_slots: int,
+    car_dependent: bool = False,
 ) -> float:
     tags = set(_place_matched_tags(place))
     new_tags = tags - state.covered_tags
     category = _category(place)
-    travel = _travel_minutes(previous, place) if previous else 0
+    travel = _travel_minutes(previous, place, car_dependent) if previous else 0
     soft = soft_scores.get(_place_id(place))
     soft_preferences = set(soft.matched_liked_preferences) if soft else set()
     if soft and soft.liked_score > 0 and not soft_preferences:
@@ -238,6 +239,7 @@ def _can_add(
     fixed_ids: set[str],
     meal_limit: int,
     meal_tags: tuple[str, ...],
+    car_dependent: bool = False,
 ) -> bool:
     place_id = _place_id(place)
     if place_id in state.place_ids:
@@ -252,7 +254,7 @@ def _can_add(
     if _is_meal_place(place, meal_tags) and state.meal_count >= meal_limit:
         return False
     previous = selected[-1] if selected else None
-    if previous and _travel_minutes(previous, place) > _MAX_TRAVEL_MINUTES:
+    if previous and _travel_minutes(previous, place, car_dependent) > _MAX_TRAVEL_MINUTES:
         if _place_id(previous) not in fixed_ids and place_id not in fixed_ids:
             return False
     return True
@@ -265,12 +267,13 @@ def _best_order(
     conditions: NormalizedConditions,
 ) -> list[dict]:
     """최대 다섯 장소이므로 모든 순서를 확인해 가장 짧은 유효 동선을 고른다."""
+    car_dependent = is_car_dependent_region(conditions.region)
     best: tuple[float, tuple[dict, ...]] | None = None
     for ordered in islice(permutations(selected), 720):
         total = 0
         valid = True
         for previous, current in zip(ordered, ordered[1:], strict=False):
-            minutes = _travel_minutes(previous, current)
+            minutes = _travel_minutes(previous, current, car_dependent)
             if (
                 minutes > _MAX_TRAVEL_MINUTES
                 and _place_id(previous) not in fixed_ids
@@ -314,6 +317,7 @@ def _draft_for_state(
     perspective_index: int,
 ) -> _ScoredDraft:
     selected = [places_by_id[place_id] for place_id in state.place_ids]
+    car_dependent = is_car_dependent_region(conditions.region)
     liked_tags = {tag.tag for tag in conditions.liked_tags if tag.verifiable}
     meal_tags = tuple(tag.tag for tag in conditions.liked_tags if tag.verifiable and tag.is_meal)
     # 필수 장소가 이미 식사 좋아요 태그를 충족하면 계획 단계에서는 그 태그가
@@ -344,6 +348,7 @@ def _draft_for_state(
                 name for tag, name in plan.required_tag_anchors if tag in plan.required_meal_tags
             )
             | frozenset(fixed_meal_names),
+            car_dependent=car_dependent,
         ),
         rationale=(
             f"{label}을 중심으로 필수 장소와 좋아하는 조건을 지키면서 "
@@ -382,6 +387,7 @@ def _generate_for_plan(
     places = list(plan.place_candidates)
     places_by_id = {_place_id(place): place for place in places}
     fixed_ids = set(fixed_place_ids)
+    car_dependent = is_car_dependent_region(conditions.region)
     anchor_names = {name for _, name in plan.required_tag_anchors}
     seed_ids = set(fixed_ids)
     seed_ids.update(_place_id(place) for place in places if place.get("title") in anchor_names)
@@ -431,6 +437,7 @@ def _generate_for_plan(
                     fixed_ids,
                     meal_limit,
                     meal_tags,
+                    car_dependent,
                 ):
                     continue
                 place_id = _place_id(place)
@@ -458,6 +465,7 @@ def _generate_for_plan(
                             soft_scores,
                             tag_weights,
                             meal_slots,
+                            car_dependent,
                         ),
                     )
                 )

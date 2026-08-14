@@ -100,6 +100,12 @@
 #             박아둬서 모델이 카테고리 나열로 도피한 것으로 보임. 이 실패 사례를
 #             그대로 부정 예시로 박고, 자연스러운 짧은 문구 긍정 예시를 추가
 #             (Step1 few-shot 보강과 같은 패턴 — 관측된 실패를 직접 겨냥).
+# 2026-08-14(2차), 사용자 관측: 제주처럼 자차가 기본인 지역이 이동거리 하드룰
+#             (_has_excessive_travel)에 걸려 "조건 불만족"이 과도하게 나옴 —
+#             travel_estimate.is_car_dependent_region()으로 판별해 그 지역엔
+#             자차 속도로 추정하도록 estimate_buffer_minutes() 호출에 car_dependent
+#             전달(generate_algorithm_step2.py와 같은 가정 공유 — Step2가 통과시킨
+#             조합을 Step3가 다른 속도 기준으로 재드롭하지 않게 함).
 # ------------------------------------------------------------------
 import logging
 from datetime import datetime, time
@@ -117,7 +123,7 @@ from app.pipeline.schemas import (
     PreferenceTag,
     ScheduleResponse,
 )
-from app.pipeline.travel_estimate import estimate_buffer_minutes
+from app.pipeline.travel_estimate import estimate_buffer_minutes, is_car_dependent_region
 from app.services.naver_map_url import build_naver_map_url
 from app.services.structured_llm import call_structured
 
@@ -224,18 +230,20 @@ def _has_duplicate_place(candidate: CandidateDraft) -> bool:
     return False
 
 
-def _has_excessive_travel(candidate: CandidateDraft) -> bool:
+def _has_excessive_travel(candidate: CandidateDraft, car_dependent: bool = False) -> bool:
     """연속된 두 활동 사이 추정 이동시간이 임계값을 넘으면 하드 위반 — 여러
     지역을 입력했을 때 서로 먼 지역끼리(예: 서울 강남 + 경기 수원) 하루 코스로
     섞이거나, 세부지역 없는 광역 시/도가 여러 세부지역으로 확장되면서 그 안에서도
     먼 지역끼리 섞이는 문제를 잡는다. 좌표가 없는 활동(환각 장소, 이미
-    _has_hallucinated_activity가 먼저 드롭함)은 건너뛴다.
+    _has_hallucinated_activity가 먼저 드롭함)은 건너뛴다. car_dependent는
+    generate_algorithm_step2.py와 같은 자차 속도 가정을 여기서도 그대로 써서,
+    Step2가 통과시킨 조합을 Step3가 다른 속도 기준으로 다시 드롭하지 않게 한다.
     """
     required_ids = set(candidate.required_place_ids)
     for prev, cur in zip(candidate.activities, candidate.activities[1:], strict=False):
         if prev.lat is None or prev.lng is None or cur.lat is None or cur.lng is None:
             continue
-        minutes = estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng)
+        minutes = estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng, car_dependent)
         involves_required_place = bool(
             required_ids and (prev.place_id in required_ids or cur.place_id in required_ids)
         )
@@ -244,7 +252,7 @@ def _has_excessive_travel(candidate: CandidateDraft) -> bool:
     return False
 
 
-def _required_travel_warning_minutes(candidate: CandidateDraft) -> int:
+def _required_travel_warning_minutes(candidate: CandidateDraft, car_dependent: bool = False) -> int:
     """거리 필터를 면제한 필수 장소 연결 구간 중 가장 긴 예상 이동시간."""
     required_ids = set(candidate.required_place_ids)
     longest = 0
@@ -257,7 +265,7 @@ def _required_travel_warning_minutes(candidate: CandidateDraft) -> int:
             continue
         longest = max(
             longest,
-            estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng),
+            estimate_buffer_minutes(prev.lat, prev.lng, cur.lat, cur.lng, car_dependent),
         )
     return longest if longest > _MAX_TRAVEL_MINUTES else 0
 
@@ -467,13 +475,14 @@ def _rule_based_filter(
     """
     survivors: list[CandidateDraft] = []
     warnings: list[str] = []
+    car_dependent = is_car_dependent_region(conditions.region)
     for candidate in candidates:
         if (
             _has_hallucinated_activity(candidate)
             or _has_time_overlap(candidate)
             or _has_duplicate_tag_match(candidate)
             or _has_duplicate_place(candidate)
-            or _has_excessive_travel(candidate)
+            or _has_excessive_travel(candidate, car_dependent)
             or _has_missing_meal_slot(candidate, conditions)
             or _has_excessive_meal_places(candidate, conditions)
             or _has_missing_required_tags(candidate, conditions)
@@ -497,7 +506,7 @@ def _rule_based_filter(
             warning_parts.append(f"1인 예산보다 약 {over_amount}원 더 필요할 수 있어요")
         if overrun_minutes > 0:
             warning_parts.append(f"예정보다 약 {overrun_minutes}분 더 걸릴 수 있어요")
-        if required_travel_minutes := _required_travel_warning_minutes(candidate):
+        if required_travel_minutes := _required_travel_warning_minutes(candidate, car_dependent):
             warning_parts.append(
                 "고정된 장소를 포함해 한 구간 이동이 "
                 f"약 {required_travel_minutes}분 이상 걸릴 수 있어요"

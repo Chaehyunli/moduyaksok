@@ -241,6 +241,52 @@ def test_preference_coverage_requires_strict_majority_for_even_count():
     assert _minimum_preference_coverage(_conditions()) == 2
 
 
+def _jeju_place(name: str, mapx: str, mapy: str) -> dict:
+    return ensure_place_ids(
+        [{"title": name, "category": "한식", "source_category": "한식", "mapx": mapx, "mapy": mapy}]
+    )[0]
+
+
+def test_travel_minutes_uses_car_speed_for_car_dependent_region():
+    """제주 시내 두 지점(약 5km, 대중교통 가정으론 15분 초과하지만 자차론 이내)
+    이 지역에 따라 이동거리 하드룰(_MAX_TRAVEL_MINUTES=15)을 넘고/안 넘고가
+    갈리는지 확인 — 사용자 리포트(제주처럼 자차가 기본인 지역이 거리 때문에
+    "조건 불만족"이 과도하게 나옴)를 겨냥한 회귀 테스트.
+    """
+    from app.pipeline.generate_algorithm_step2 import _MAX_TRAVEL_MINUTES, _travel_minutes
+
+    a = _jeju_place("제주 카페", "1265000000", "335000000")
+    b = _jeju_place("제주 맛집", "1265000000", "335450000")  # 위도로 약 5km 북쪽
+
+    transit_minutes = _travel_minutes(a, b, car_dependent=False)
+    car_minutes = _travel_minutes(a, b, car_dependent=True)
+
+    assert transit_minutes > _MAX_TRAVEL_MINUTES
+    assert car_minutes <= _MAX_TRAVEL_MINUTES
+
+
+def test_can_add_rejects_distant_pair_only_without_car_dependent():
+    from app.pipeline.generate_algorithm_step2 import _BeamState, _can_add
+
+    a = _jeju_place("제주 카페", "1265000000", "335000000")
+    b = _jeju_place("제주 맛집", "1265000000", "335450000")
+    places_by_id = {a["place_id"]: a, b["place_id"]: b}
+    state = _BeamState(
+        place_ids=(a["place_id"],),
+        covered_tags=frozenset(),
+        meal_count=0,
+        categories=frozenset({"한식"}),
+        covered_soft_preferences=frozenset(),
+        lower_price_sum=0,
+        score=0,
+    )
+
+    assert not _can_add(b, state, places_by_id, {}, set(), meal_limit=5, meal_tags=())
+    assert _can_add(
+        b, state, places_by_id, {}, set(), meal_limit=5, meal_tags=(), car_dependent=True
+    )
+
+
 def test_ensure_place_ids_preserves_search_result_metadata():
     from app.services.naver_local_search import PlaceSearchResult
 

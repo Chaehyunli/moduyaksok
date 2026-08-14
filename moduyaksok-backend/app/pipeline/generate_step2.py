@@ -165,6 +165,10 @@
 #             다양화 앵커로 고정해, 같은 선호 장소만 공유한 채 나머지 코스까지
 #             복제되는 일을 줄인다. 식사 태그 앵커는 카테고리 근거가 없는 카페를
 #             제외한다.
+# 2026-08-14, 제주처럼 자차가 기본인 지역 대응(travel_estimate.is_car_dependent_
+#             region() 신규, generate_algorithm_step2.py 참고) — _schedule_places()
+#             에 car_dependent 파라미터 추가해 그 지역의 활동 사이 버퍼를 자차
+#             속도로 추정하게 함. 기본값 False라 기존 호출부는 그대로 동작.
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -181,7 +185,11 @@ from app.pipeline.schemas import (
     PlaceSelectionDraft,
     PreferenceTag,
 )
-from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
+from app.pipeline.travel_estimate import (
+    estimate_buffer_minutes,
+    haversine_distance_m,
+    is_car_dependent_region,
+)
 from app.services.structured_llm import call_structured
 
 # HIGH -> MID로 하향(2026-08-12) — 파이프라인 step 로직에서는 HIGH(opus급)를
@@ -1172,6 +1180,7 @@ def _schedule_places(
     time_range: tuple[datetime, datetime],
     place_candidates: list[dict] | None = None,
     meal_anchor_names: frozenset[str] = frozenset(),
+    car_dependent: bool = False,
 ) -> list[ActivityDraft]:
     """LLM이 고른 장소 목록(방문 순서대로)에 시간을 배정한다 — 결정론적 계산이라
     LLM에게 시키지 않는다(2026-08-09 결정, 이 파일 변경 이력 참고). 활동 하나당
@@ -1204,7 +1213,9 @@ def _schedule_places(
         prev_coord, cur_coord = coords.get(prev.name), coords.get(cur.name)
         if prev_coord and cur_coord:
             buffers.append(
-                estimate_buffer_minutes(prev_coord[0], prev_coord[1], cur_coord[0], cur_coord[1])
+                estimate_buffer_minutes(
+                    prev_coord[0], prev_coord[1], cur_coord[0], cur_coord[1], car_dependent
+                )
             )
         else:
             buffers.append(_ACTIVITY_BUFFER_MINUTES)
@@ -1283,6 +1294,7 @@ def _draft_from_selection(
             meal_anchor_names=frozenset(
                 name for tag, name in plan.required_tag_anchors if tag in plan.required_meal_tags
             ),
+            car_dependent=is_car_dependent_region(conditions.region),
         ),
         rationale=corrected.rationale,
         required_meal_tags=list(plan.required_meal_tags),

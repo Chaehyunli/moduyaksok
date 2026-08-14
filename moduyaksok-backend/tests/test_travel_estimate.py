@@ -9,6 +9,7 @@ from app.pipeline.schemas import ActivityDraft
 from app.pipeline.travel_estimate import (
     estimate_buffer_minutes,
     haversine_distance_m,
+    is_car_dependent_region,
     reconcile_schedule,
 )
 
@@ -31,6 +32,30 @@ def test_estimate_buffer_minutes_grows_with_distance():
 def test_estimate_buffer_minutes_has_minimum():
     same_point = estimate_buffer_minutes(*_GANGNAM, *_GANGNAM)
     assert same_point >= 5
+
+
+def test_estimate_buffer_minutes_car_dependent_is_faster_than_transit():
+    transit = estimate_buffer_minutes(*_GANGNAM, *_CITY_HALL)
+    car = estimate_buffer_minutes(*_GANGNAM, *_CITY_HALL, car_dependent=True)
+    assert car < transit
+
+
+def test_estimate_buffer_minutes_car_dependent_still_uses_walk_speed_for_short_hops():
+    near = (37.4985, 127.0280)
+    transit = estimate_buffer_minutes(*_GANGNAM, *near)
+    car = estimate_buffer_minutes(*_GANGNAM, *near, car_dependent=True)
+    assert car == transit
+
+
+def test_is_car_dependent_region_matches_known_provinces():
+    assert is_car_dependent_region("제주 제주시")
+    assert is_car_dependent_region("강원 강릉")
+
+
+def test_is_car_dependent_region_rejects_other_provinces():
+    assert not is_car_dependent_region("서울 강남")
+    assert not is_car_dependent_region("경기 수원")
+    assert not is_car_dependent_region("")
 
 
 def _activity(name: str, start: str, end: str) -> ActivityDraft:
