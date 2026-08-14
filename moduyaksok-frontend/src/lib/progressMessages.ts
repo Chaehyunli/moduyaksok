@@ -19,6 +19,7 @@ function quote(text: string): string {
 export function buildProgressMessages(conditions: ProgressConditions): string[] {
   const messages: string[] = []
   const region = conditions.region || '선택한 지역'
+  messages.push('포스트잇을 붙이고 있어요')
   messages.push(`${region} 맛집을 열심히 찾아보고 있어요`)
   messages.push(`${region} 놀거리를 찾아보고 있어요`)
 
@@ -26,7 +27,7 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   if (liked) messages.push(`"${liked}" 취향을 일정에 넣고 있어요`)
 
   const disliked = quote(conditions.dislikedText)
-  if (disliked) messages.push(`"${disliked}"는 일정에서 빼고 있어요`)
+  if (disliked) messages.push(`"${disliked}"은/는 일정에서 빼고 있어요`)
 
   messages.push('이동 동선을 계산하고 있어요')
   messages.push('일정을 다듬고 있어요')

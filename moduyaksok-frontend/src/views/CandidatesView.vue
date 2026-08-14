@@ -226,13 +226,13 @@ onMounted(async () => {
                           </a>
                           <p class="text-ink/50">
                             {{ place.category }} · {{ place.address }} ·
-                            <a :href="place.mapUrl" target="_blank" rel="noopener" class="underline underline-offset-2">지도 보기</a>
+                            <a :href="place.mapUrl" target="_blank" rel="noopener" class="doodle-wobble inline-flex items-center rounded-[2px] border-2 border-ink/50 px-2 py-0.5 text-xs text-ink/70 no-underline hover:border-ink hover:text-ink">지도 보기</a>
                           </p>
                         </div>
                         <DoodleButton
                           size="sm"
                           variant="ghost"
-                          class="h-16 w-32 shrink-0 px-2 text-center leading-5"
+                          class="h-16 w-20 shrink-0 px-1 text-center text-sm leading-5"
                           :disabled="regenerating || isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >
@@ -262,7 +262,7 @@ onMounted(async () => {
                       </a>
                       <p class="text-ink/50">
                         {{ place.category }} · {{ place.address }} ·
-                        <a :href="place.mapUrl" target="_blank" rel="noopener" class="underline underline-offset-2">지도 보기</a>
+                        <a :href="place.mapUrl" target="_blank" rel="noopener" class="doodle-wobble inline-flex items-center rounded-[2px] border-2 border-ink/50 px-2 py-0.5 text-xs text-ink/70 no-underline hover:border-ink hover:text-ink">지도 보기</a>
                       </p>
                     </li>
                   </ul>
@@ -290,13 +290,13 @@ onMounted(async () => {
                           </a>
                           <p class="text-ink/50">
                             {{ place.category }} · {{ place.address }} ·
-                            <a :href="place.mapUrl" target="_blank" rel="noopener" class="underline underline-offset-2">지도 보기</a>
+                            <a :href="place.mapUrl" target="_blank" rel="noopener" class="doodle-wobble inline-flex items-center rounded-[2px] border-2 border-ink/50 px-2 py-0.5 text-xs text-ink/70 no-underline hover:border-ink hover:text-ink">지도 보기</a>
                           </p>
                         </div>
                         <DoodleButton
                           size="sm"
                           variant="ghost"
-                          class="h-16 w-32 shrink-0 px-2 text-center leading-5"
+                          class="h-16 w-20 shrink-0 px-1 text-center text-sm leading-5"
                           :disabled="regenerating || isRequiredPlace(place) || changingRequiredPlaceId === place.placeId"
                           @click.stop="addRequiredPlace(place)"
                         >

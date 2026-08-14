@@ -109,7 +109,7 @@ onMounted(load)
             <div class="relative flex shrink-0 items-center gap-2" @click.stop>
               <DoodleButton size="sm" @click="openSchedule(item)">일정 수정</DoodleButton>
               <button type="button" class="px-2 py-1 font-hand text-xl leading-none text-ink/60 hover:text-ink" :aria-expanded="openMenuId === item.sessionId" aria-label="일정 더보기" @click="toggleMenu(item)">⋯</button>
-              <div v-if="openMenuId === item.sessionId" class="absolute right-0 top-9 z-10 w-28 rounded-[2px] border-2 border-ink bg-paper p-1 shadow-sm">
+              <div v-if="openMenuId === item.sessionId" class="absolute right-0 top-full z-10 mt-2 w-28 rounded-[2px] border-2 border-ink bg-paper p-1 shadow-sm">
                 <button type="button" class="w-full px-2 py-1.5 text-left font-hand text-sm text-red hover:bg-red/5 disabled:opacity-40" :disabled="deletingId === item.sessionId" @click="removeSchedule(item)">{{ deletingId === item.sessionId ? '삭제 중...' : '일정 삭제' }}</button>
               </div>
             </div>
