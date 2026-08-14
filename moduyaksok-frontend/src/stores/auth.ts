@@ -17,6 +17,11 @@ export const useAuthStore = defineStore('auth', {
     apiKeyProvider: (localStorage.getItem('api_key_provider') || null) as ApiKeyProvider | null,
     apiKeyMasked: localStorage.getItem('api_key_masked') ?? '',
     apiKeySynced: false,
+    // 로그인 필요 라우트에 미로그인 상태로 들어오면 별도 /login 페이지로 보내는
+    // 대신, 메인 화면 위에 모달로 띄운다(2026-08-14, 사용자 요청) — loginRedirect가
+    // 로그인 성공 후 원래 가려던 경로.
+    showLoginModal: false,
+    loginRedirect: '/new',
   }),
   actions: {
     login(accessToken: string, user: AuthUser) {
@@ -24,6 +29,13 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('user_name', user.name ?? user.email)
       this.loggedIn = true
       this.userName = user.name ?? user.email
+    },
+    openLoginModal(redirect: string = '/new') {
+      this.loginRedirect = redirect
+      this.showLoginModal = true
+    },
+    closeLoginModal() {
+      this.showLoginModal = false
     },
     logout() {
       localStorage.removeItem('access_token')

@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { api } from './lib/api'
+import { onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from './stores/auth'
 import DoodleUnderline from './components/doodle/DoodleUnderline.vue'
+import LoginModal from './components/doodle/LoginModal.vue'
 
-const backendStatus = ref<'checking' | 'ok' | 'error'>('checking')
+const route = useRoute()
+const router = useRouter()
+const store = useAuthStore()
 
-onMounted(async () => {
-  try {
-    await api.get('/health')
-    backendStatus.value = 'ok'
-  } catch {
-    backendStatus.value = 'error'
+// lib/api.ts의 401 인터셉터는 window.location.href로 전체 새로고침을 하기 때문에
+// (진행 중이던 요청 상태를 깨끗이 버리려는 의도) Pinia 상태가 초기화된다 —
+// ?login=1&redirect=...로 의도를 넘겨받아 새로고침 뒤 여기서 모달을 다시 연다.
+onMounted(() => {
+  if (route.query.login === '1') {
+    store.openLoginModal((route.query.redirect as string) || '/new')
+    const { login, redirect, ...rest } = route.query
+    router.replace({ path: route.path, query: rest })
   }
 })
 </script>
@@ -38,17 +44,5 @@ onMounted(async () => {
     <RouterView />
   </div>
 
-  <div
-    class="fixed bottom-4 right-4 flex items-center gap-1.5 font-hand text-xs text-ink/50"
-    :title="backendStatus === 'ok' ? '백엔드 연결됨' : backendStatus === 'error' ? '백엔드 연결 실패' : '연결 확인 중'"
-  >
-    <span
-      class="h-2 w-2 rounded-full"
-      :class="{
-        'bg-ink/20': backendStatus === 'checking',
-        'bg-red': backendStatus === 'ok',
-        'bg-ink/40': backendStatus === 'error',
-      }"
-    />
-  </div>
+  <LoginModal />
 </template>

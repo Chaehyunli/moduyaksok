@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import HomeView from '../views/HomeView.vue'
 import KitchenSinkView from '../views/KitchenSinkView.vue'
-import LoginView from '../views/LoginView.vue'
 import ConditionWizardView from '../views/ConditionWizardView.vue'
 import CandidatesView from '../views/CandidatesView.vue'
 import CandidateDetailView from '../views/CandidateDetailView.vue'
@@ -20,7 +19,6 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'home', component: HomeView },
     { path: '/kitchen-sink', name: 'kitchen-sink', component: KitchenSinkView },
-    { path: '/login', name: 'login', component: LoginView },
 
     { path: '/new', name: 'new-schedule', component: ConditionWizardView, meta: { requiresAuth: true, requiresApiKey: true } },
     // sessionId가 곧 "대화방" id — URL만으로 어떤 사용자의 어떤 일정 세션인지
@@ -46,7 +44,11 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const store = useAuthStore()
   if (to.meta.requiresAuth && !store.loggedIn) {
-    return { name: 'login', query: { redirect: to.fullPath } }
+    // 별도 /login 페이지로 보내는 대신, 메인 화면으로 보내고 그 위에 로그인
+    // 모달을 띄운다(App.vue의 LoginModal) — 로그인 성공하면 원래 가려던
+    // to.fullPath로 이어서 이동한다.
+    store.openLoginModal(to.fullPath)
+    return to.path === '/' ? false : { path: '/' }
   }
   // localStorage의 API 키 등록 상태는 이 브라우저에서 저장했을 때만 채워지므로,
   // 세션당 한 번 서버(GET /me/llm-credential)와 동기화해 다른 기기에서 등록한

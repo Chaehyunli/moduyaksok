@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
-import { api } from '../lib/api'
+import { nextTick, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '../../stores/auth'
+import { api } from '../../lib/api'
+import DoodleModal from './DoodleModal.vue'
 
 declare global {
   interface Window {
@@ -18,7 +19,6 @@ declare global {
 }
 
 const router = useRouter()
-const route = useRoute()
 const store = useAuthStore()
 const loading = ref(false)
 const error = ref('')
@@ -30,7 +30,8 @@ async function handleCredential(resp: { credential: string }) {
   try {
     const { data } = await api.post('/auth/google', { id_token: resp.credential })
     store.login(data.access_token, data.user)
-    const redirect = (route.query.redirect as string) || '/new'
+    const redirect = store.loginRedirect
+    store.closeLoginModal()
     router.push(redirect)
   } catch {
     error.value = '로그인에 실패했어요. 다시 시도해주세요.'
@@ -39,21 +40,30 @@ async function handleCredential(resp: { credential: string }) {
   }
 }
 
-onMounted(() => {
+function renderGoogleButton() {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
   if (!clientId || !window.google || !buttonEl.value) return
   window.google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
   window.google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
-})
+}
+
+// 모달은 v-if로 열릴 때마다 새로 마운트되므로, 열릴 때마다 버튼을 다시 그린다.
+watch(
+  () => store.showLoginModal,
+  async (open) => {
+    if (!open) return
+    error.value = ''
+    await nextTick()
+    renderGoogleButton()
+  },
+)
 </script>
 
 <template>
-  <div class="notebook-bg flex min-h-dvh items-center justify-center px-6">
-    <div class="w-full max-w-sm text-center">
-      <p class="mb-8 font-hand text-lg text-ink/70">구글 계정으로 로그인하고 시작해요</p>
-      <div ref="buttonEl" class="flex justify-center"></div>
-      <p v-if="loading" class="mt-4 font-hand text-ink/50">로그인 중...</p>
-      <p v-if="error" class="mt-4 font-hand text-red-500">{{ error }}</p>
-    </div>
-  </div>
+  <DoodleModal :open="store.showLoginModal" title="로그인" @close="store.closeLoginModal()">
+    <p class="mb-6 font-hand text-base text-ink/70">구글 계정으로 로그인하고 시작해요</p>
+    <div ref="buttonEl" class="flex justify-center"></div>
+    <p v-if="loading" class="mt-4 text-center font-hand text-ink/50">로그인 중...</p>
+    <p v-if="error" class="mt-4 text-center font-hand text-red">{{ error }}</p>
+  </DoodleModal>
 </template>

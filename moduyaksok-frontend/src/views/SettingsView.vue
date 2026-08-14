@@ -10,7 +10,7 @@ const store = useAuthStore()
 
 function handleLogout() {
   store.logout()
-  router.push('/login')
+  router.push('/')
 }
 </script>
 
@@ -32,7 +32,7 @@ function handleLogout() {
         <span class="font-hand text-ink/50">→</span>
       </DoodleCard>
 
-      <DoodleButton class="mt-8" variant="ghost" @click="handleLogout">로그아웃</DoodleButton>
+      <DoodleButton class="mt-8" variant="primary" @click="handleLogout">로그아웃</DoodleButton>
     </div>
   </div>
 </template>
