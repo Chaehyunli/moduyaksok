@@ -64,6 +64,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `DoodleBadge` | 상태 뱃지. `tone="ok\|warn\|neutral"` |
 | `DoodleAlert` | 경고/에러 배너. `#actions` 슬롯으로 대응 버튼 배치 |
 | `DoodleModal` | 모달. `open`, `title` prop, `@close` |
+| `LoginModal` | `App.vue`에 전역으로 마운트된 로그인 모달(`DoodleModal` 래핑). 비로그인 상태로 보호된 라우트에 진입하면 별도 `/login` 페이지 대신 메인 화면 위에 이걸 띄운다(`stores/auth.ts`의 `showLoginModal`/`openLoginModal`) |
 | `DoodleStepper` | 단계 진행 표시 (다단계 입력 폼용) |
 | `DoodleProgress` | 대기 중 순환 진행 문구 + 인디케이터 바. `messages`(string[]), `intervalMs` prop — 일정 생성/재생성처럼 응답까지 시간이 걸리는 작업에서 문구를 2.2초 간격으로 순환 표시 |
 | `DoodleDivider` | 점선 구분선 |
@@ -73,17 +74,16 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 
 ## 화면 (`src/views/`)
 
-라우트 정의는 `src/router/index.ts`. `requiresAuth: true`인 라우트는 비로그인 상태로 접근하면 `/login?redirect=...`로 리다이렉트된다 (`router.beforeEach` 가드, `stores/app.ts`의 `loggedIn` 상태 기준).
+라우트 정의는 `src/router/index.ts`. `requiresAuth: true`인 라우트는 비로그인 상태로 접근하면 메인 화면(`/`)으로 보내고 그 위에 `LoginModal`을 띄운다(`router.beforeEach` 가드 → `stores/auth.ts`의 `openLoginModal`, 2026-08-14 — 이전엔 별도 `/login` 페이지로 리다이렉트했음). 로그인 성공하면 원래 가려던 경로로 이어서 이동.
 
 | 파일 | 라우트 | 와이어프레임 | 로그인 필요 | 사용 컴포넌트 |
 |---|---|---|---|---|
 | `HomeView.vue` | `/` | [01_홈_랜딩_페이지](../docs/와이어프레임/01_홈_랜딩_페이지.png) | ✗ | `DoodleButton`, `DoodleStar`, `DoodleArrow`, `DoodleUnderline`, `StickyNote` |
-| `LoginView.vue` | `/login` | [02_로그인_화면](../docs/와이어프레임/02_로그인_화면.png) | ✗ | `DoodleButton`, `DoodleUnderline` |
 | `ConditionWizardView.vue` | `/new` | [04~10_일정조건입력 ~ 입력요약확인](../docs/와이어프레임/) (6단계 내부 상태로 한 화면에 통합) | ✓ | `DoodleStepper`, `DoodleSelectCard`, `DoodleSelect`, `DoodleInput`, `DoodleTextarea`, `DoodleCard`, `DoodleButton`, `DoodleProgress` |
-| `CandidatesView.vue` | `/schedules` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton`, `DoodleAccordion`, `DoodleProgress` — 검색 후보를 태그/카테고리별로 열람하고 장소를 필수 포함 칩으로 추가·해제한 뒤 재생성 |
-| `CandidateDetailView.vue` | `/schedules/:id` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert`, `DoodleMap`, `DoodleAccordion` |
+| `CandidatesView.vue` | `/schedules/:sessionId?` | [11_일정_후보_목록](../docs/와이어프레임/11_일정_후보_목록.png) + [15_생성_불가_안내](../docs/와이어프레임/15_생성_불가_안내.png)(빈 상태) | ✓ | `StickyNote`, `DoodleAlert`, `DoodleButton`, `DoodleAccordion`, `DoodleProgress` — 검색 후보를 태그/카테고리별로 열람하고 장소를 필수 포함 칩으로 추가·해제한 뒤 재생성. `sessionId`가 곧 세션(대화방) id — 없으면 최근 draft로 리다이렉트 |
+| `CandidateDetailView.vue` | `/schedules/:sessionId/candidates/:candidateId` | [12_일정_후보_상세보기](../docs/와이어프레임/12_일정_후보_상세보기.png) + 13(장소 상세)·14(이동 동선)를 같은 화면에 인라인으로 병합 | ✓ | `DoodleCard`, `DoodleDivider`, `DoodleButton`, `DoodleAlert`, `DoodleMap`, `DoodleAccordion` |
 | `FeedbackView.vue` | `/schedules/:id/feedback` | [16_일정_수정_피드백](../docs/와이어프레임/16_일정_수정_피드백.png) ~ [20_수정된_일정_확인](../docs/와이어프레임/20_수정된_일정_확인.png) (텍스트 입력·옵션 선택·반영 불가·수정 결과를 상태 전환으로 통합) | ✓ | `DoodleChip`, `DoodleTextarea`, `DoodleButton`, `DoodleAlert`, `DoodleCard` |
-| `ShareView.vue` | `/schedules/:id/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |
+| `ShareView.vue` | `/schedules/:sessionId/candidates/:candidateId/share` | [21_일정_공유_저장](../docs/와이어프레임/21_일정_공유_저장.png) + [22_공유_링크_생성](../docs/와이어프레임/22_공유_링크_생성.png) + [24_이미지_PDF_저장](../docs/와이어프레임/24_이미지_PDF_저장.png)(버튼만, 다운로드 미구현) | ✓ | `DoodleButton`, `DoodleCard` |
 | `PublicShareView.vue` | `/share/:slug` | [23_공유_일정_열람](../docs/와이어프레임/23_공유_일정_열람.png) | ✗ (공개) | `DoodleCard`, `DoodleUnderline`, `DoodleMap` |
 | `SettingsView.vue` | `/settings` | [25_설정_화면](../docs/와이어프레임/25_설정_화면.png) | ✓ | `DoodleCard`, `DoodleBadge` |
 | `settings/ApiKeyView.vue` | `/settings/api-key` | [26_AI_API_키_관리](../docs/와이어프레임/26_AI_API_키_관리.png) | ✓ | `DoodleCard`, `DoodleBadge`, `DoodleDivider`, `DoodleButton` |
@@ -92,7 +92,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `settings/ApiKeySavedView.vue` | `/settings/api-key/saved` | [29_API_키_저장_완료](../docs/와이어프레임/29_API_키_저장_완료.png) | ✓ | `DoodleCard`, `DoodleButton` |
 | `KitchenSinkView.vue` | `/kitchen-sink` | 없음 (컴포넌트 라이브러리 참고용, 상품 화면 아님) | ✗ | 전체 `doodle/` 컴포넌트 |
 
-**와이어프레임과 다르게 합친 부분:** 03(로그인 실패 안내)은 `LoginView` 안의 인라인 상태로, 13/14(장소 상세·이동 동선)는 `CandidateDetailView` 안에, 17~20(수정 관련 하위 화면들)은 `FeedbackView` 안에 각각 별도 라우트 대신 상태 전환으로 넣었다. 사용자 입장에서 페이지 이동이 너무 잦아지는 걸 막기 위한 선택. 별도 라우트가 필요해지면(딥링크, 뒤로가기 단위 세분화 등) 그때 쪼개면 된다.
+**와이어프레임과 다르게 합친 부분:** 02/03(로그인 화면·실패 안내)은 별도 라우트 없이 `LoginModal`의 인라인 상태로, 13/14(장소 상세·이동 동선)는 `CandidateDetailView` 안에, 17~20(수정 관련 하위 화면들)은 `FeedbackView` 안에 각각 별도 라우트 대신 상태 전환으로 넣었다. 사용자 입장에서 페이지 이동이 너무 잦아지는 걸 막기 위한 선택. 별도 라우트가 필요해지면(딥링크, 뒤로가기 단위 세분화 등) 그때 쪼개면 된다.
 
 **아직 안 만든 것:** 와이어프레임에 있는 화면 중 실제 라우트로 못 옮긴 건 없다. `/auth/google`,
 `/me/llm-credential`, 일정 생성 플로우(`POST /schedules`, `POST .../routes`,
