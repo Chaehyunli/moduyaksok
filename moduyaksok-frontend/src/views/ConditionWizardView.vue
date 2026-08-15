@@ -175,7 +175,7 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
           v-model="form.likedText"
           label="좋아하는 것"
           :maxlength="PREFERENCE_MAX_LENGTH"
-          placeholder="날씨가 너무 더워서, 실내 일정 위주로하는데, 콩국수나 텐동을 점심으로 먹고 싶어, 간식으로 와플을 꼭 먹고 싶어!!"
+          placeholder="너무 더워서, 실내 일정 위주에, 콩국수나 텐동을 먹고 싶어, 간식으로 와플을 먹고 싶어!"
         />
         <DoodleTextarea
           v-model="form.dislikedText"
