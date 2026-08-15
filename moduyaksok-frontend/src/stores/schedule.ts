@@ -62,6 +62,21 @@ export interface RequiredPlace {
   category: string
   address: string
   mapUrl: string
+  // 표준 카테고리·태그 검색이 아니라 사용자가 이름으로 직접 검색해서 고른
+  // 장소인지 — "내가 추가한 장소" 표시와 최대 개수 제한(3개) UI에 쓴다.
+  isCustom: boolean
+}
+
+// GET /place-search 결과 한 건 — 사용자가 탭해서 고르면 그대로
+// addCustomRequiredPlace()에 다시 보낸다(재조회 없이).
+export interface PlaceSearchResultItem {
+  placeId: string
+  name: string
+  category: string
+  address: string
+  mapUrl: string
+  mapx: string | null
+  mapy: string | null
 }
 
 export interface PlacePoolGroup {
@@ -195,6 +210,20 @@ function mapApiRequiredPlace(raw: any): RequiredPlace {
     category: raw.category ?? '',
     address: raw.address ?? '',
     mapUrl: raw.map_url ?? '',
+    isCustom: raw.is_custom ?? false,
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapApiPlaceSearchResult(raw: any): PlaceSearchResultItem {
+  return {
+    placeId: raw.place_id,
+    name: raw.name,
+    category: raw.category ?? '',
+    address: raw.address ?? '',
+    mapUrl: raw.map_url ?? '',
+    mapx: raw.mapx ?? null,
+    mapy: raw.mapy ?? null,
   }
 }
 
@@ -433,6 +462,28 @@ export const useScheduleStore = defineStore('schedule', {
       if (!this.sessionId) return
       await api.delete(`/schedules/${this.sessionId}/required-places/${placeId}`)
       this.requiredPlaces = this.requiredPlaces.filter((place) => place.placeId !== placeId)
+    },
+    async searchPlacesByName(query: string): Promise<PlaceSearchResultItem[]> {
+      if (!this.sessionId || !query.trim()) return []
+      const { data } = await api.get(`/schedules/${this.sessionId}/place-search`, {
+        params: { q: query },
+      })
+      return (data ?? []).map(mapApiPlaceSearchResult)
+    },
+    async addCustomRequiredPlace(item: PlaceSearchResultItem) {
+      if (!this.sessionId || this.requiredPlaces.some((place) => place.placeId === item.placeId)) {
+        return
+      }
+      const { data } = await api.post(`/schedules/${this.sessionId}/required-places/custom`, {
+        place_id: item.placeId,
+        name: item.name,
+        category: item.category,
+        address: item.address,
+        map_url: item.mapUrl,
+        mapx: item.mapx,
+        mapy: item.mapy,
+      })
+      this.requiredPlaces.push(mapApiRequiredPlace(data))
     },
     async regenerateSchedule() {
       if (!this.sessionId) return

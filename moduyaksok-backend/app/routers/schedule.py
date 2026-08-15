@@ -66,6 +66,11 @@
 #             체류시간은 보존하고 시작 시각은 time_range 시작부터 gap=0으로 다시
 #             이어붙여서, 기존 enrich_routes()의 reconcile_schedule() 보정이 구간마다
 #             실제 이동시간만큼 자동으로 벌려주게 만들었다(그 함수는 한 줄도 안 고침).
+# 2026-08-15, GET .../place-search + POST .../required-places/custom 추가 —
+#             사용자가 표준 카테고리·태그 검색과 무관하게 이름으로 직접 검색해
+#             장소를 필수로 추가하는 기능(사용자 요청). place_pool 의존 없이
+#             네이버 지역검색을 직접 호출하고, 결과를 그대로 믿고 저장한다.
+#             최대 3개 제한은 여기(서버)와 프런트 UI 양쪽에서 이중 강제.
 # ------------------------------------------------------------------
 import logging
 import secrets
@@ -104,7 +109,7 @@ from app.pipeline.schemas import (
 from app.pipeline.synthesize_step3 import synthesize_and_validate
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
-from app.services.naver_local_search import NaverSearchError, place_id_for
+from app.services.naver_local_search import NaverSearchError, place_id_for, search_places
 from app.services.naver_map_url import build_naver_map_url
 
 logger = logging.getLogger(__name__)
@@ -146,6 +151,29 @@ class ConfirmResponse(BaseModel):
 
 class RequiredPlaceRequest(BaseModel):
     place_id: str
+
+
+class PlaceSearchResultItem(BaseModel):
+    place_id: str
+    name: str
+    category: str = ""
+    address: str = ""
+    map_url: str = ""
+    mapx: str | None = None
+    mapy: str | None = None
+
+
+class CustomRequiredPlaceRequest(BaseModel):
+    """사용자가 이름으로 직접 검색해 고른 장소 — /place-search 응답 항목을 그대로
+    다시 보낸다(place_id 재조회 없이 같은 정보를 그대로 저장하기 위함)."""
+
+    place_id: str
+    name: str
+    category: str = ""
+    address: str = ""
+    map_url: str = ""
+    mapx: str | None = None
+    mapy: str | None = None
 
 
 class CandidatePreviewRequest(BaseModel):
@@ -421,6 +449,9 @@ def _required_places_for_session(session: Session, session_id: UUID) -> list[Req
             category=row.category,
             address=row.address,
             map_url=row.map_url,
+            is_custom=row.is_custom,
+            mapx=row.mapx,
+            mapy=row.mapy,
         )
         for row in rows
     ]
@@ -1157,6 +1188,9 @@ def add_required_place(
             category=existing.category,
             address=existing.address,
             map_url=existing.map_url,
+            is_custom=existing.is_custom,
+            mapx=existing.mapx,
+            mapy=existing.mapy,
         )
 
     selected = _required_place_from_raw(place)
@@ -1172,6 +1206,128 @@ def add_required_place(
     )
     # 이전에 특정 후보에서 뺐던 장소라도 사용자가 필수로 고르면 필수 제약이
     # 우선한다. 후보별 제외 기록을 지워 모든 후보에 다시 포함될 수 있게 한다.
+    feedback = dict(schedule_session.conditions.get("candidate_exclusions", {}))
+    for candidate_id, place_ids in feedback.items():
+        feedback[candidate_id] = [
+            place_id for place_id in place_ids if place_id != selected.place_id
+        ]
+    schedule_session.conditions = {**schedule_session.conditions, "candidate_exclusions": feedback}
+    session.add(schedule_session)
+    session.commit()
+    return selected
+
+
+# is_custom 필수 장소는 place_pool과 무관하게 매번 place_candidates에 그대로
+# 주입되므로(orchestrate.py 참고), 개수가 너무 많아지면 표준 검색으로 채워지는
+# 자리를 다 잠식할 수 있다 — 사용자 요청대로 최대 3개까지만 허용.
+_MAX_CUSTOM_REQUIRED_PLACES = 3
+
+
+@router.get("/schedules/{session_id}/place-search", response_model=list[PlaceSearchResultItem])
+async def search_places_by_name(
+    session_id: UUID,
+    q: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """표준 카테고리·태그 검색과 무관하게, 사용자가 입력한 이름/주소로 네이버
+    지역검색을 직접 호출한다 — "내가 아는 그 가게를 직접 추가하고 싶다"는
+    요청(사용자, 2026-08-15)에 대응. 순수 도로명주소만 입력하면 이 API 특성상
+    결과가 0건일 수 있다(실측 확인) — 프런트가 "가게 이름으로 검색해보세요"로
+    안내한다.
+    """
+    _get_owned_session(session, session_id, current_user)
+    query = q.strip()
+    if not query:
+        return []
+    try:
+        items = await search_places(query, display=5, session_id=str(session_id))
+    except NaverSearchError:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "장소 검색에 실패했습니다. 잠시 후 다시 시도해주세요.")
+    return [
+        PlaceSearchResultItem(
+            place_id=place_id_for(item),
+            name=item.get("title", ""),
+            category=item.get("category", ""),
+            address=item.get("roadAddress") or item.get("address", ""),
+            map_url=build_naver_map_url(item),
+            mapx=item.get("mapx"),
+            mapy=item.get("mapy"),
+        )
+        for item in items
+    ]
+
+
+@router.post("/schedules/{session_id}/required-places/custom", response_model=RequiredPlace)
+def add_custom_required_place(
+    session_id: UUID,
+    body: CustomRequiredPlaceRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """/place-search 결과 중 사용자가 고른 장소를 필수 장소로 저장한다.
+
+    표준 카테고리·태그 검색으로 채워진 place_pool과 무관하므로 add_required_place
+    처럼 place_pool에서 찾지 않고, 요청 바디에 이미 있는 정보를 그대로 믿고
+    저장한다 — 좌표(mapx/mapy)도 함께 저장해 재생성 때 place_candidates에 직접
+    주입할 수 있게 한다(orchestrate.py 참고).
+    """
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    _ensure_draft(schedule_session)
+
+    existing = session.exec(
+        select(ScheduleRequiredPlace).where(
+            ScheduleRequiredPlace.session_id == session_id,
+            ScheduleRequiredPlace.place_id == body.place_id,
+        )
+    ).first()
+    if existing is not None:
+        return RequiredPlace(
+            place_id=existing.place_id,
+            name=existing.name,
+            category=existing.category,
+            address=existing.address,
+            map_url=existing.map_url,
+            is_custom=existing.is_custom,
+            mapx=existing.mapx,
+            mapy=existing.mapy,
+        )
+
+    custom_count = session.exec(
+        select(ScheduleRequiredPlace).where(
+            ScheduleRequiredPlace.session_id == session_id,
+            ScheduleRequiredPlace.is_custom == True,  # noqa: E712 (SQLAlchemy 비교 연산자)
+        )
+    ).all()
+    if len(custom_count) >= _MAX_CUSTOM_REQUIRED_PLACES:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"직접 추가한 장소는 최대 {_MAX_CUSTOM_REQUIRED_PLACES}개까지만 가능합니다.",
+        )
+
+    selected = RequiredPlace(
+        place_id=body.place_id,
+        name=body.name.strip() or body.name,
+        category=body.category,
+        address=body.address,
+        map_url=body.map_url,
+        is_custom=True,
+        mapx=body.mapx,
+        mapy=body.mapy,
+    )
+    session.add(
+        ScheduleRequiredPlace(
+            session_id=session_id,
+            place_id=selected.place_id,
+            name=selected.name,
+            category=selected.category,
+            address=selected.address,
+            map_url=selected.map_url,
+            is_custom=True,
+            mapx=selected.mapx,
+            mapy=selected.mapy,
+        )
+    )
     feedback = dict(schedule_session.conditions.get("candidate_exclusions", {}))
     for candidate_id, place_ids in feedback.items():
         feedback[candidate_id] = [
@@ -1514,7 +1670,34 @@ async def regenerate_schedule(
     required_place_ids = tuple(place.place_id for place in required_places)
     required_place_ids_set = set(required_place_ids)
     place_candidates = [_place_with_id(place) for place in place_pool.places.get("places", [])]
-    if any(_find_place_in_pool(place_pool, place_id) is None for place_id in required_place_ids):
+    # 사용자가 이름으로 직접 검색해서 고른 필수 장소(is_custom=True)는 표준
+    # 카테고리·태그 검색으로 채워진 place_pool에 애초에 없을 수 있다 — 저장해둔
+    # 원본 좌표(mapx/mapy)로 place_candidates에 직접 주입해서, place_pool에서
+    # 찾는 나머지 로직(_plans_for_cluster의 subset 검사 등)을 그대로 통과하게
+    # 만든다(2026-08-15, RequiredPlace.is_custom 추가와 짝).
+    # ponytail: 이 주입은 아래(1740줄 근처) "후보별 제외" 분기가 따로 만드는
+    # candidate_places/diverse_places에는 안 미친다 — 거기는 place_pool에서만
+    # 다시 뽑는다. 커스텀 필수 장소 + 후보별 제외를 동시에 쓰는 조합은 아직
+    # 처리 안 됨(둘 다 흔치 않은 조합이라 지금은 범위 밖). 필요해지면
+    # _candidate_pool_without_exclusions() 호출부에도 custom_places를 넘길 것.
+    custom_places = {place.place_id: place for place in required_places if place.is_custom}
+    place_candidates += [
+        {
+            "place_id": place.place_id,
+            "title": place.name,
+            "category": place.category,
+            "roadAddress": place.address,
+            "mapx": place.mapx,
+            "mapy": place.mapy,
+        }
+        for place in custom_places.values()
+    ]
+    missing_required_ids = [
+        place_id
+        for place_id in required_place_ids
+        if place_id not in custom_places and _find_place_in_pool(place_pool, place_id) is None
+    ]
+    if missing_required_ids:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "필수 장소가 저장된 후보 풀에서 사라졌습니다."
         )

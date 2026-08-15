@@ -4,10 +4,11 @@ import { api } from '../lib/api'
 import { useScheduleStore } from './schedule'
 
 vi.mock('../lib/api', () => ({
-  api: { post: vi.fn() },
+  api: { post: vi.fn(), get: vi.fn() },
 }))
 
 const apiPost = vi.mocked(api.post)
+const apiGet = vi.mocked(api.get)
 
 const rawActivity = (name: string, startTime: string, endTime: string, placeId: string) => ({
   order: 1,
@@ -30,6 +31,7 @@ describe('일정 상세 수정 API', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     apiPost.mockReset()
+    apiGet.mockReset()
   })
 
   it('일정 생성은 화면 이동 뒤에도 전역 생성 상태와 완료 알림을 남긴다', async () => {
@@ -94,5 +96,85 @@ describe('일정 상세 수정 API', () => {
     expect(apiPost).toHaveBeenNthCalledWith(3, '/schedules/session-1/candidates/A/removal/save', { excluded_place_ids: ['new-lunch'], selected_options: [] })
     expect(store.candidates[0].title).toBe('장소 제거 저장됨')
     expect(store.candidates[0].activities[0].time).toBe('18:00-19:00')
+  })
+
+  it('장소 이름 검색은 세션 ID로 검색어를 보내고 결과를 camelCase로 변환한다', async () => {
+    const store = useScheduleStore()
+    store.sessionId = 'session-1'
+    apiGet.mockResolvedValueOnce({
+      data: [
+        {
+          place_id: 'p1',
+          name: '스타벅스 잠실역점',
+          category: '카페',
+          address: '서울 송파구',
+          map_url: 'https://map.naver.com/p/search/스타벅스',
+          mapx: '1270992310',
+          mapy: '375152720',
+        },
+      ],
+    })
+
+    const results = await store.searchPlacesByName('스타벅스 잠실역점')
+
+    expect(apiGet).toHaveBeenCalledWith('/schedules/session-1/place-search', {
+      params: { q: '스타벅스 잠실역점' },
+    })
+    expect(results).toEqual([
+      {
+        placeId: 'p1',
+        name: '스타벅스 잠실역점',
+        category: '카페',
+        address: '서울 송파구',
+        mapUrl: 'https://map.naver.com/p/search/스타벅스',
+        mapx: '1270992310',
+        mapy: '375152720',
+      },
+    ])
+  })
+
+  it('직접 추가한 장소는 검색 결과 그대로 다시 보내 필수 장소 목록에 반영한다', async () => {
+    const store = useScheduleStore()
+    store.sessionId = 'session-1'
+    apiPost.mockResolvedValueOnce({
+      data: {
+        place_id: 'p1',
+        name: '잠실 한강공원',
+        category: '여행,명소',
+        address: '서울 송파구',
+        map_url: 'https://map.naver.com/p/search/잠실%20한강공원',
+        is_custom: true,
+      },
+    })
+
+    await store.addCustomRequiredPlace({
+      placeId: 'p1',
+      name: '잠실 한강공원',
+      category: '여행,명소',
+      address: '서울 송파구',
+      mapUrl: 'https://map.naver.com/p/search/잠실%20한강공원',
+      mapx: '1270900268',
+      mapy: '375188864',
+    })
+
+    expect(apiPost).toHaveBeenCalledWith('/schedules/session-1/required-places/custom', {
+      place_id: 'p1',
+      name: '잠실 한강공원',
+      category: '여행,명소',
+      address: '서울 송파구',
+      map_url: 'https://map.naver.com/p/search/잠실%20한강공원',
+      mapx: '1270900268',
+      mapy: '375188864',
+    })
+    expect(store.requiredPlaces).toEqual([
+      {
+        placeId: 'p1',
+        name: '잠실 한강공원',
+        category: '여행,명소',
+        address: '서울 송파구',
+        mapUrl: 'https://map.naver.com/p/search/잠실%20한강공원',
+        isCustom: true,
+      },
+    ])
   })
 })

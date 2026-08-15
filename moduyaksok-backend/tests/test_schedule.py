@@ -15,6 +15,10 @@
 #             share_slug를 draft에선 null, confirm 후엔 confirm 응답과 같은 값을
 #             돌려주는지 검증하는 테스트 2개, confirm의 selected_options가 저장된
 #             후보 routes[].selected_option_id에 반영되는지 검증하는 테스트 1개 추가.
+# 2026-08-15, GET .../place-search, POST .../required-places/custom, 재생성 시
+#             커스텀 필수 장소가 place_candidates에 좌표째로 주입되는지 검증하는
+#             테스트 5개 추가(사용자 요청: 네이버 지도 딥링크 왕복 없이 이름
+#             검색으로 장소 직접 추가).
 # ------------------------------------------------------------------
 from datetime import datetime
 from uuid import UUID
@@ -509,6 +513,138 @@ def test_add_required_place_persists_and_get_schedule_returns_it(client, session
     assert selected["place_id"] == place_id
     assert selected["name"] == "가게1"
     assert selected["map_url"].startswith("https://map.naver.com/p/search/")
+
+
+# ── 장소 이름 직접 검색 + 추가 (2026-08-15) ─────────────────────────────────
+
+
+def test_search_places_by_name_maps_naver_result_to_response(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_search(query, display=5, session_id=""):
+        assert query == "스타벅스 잠실역점"
+        return [
+            {
+                "title": "스타벅스 잠실역점",
+                "category": "카페,디저트>카페",
+                "roadAddress": "서울 송파구 송파대로 562",
+                "mapx": "1270992310",
+                "mapy": "375152720",
+            }
+        ]
+
+    monkeypatch.setattr("app.routers.schedule.search_places", fake_search)
+
+    response = client.get(
+        f"/schedules/{session_id}/place-search",
+        params={"q": "스타벅스 잠실역점"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["name"] == "스타벅스 잠실역점"
+    assert body[0]["mapx"] == "1270992310"
+    assert body[0]["mapy"] == "375152720"
+    assert body[0]["place_id"]
+
+
+def test_search_places_by_name_empty_query_returns_empty_without_calling_naver(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fail_if_called(*a, **k):
+        raise AssertionError("빈 검색어면 네이버를 부르면 안 됨")
+
+    monkeypatch.setattr("app.routers.schedule.search_places", fail_if_called)
+
+    response = client.get(
+        f"/schedules/{session_id}/place-search", params={"q": "   "}, headers=headers
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_add_custom_required_place_persists_with_coordinates(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    body = {
+        "place_id": "custom-1",
+        "name": "잠실 한강공원",
+        "category": "여행,명소>시민공원",
+        "address": "서울 송파구 한가람로 65",
+        "map_url": "https://map.naver.com/p/search/잠실 한강공원",
+        "mapx": "1270900268",
+        "mapy": "375188864",
+    }
+
+    response = client.post(
+        f"/schedules/{session_id}/required-places/custom", json=body, headers=headers
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["is_custom"] is True
+    assert result["mapx"] == "1270900268"
+
+    schedule = client.get(f"/schedules/{session_id}", headers=headers).json()
+    selected = schedule["required_places"][0]
+    assert selected["is_custom"] is True
+    assert selected["mapy"] == "375188864"
+
+
+def test_add_custom_required_place_rejects_fourth_place(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    for i in range(3):
+        client.post(
+            f"/schedules/{session_id}/required-places/custom",
+            json={"place_id": f"custom-{i}", "name": f"장소{i}"},
+            headers=headers,
+        )
+
+    response = client.post(
+        f"/schedules/{session_id}/required-places/custom",
+        json={"place_id": "custom-4", "name": "네번째"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+
+
+def test_regenerate_injects_custom_required_place_into_place_candidates(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+    client.post(
+        f"/schedules/{session_id}/required-places/custom",
+        json={
+            "place_id": "custom-1",
+            "name": "잠실 한강공원",
+            "category": "여행,명소>시민공원",
+            "address": "서울 송파구 한가람로 65",
+            "mapx": "1270900268",
+            "mapy": "375188864",
+        },
+        headers=headers,
+    )
+
+    async def fake_regenerate(
+        provider, api_key, actual_session_id, conditions, places, required_ids
+    ):
+        assert "custom-1" in required_ids
+        injected = next(p for p in places if p["place_id"] == "custom-1")
+        assert injected["title"] == "잠실 한강공원"
+        assert injected["mapx"] == "1270900268"
+        assert injected["mapy"] == "375188864"
+        return ScheduleResponse(session_id=session_id, candidates=[_candidate("B")])
+
+    monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
+
+    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+
+    assert response.status_code == 200
 
 
 def test_candidate_preview_changes_only_after_explicit_save(client, session, monkeypatch):

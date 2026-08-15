@@ -89,6 +89,9 @@
 # 2026-08-12(2차), CandidateDraft.required_tag_anchors 추가 — 후보마다 태그별
 #             구체 장소를 고정해 "햄버거"라는 같은 태그 안에서 세 후보가 같은
 #             가게로 수렴하는 것을 막고, Step3가 실제 선택 여부를 검증한다.
+# 2026-08-15, RequiredPlace에 is_custom/mapx/mapy 추가 — 사용자가 이름으로 직접
+#             검색해서 고른 장소(표준 카테고리·태그 검색 밖)를 재생성 시
+#             place_candidates에 원본 좌표로 주입하기 위함(orchestrate.py 참고).
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -317,13 +320,23 @@ class Candidate(BaseModel):
 
 
 class RequiredPlace(BaseModel):
-    """후보 풀에서 사용자가 고른, 재생성 시 반드시 포함할 장소 스냅샷."""
+    """후보 풀에서 사용자가 고른, 재생성 시 반드시 포함할 장소 스냅샷.
+
+    is_custom=True(사용자가 표준 카테고리·태그 검색과 무관하게 이름으로 직접
+    검색해서 고른 장소)면 mapx/mapy에 네이버 지역검색 원본 좌표(×1e7 문자열)를
+    채운다 — 재생성 때 이 장소가 표준 검색에 다시 안 걸릴 수 있어 place_candidates
+    에 원본 그대로 주입해야 하기 때문이다(orchestrate.py 참고). 일반 필수
+    장소는 매번 새로 검색되므로 비워둔다.
+    """
 
     place_id: str
     name: str
     category: str = ""
     address: str = ""
     map_url: str = ""
+    is_custom: bool = False
+    mapx: str | None = None
+    mapy: str | None = None
 
 
 class ScheduleResponse(BaseModel):

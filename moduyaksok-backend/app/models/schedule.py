@@ -29,6 +29,11 @@
 #             candidates(최종 3개 후보)는 그대로 ScheduleSession에 남겨둔다 —
 #             이건 사용자가 실제로 조회/확정하는 대상이라 place_pool과 달리
 #             "핵심 엔티티"의 일부로 취급한다.
+# 2026-08-15, ScheduleRequiredPlace에 is_custom/mapx/mapy 추가(마이그레이션
+#             65e23b502964) — 사용자가 검색해서 직접 고른 장소(표준 카테고리·
+#             태그 검색과 무관)를 구분하고, 재생성 때마다 새로 뜨는
+#             place_candidates에 원본 좌표 그대로 주입할 수 있게 한다. 일반
+#             필수 장소는 매번 다시 검색되므로 mapx/mapy가 비어 있어도 된다.
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -104,6 +109,14 @@ class ScheduleRequiredPlace(SQLModel, table=True):
     category: str = ""
     address: str = ""
     map_url: str = ""
+    # 사용자가 표준 카테고리·태그 검색과 무관하게 직접 이름으로 검색해서 고른
+    # 장소인지 — 재생성 때 place_candidates 주입 여부를 가른다.
+    is_custom: bool = False
+    # 네이버 지역검색 원본 좌표(×1e7 문자열, naver_local_search.py의 mapx/mapy와
+    # 동일 형식) — is_custom 장소만 채운다. 일반 필수 장소는 재생성마다 새
+    # place_candidates에서 place_id로 다시 찾아지므로 비워둔다.
+    mapx: str | None = None
+    mapy: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

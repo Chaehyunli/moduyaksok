@@ -7,6 +7,7 @@ import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleProgress from '../components/doodle/DoodleProgress.vue'
 import StickyNote from '../components/doodle/StickyNote.vue'
+import AddCustomPlaceModal from '../components/doodle/AddCustomPlaceModal.vue'
 import { tagColorForLabel, tagColorStyle, type TagColorStyle } from '../lib/tagColors'
 import { buildRegenerationProgressMessages } from '../lib/progressMessages'
 import type { Activity, PlacePoolItem } from '../stores/schedule'
@@ -30,6 +31,7 @@ const restoringDraft = ref(true)
 // pill 색과 같은 순서(index)를 공유해야 두 화면에서 색이 일치한다.
 const likedLabels = computed(() => store.placePool?.groups.liked.map((g) => g.label) ?? [])
 const requiredPlaceIds = computed(() => new Set(store.requiredPlaces.map((place) => place.placeId)))
+const showAddCustomPlaceModal = ref(false)
 
 function activityTagColor(a: Activity): TagColorStyle | null {
   return tagColorForLabel(a.matchedTag, likedLabels.value)
@@ -198,7 +200,17 @@ onMounted(async () => {
             </DoodleAlert>
 
             <section v-if="store.placePool.groups.liked.length" class="space-y-2">
-              <h2 class="font-hand text-base text-ink">좋아한다고 말한 조건으로 찾은 장소</h2>
+              <div class="flex items-center justify-between gap-2">
+                <h2 class="font-hand text-base text-ink">좋아한다고 말한 조건으로 찾은 장소</h2>
+                <button
+                  type="button"
+                  class="doodle-wobble shrink-0 rounded-[2px] border-2 border-ink/40 px-2 py-0.5 font-hand text-sm text-ink/70 hover:border-red hover:text-red"
+                  aria-label="장소 직접 검색해서 추가하기"
+                  @click="showAddCustomPlaceModal = true"
+                >
+                  + 직접 추가
+                </button>
+              </div>
               <div class="grid items-start gap-2 sm:grid-cols-2">
                 <details
                   v-for="(group, index) in store.placePool.groups.liked"
@@ -345,5 +357,6 @@ onMounted(async () => {
         </div>
       </template>
     </div>
+    <AddCustomPlaceModal :open="showAddCustomPlaceModal" @close="showAddCustomPlaceModal = false" />
   </div>
 </template>
