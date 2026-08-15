@@ -10,6 +10,7 @@ import escapeRoom from '../assets/categories/escape-room.svg'
 import exhibition from '../assets/categories/exhibition.svg'
 import japanese from '../assets/categories/japanese.svg'
 import korean from '../assets/categories/korean.svg'
+import park from '../assets/categories/park.svg'
 import performance from '../assets/categories/performance.svg'
 import snack from '../assets/categories/snack.svg'
 import western from '../assets/categories/western.svg'
@@ -36,6 +37,7 @@ const SOURCE_CATEGORY_IMAGES: Record<string, { image: string; label: string }> =
   전시: { image: exhibition, label: '전시' },
   공연장: { image: performance, label: '공연' },
   영화관: { image: cinema, label: '영화관' },
+  공원: { image: park, label: '공원' },
 }
 
 export function categoryImage(sourceCategory: string | null | undefined): { src: string; alt: string } {
