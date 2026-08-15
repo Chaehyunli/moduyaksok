@@ -199,7 +199,7 @@ onMounted(load)
             >
               선택
             </DoodleCheckbox>
-            <div class="min-w-0 flex-1">
+            <div class="w-full min-w-0 sm:w-auto sm:flex-1">
               <template v-if="editingId === item.sessionId">
                 <label class="block font-hand text-sm text-ink/60" :for="`title-${item.sessionId}`">일정 이름</label>
                 <input :id="`title-${item.sessionId}`" v-model="titleDraft" class="mt-1 w-full rounded-[2px] border-2 border-ink bg-paper px-3 py-2 font-hand text-lg text-ink outline-none focus:border-red" maxlength="80" @click.stop @keyup.enter="saveTitle(item)" />

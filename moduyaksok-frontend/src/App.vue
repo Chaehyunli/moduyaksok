@@ -81,7 +81,7 @@ watch(
     <RouterView />
   </div>
 
-  <div class="fixed right-5 top-20 z-50 w-[min(22rem,calc(100vw-2.5rem))] font-hand">
+  <div class="fixed right-5 top-20 z-50 w-fit max-w-[min(22rem,calc(100vw-2.5rem))] font-hand">
     <div
       v-if="scheduleStore.isGenerating"
       class="doodle-wobble rounded-[2px] border-[2.5px] border-ink bg-paper px-4 py-3 text-base text-ink shadow-[3px_4px_0_0_rgba(31,41,55,0.9)]"

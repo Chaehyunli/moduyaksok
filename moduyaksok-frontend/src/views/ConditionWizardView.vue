@@ -141,8 +141,8 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         <h1 class="mb-4 font-hand text-2xl text-ink">인원과 시간을 알려주세요</h1>
         <DoodleInput v-model="form.headcount" type="number" label="인원 수" />
         <div class="flex gap-3">
-          <DoodleInput v-model="form.startTime" type="time" label="시작 시간" class="flex-1" />
-          <DoodleInput v-model="form.endTime" type="time" label="종료 시간" class="flex-1" />
+          <DoodleInput v-model="form.startTime" type="time" label="시작 시간" class="min-w-0 flex-1" />
+          <DoodleInput v-model="form.endTime" type="time" label="종료 시간" class="min-w-0 flex-1" />
         </div>
       </div>
 
