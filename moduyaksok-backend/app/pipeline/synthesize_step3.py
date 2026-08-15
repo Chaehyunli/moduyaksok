@@ -106,6 +106,10 @@
 #             자차 속도로 추정하도록 estimate_buffer_minutes() 호출에 car_dependent
 #             전달(generate_algorithm_step2.py와 같은 가정 공유 — Step2가 통과시킨
 #             조합을 Step3가 다른 속도 기준으로 재드롭하지 않게 함).
+# 2026-08-15, 사용자 관측: why_recommended/feasibility_note가 "~한다"체로 나올 때가
+#             있어 프런트의 친근한 "~해요"체 문구들과 톤이 안 맞음 —
+#             generate_step2.py의 rationale과 같은 문제라 같은 방식(Task에
+#             "~해요체로 끝내라" 명시)으로 수정.
 # ------------------------------------------------------------------
 import logging
 from datetime import datetime, time
@@ -586,6 +590,8 @@ _ROLE_TASK = """\
 전문 에디터다.
 
 # Task
+- why_recommended/feasibility_note는 항상 '~해요'체로 끝내라(예: '~있어요', \
+'~돼요', '~예요') — '~한다'나 '~습니다'로 끝나는 딱딱한 서술체는 쓰지 마라.
 - 후보를 삭제하거나 장소·순서·시간을 바꾸지 마라. 모든 후보는 keep=true다.
 - verifiable=false인 태그(liked/disliked 모두)는 확인할 방법이 없는 주관적 \
 취향이니 확정적 사실처럼 쓰지 마라.
