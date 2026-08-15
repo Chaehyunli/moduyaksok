@@ -98,8 +98,8 @@ async function copyShareLink() {
                   </a>
                 </div>
                 <img
-                  :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).src"
-                  :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).alt"
+                  :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag), a.isCustom).src"
+                  :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag), a.isCustom).alt"
                   class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
                 />
               </div>

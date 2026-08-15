@@ -17,6 +17,7 @@ import western from '../assets/categories/western.svg'
 import placeholder from '../assets/place-placeholder.svg'
 import liked from '../assets/categories/liked.svg'
 import required from '../assets/categories/required.svg'
+import custom from '../assets/categories/custom.svg'
 
 // 백엔드의 naver_local_search._PLACE_CATEGORIES와 1:1로 대응한다. 일정 생성 시
 // "홍대 중식"처럼 어느 고정 카테고리 검색에서 발견했는지가 source_category로
@@ -46,13 +47,19 @@ export function categoryImage(sourceCategory: string | null | undefined): { src:
   return { src: placeholder, alt: '장소 기본 이미지' }
 }
 
-// 일정의 의미가 일반 카테고리보다 우선한다. 필수 포함은 별, 좋아요 태그 검색
-// 결과는 하트로 보여 주고, 그 외에만 15개 고정 카테고리 그림을 쓴다.
+// 일정의 의미가 일반 카테고리보다 우선한다. 사용자가 이름으로 직접 검색해
+// 추가한 장소는 돋보기, 그 외 필수 포함은 별, 좋아요 태그 검색 결과는
+// 하트로 보여 주고, 그 외에만 15개 고정 카테고리 그림을 쓴다. isCustom인
+// 장소는 항상 isRequired도 true지만(직접 추가한 장소는 필수 장소로 등록됨),
+// 일반 필수 장소와 구분 없이 같은 별 그림을 쓰고 있다는 사용자 지적으로
+// 돋보기 그림을 추가(2026-08-15) — isCustom을 isRequired보다 먼저 검사한다.
 export function activityImage(
   sourceCategory: string | null | undefined,
   isRequired: boolean,
   isLiked: boolean,
+  isCustom = false,
 ): { src: string; alt: string } {
+  if (isCustom) return { src: custom, alt: '직접 검색해서 추가한 장소' }
   if (isRequired) return { src: required, alt: '필수 포함 장소' }
   if (isLiked) return { src: liked, alt: '좋아요 장소' }
   return categoryImage(sourceCategory)
