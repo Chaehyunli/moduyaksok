@@ -71,6 +71,48 @@
 #             장소를 필수로 추가하는 기능(사용자 요청). place_pool 의존 없이
 #             네이버 지역검색을 직접 호출하고, 결과를 그대로 믿고 저장한다.
 #             최대 3개 제한은 여기(서버)와 프런트 UI 양쪽에서 이중 강제.
+# 2026-08-15(2차), _place_replacements_in_removed_slots()가 뺀 개수와 새로
+#             채워진 개수가 안 맞을 때 순서 보존 로직 전체를 건너뛰던 버그 수정
+#             (docs/superpowers/plans/2026-08-15-candidate-order-and-time-lock.md
+#             A절 참고) — 유지되는 활동은 이제 개수 불일치 여부와 무관하게 항상
+#             원래 시간 그대로 유지돼 상대 순서가 안 바뀐다.
+# 2026-08-15(3차), 활동 시간 수동 수정 기능(위 문서 B절) — POST .../activities/
+#             time/preview·save(travel_estimate.apply_manual_time으로 겹치는
+#             안 잠긴 이웃을 밀고, 잠긴 이웃과 겹치면 409), POST .../activities/
+#             {order}/unlock(잠금만 해제, 시간은 안 바꿈) 추가.
+#             _candidate_reordered()는 드래그로 재배치되는 활동 전부의 잠금을
+#             해제하도록 수정 — 이 함수가 애초에 전체 재이음이라 부분 보존이
+#             안 되므로, "옮기면 자동 재계산 대상"이라는 잠금 의미상 전체 해제가
+#             맞다(사용자 확인, 위 문서 결정 4).
+# 2026-08-15(4차), 어디서도 insert되지 않는 FeedbackMessage 모델 삭제 —
+#             _delete_schedule_records()의 정리 대상 목록에서도 제거
+#             (마이그레이션 f1a2b3c4d5e6).
+# 2026-08-15(5차), preview_candidate_replacement가 excluded_place_ids=[]도
+#             받게 완화 — "장소를 뺀 다음에만 대체 채우기" 제약을 없애고, 항상
+#             노출되는 "일정 추가하기"가 뺀 곳 없이도 이 엔드포인트로 장소 1개를
+#             추가할 수 있게 한다. _generate_candidate_replacement의
+#             replacement_count는 뺀 개수가 0이면 1로 보정(원래 len(exclusions)
+#             그대로면 "추가"가 아니라 "0개 채우기"가 돼버림). 이미 _MAX_PLACES
+#             (7곳)에 도달했으면 추가 전에 409로 막는다.
+# 2026-08-15(6차), 후보에 is_custom 필수 장소가 낀 채로 "일정 추가하기"/뺀 자리
+#             채우기를 시도하면 항상 409(draft_count=0)로 실패하던 버그 수정 —
+#             사용자가 실제 세션(로그: candidate_replacement_stage ...
+#             draft_count=0)으로 리포트. 원인: _generate_candidate_replacement가
+#             available_places를 place_pool에서만 구성해서, place_pool에 없는
+#             커스텀 필수 장소가 fixed_place_ids에는 들어가지만 place_candidates
+#             에는 없었음 — _temporary_clusters()의
+#             `required_place_ids.issubset(places_by_id)` 검사가 항상 실패해
+#             클러스터가 0개였음(regenerate_schedule()의 같은 주입 로직은 이미
+#             있었지만 이 함수엔 없었다 — 기존 ponytail 코멘트가 "커스텀 필수
+#             장소 + 후보별 제외 동시 사용은 범위 밖"이라고 명시했던 그 gap).
+#             `_custom_required_place_candidates()`로 주입 로직을 공유 헬퍼로
+#             빼서 이 함수와 regenerate_schedule()의 두 곳(전체 재생성 기본
+#             경로, 후보별 제외 재생성 경로) 모두에 적용.
+# 2026-08-15(7차), candidate_with_source_categories()가 Activity.is_custom도
+#             채우도록 확장 — 사용자가 이름으로 직접 검색해서 추가한 필수
+#             장소가 일반 필수 장소와 같은 별 그림을 써서 구분이 안 된다는
+#             지적. is_required와 별개 플래그로 둬서 프런트가 전용 그림을
+#             고를 수 있게 한다(app/lib/categoryImages.ts 참고).
 # ------------------------------------------------------------------
 import logging
 import secrets
@@ -88,7 +130,6 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models.llm_credential import LLMCredential
 from app.models.schedule import (
-    FeedbackMessage,
     SchedulePlacePool,
     ScheduleRequiredPlace,
     ScheduleSession,
@@ -96,7 +137,7 @@ from app.models.schedule import (
 )
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
-from app.pipeline.generate_algorithm_step2 import generate_algorithm_candidates
+from app.pipeline.generate_algorithm_step2 import _MAX_PLACES, generate_algorithm_candidates
 from app.pipeline.orchestrate import generate_schedule_candidates, regenerate_schedule_candidates
 from app.pipeline.schemas import (
     Activity,
@@ -106,6 +147,7 @@ from app.pipeline.schemas import (
     RequiredPlace,
     ScheduleResponse,
 )
+from app.pipeline.travel_estimate import ManualTimeConflictError, apply_manual_time
 from app.pipeline.synthesize_step3 import synthesize_and_validate
 from app.services.auth import get_current_user
 from app.services.credential import decrypt_key
@@ -203,6 +245,19 @@ class CandidateReorderSaveRequest(BaseModel):
     selected_options: list[SelectedOption] = []
 
 
+class ActivityTimeRequest(BaseModel):
+    order: int
+    start_time: str
+    end_time: str
+
+
+class ActivityTimeSaveRequest(BaseModel):
+    order: int
+    start_time: str
+    end_time: str
+    selected_options: list[SelectedOption] = []
+
+
 class ScheduleTitleRequest(BaseModel):
     title: str
 
@@ -281,9 +336,9 @@ def candidate_with_source_categories(
         for place in place_pool.places.get("places", [])
         if place.get("title")
     }
-    required_place_ids = {
-        place.place_id for place in _required_places_for_session(session, schedule_session.id)
-    }
+    required_places = _required_places_for_session(session, schedule_session.id)
+    required_place_ids = {place.place_id for place in required_places}
+    custom_place_ids = {place.place_id for place in required_places if place.is_custom}
     enriched = candidate.model_copy(deep=True)
     for activity in enriched.activities:
         source = place_by_name.get(activity.name)
@@ -291,6 +346,7 @@ def candidate_with_source_categories(
             activity.source_category = activity.source_category or source.get("source_category")
             activity.place_id = activity.place_id or _place_with_id(source)["place_id"]
         activity.is_required = bool(activity.place_id and activity.place_id in required_place_ids)
+        activity.is_custom = bool(activity.place_id and activity.place_id in custom_place_ids)
     return enriched
 
 
@@ -515,6 +571,35 @@ def _replacement_place_sets(
     return retained_place_ids, required_place_ids | retained_place_ids, superseded_place_ids
 
 
+def _custom_required_place_candidates(
+    required_places: list[ScheduleRequiredPlace],
+) -> list[dict]:
+    """place_pool에는 없는 is_custom 필수 장소를 place_candidates 형식으로 만든다.
+
+    사용자가 이름으로 직접 검색해 고른 필수 장소는 표준 카테고리·태그 검색으로
+    채워진 place_pool에 애초에 없을 수 있다 — 저장해둔 원본 좌표(mapx/mapy)로
+    직접 후보를 만들어서, place_pool에서만 찾는 나머지 로직(클러스터링의 subset
+    검사 등)을 그대로 통과하게 한다. `regenerate_schedule()`과
+    `_generate_candidate_replacement()`가 공유한다 — 후자는 원래 이 주입이
+    빠져 있었다(2026-08-15, "일정 추가하기"로 뺀 자리를 채우려다 커스텀 필수
+    장소가 낀 후보에서 draft_count=0 → 409로 실패하는 걸 사용자가 리포트해서
+    발견. `_temporary_clusters()`가 `required_place_ids.issubset(places_by_id)`를
+    만족 못 하면 클러스터를 아예 안 만들어 이 증상이 남).
+    """
+    return [
+        {
+            "place_id": place.place_id,
+            "title": place.name,
+            "category": place.category,
+            "roadAddress": place.address,
+            "mapx": place.mapx,
+            "mapy": place.mapy,
+        }
+        for place in required_places
+        if place.is_custom
+    ]
+
+
 def _candidate_pool_without_exclusions(
     place_pool: SchedulePlacePool, excluded_place_ids: set[str], required_place_ids: set[str]
 ) -> list[dict]:
@@ -605,19 +690,44 @@ def _candidate_reordered(
     무의미해진 원래 값 대신 anchor_start(세션 time_range 시작)부터 빈틈없이(gap=0)
     다시 이어붙인다 — enrich_routes()가 그 뒤 구간마다 실제 이동시간만큼
     reconcile_schedule()로 벌려주므로 여기서 이동시간을 미리 추정할 필요가 없다.
+
+    2026-08-15, time_locked=True인 활동은 "실제로 자리를 옮긴 경우"에만 잠금을
+    풀고 새 위치에 맞게 재계산한다 — 자리를 안 옮긴 잠긴 활동은 시간도 잠금도
+    그대로 둔다(그 활동이 끝나는 시각으로 커서만 맞춰서, 그 뒤 안 잠긴 활동이
+    거기부터 이어지게 한다). 처음엔 "이 함수가 항상 전체를 다시 잇는다"는 이유로
+    자리를 안 옮긴 활동까지 전부 잠금을 풀었는데, 실사용 중 "손 안 댄 활동의
+    잠금까지 다 풀린다"는 리포트를 받고 부분 재배치로 다시 설계했다 — 옮기지
+    않은 잠긴 활동을 건드리지 않는 게 "옮기는 순간 잠금 해제"라는 원래 결정
+    (docs/superpowers/plans/2026-08-15-candidate-order-and-time-lock.md 결정 4)
+    의 실제 의도에 맞다. ponytail: 옮긴 활동이 이미 지나간 잠긴 활동의 시간과
+    겹치는 경우까지는 막지 않는다(이 함수엔 원래 겹침 검사가 없었다) — 필요해지면
+    apply_manual_time과 같은 충돌 검사를 여기도 추가할 것.
     """
     by_order = {activity.order: activity for activity in candidate.activities}
     reordered = [by_order[position].model_copy(deep=True) for position in ordered_positions]
 
     cursor = anchor_start
-    for order, activity in enumerate(reordered, start=1):
+    for new_index, original_order in enumerate(ordered_positions):
+        activity = reordered[new_index]
+        new_order = new_index + 1
+        moved = original_order != new_order
+        activity.order = new_order
+        if activity.time_locked and not moved:
+            # cursor는 anchor_start(실제 날짜)를 기준으로 누적되는데, strptime("%H:%M")
+            # 은 연도 없는 시각을 1900-01-01로 만든다 — 그대로 max()를 하면 항상
+            # cursor가 이겨서(2026 > 1900) 잠긴 활동이 커서를 절대 못 미는 버그가
+            # 있었다(2026-08-15, 테스트로 발견). cursor와 같은 날짜로 맞춰서 비교.
+            locked_end_time = datetime.strptime(activity.end_time, "%H:%M").time()
+            locked_end = datetime.combine(cursor.date(), locked_end_time)
+            cursor = max(cursor, locked_end)
+            continue
         duration = datetime.strptime(activity.end_time, "%H:%M") - datetime.strptime(
             activity.start_time, "%H:%M"
         )
-        activity.order = order
         activity.start_time = cursor.strftime("%H:%M")
         cursor += duration
         activity.end_time = cursor.strftime("%H:%M")
+        activity.time_locked = False
 
     return candidate.model_copy(update={"activities": reordered, "routes": []}, deep=True)
 
@@ -628,13 +738,43 @@ def _validate_ordered_positions(candidate: Candidate, ordered_positions: list[in
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "장소 순서가 올바르지 않습니다.")
 
 
+def _candidate_with_manual_time(
+    candidate: Candidate, order: int, start_time: str, end_time: str
+) -> Candidate:
+    """활동 하나의 시간을 사용자가 지정한 값으로 고정한다(travel_estimate.
+    apply_manual_time 참고) — 안 잠긴 이웃은 겹치면 밀리고, 잠긴 이웃과
+    겹치면 ManualTimeConflictError를 그대로 올린다(호출부가 409로 변환).
+    """
+    if not any(activity.order == order for activity in candidate.activities):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "해당 활동을 찾을 수 없습니다.")
+    try:
+        activities = apply_manual_time(candidate.activities, order, start_time, end_time)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    except ManualTimeConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return candidate.model_copy(update={"activities": activities, "routes": []}, deep=True)
+
+
 def _place_replacements_in_removed_slots(
     current_candidate: Candidate,
     replacement_candidate: Candidate,
     place_pool: SchedulePlacePool,
     excluded_place_ids: set[str],
 ) -> Candidate:
-    """새 장소를 제거된 활동의 시간 칸에 넣어 식사 시간과 나머지 여유를 지킨다."""
+    """유지되는 활동(remaining)은 항상 원래 시간 그대로 둔다 — 그래서 유지되는
+    활동끼리의 상대 순서는 항상 보존된다. 새로 들어온 활동만 시간을 배정한다:
+    뺀 개수와 새로 채워진 개수가 정확히 1:1이면 제거된 슬롯의 시간을 그대로
+    물려받아 정밀하게 채우고(식사 시간·여유 보존), 개수가 안 맞으면(예: 필수
+    장소가 사용자가 명시한 것 외에 슬롯을 추가로 밀어낸 경우) replacement_
+    candidate(새로 생성된 후보)가 이미 배정한 시간을 그대로 쓴다 — remaining의
+    시간은 이 경우에도 안 바뀌므로 유지 활동 간 상대 순서는 여전히 보존된다.
+
+    2026-08-15, 개수가 안 맞으면 이 함수를 통째로 건너뛰고 새로 생성된 원본
+    (replacement_candidate)을 그대로 반환하던 버그 수정 — 그 원본은 빔서치가
+    처음부터 다시 짠 조합이라 유지되던 활동들 사이의 상대 순서가 바뀔 수 있었다
+    (사용자 리포트: 대체 후 기존 활동 순서가 바뀜).
+    """
     place_id_by_name = {
         str(place.get("title")): _place_with_id(place)["place_id"]
         for place in place_pool.places.get("places", [])
@@ -659,24 +799,26 @@ def _place_replacements_in_removed_slots(
         for activity in replacement_candidate.activities
         if activity_place_id(activity) not in current_place_ids
     ]
-    if not removed_slots or len(new_activities) != len(removed_slots):
-        return replacement_candidate
-
-    slotted_replacements = [
-        activity.model_copy(update={"start_time": slot.start_time, "end_time": slot.end_time})
-        for activity, slot in zip(
-            sorted(new_activities, key=lambda item: (item.start_time, item.end_time)),
-            sorted(removed_slots, key=lambda item: (item.start_time, item.end_time)),
-            strict=True,
-        )
-    ]
     remaining = [
         activity.model_copy(deep=True)
         for activity in current_candidate.activities
         if activity_place_id(activity) not in excluded_place_ids
     ]
+
+    if removed_slots and len(new_activities) == len(removed_slots):
+        new_slotted = [
+            activity.model_copy(update={"start_time": slot.start_time, "end_time": slot.end_time})
+            for activity, slot in zip(
+                sorted(new_activities, key=lambda item: (item.start_time, item.end_time)),
+                sorted(removed_slots, key=lambda item: (item.start_time, item.end_time)),
+                strict=True,
+            )
+        ]
+    else:
+        new_slotted = [activity.model_copy(deep=True) for activity in new_activities]
+
     activities = sorted(
-        [*remaining, *slotted_replacements],
+        [*remaining, *new_slotted],
         key=lambda item: (item.start_time, item.end_time, item.name),
     )
     for order, activity in enumerate(activities, start=1):
@@ -728,12 +870,11 @@ async def _generate_candidate_replacement(
             status.HTTP_409_CONFLICT, "저장된 장소 후보가 없어 다시 만들 수 없습니다."
         )
 
-    required_ids = {
-        place.place_id for place in _required_places_for_session(session, schedule_session.id)
-    }
+    required_places = _required_places_for_session(session, schedule_session.id)
+    required_ids = {place.place_id for place in required_places}
     available_places = _candidate_pool_without_exclusions(
         place_pool, excluded_place_ids, required_ids
-    )
+    ) + _custom_required_place_candidates(required_places)
     current_place_ids = _activity_place_ids(current_candidate, place_pool)
     # 새 필수 장소가 좋아요 검색 결과라면, 현재 후보의 같은 태그 장소를 함께
     # 유지하지 않고 새 필수 장소로 교체한다. 예: 기존 초밥집 + 필수 초밥집 두 곳을
@@ -1106,7 +1247,7 @@ def update_schedule_title(
 
 def _delete_schedule_records(session: Session, schedule: ScheduleSession) -> None:
     """일정과 그에 종속된 모든 데이터를 삭제하되, commit은 호출자가 담당한다."""
-    for model in (ShareLink, FeedbackMessage, ScheduleRequiredPlace, SchedulePlacePool):
+    for model in (ShareLink, ScheduleRequiredPlace, SchedulePlacePool):
         for row in session.exec(select(model).where(model.session_id == schedule.id)).all():
             session.delete(row)
     session.delete(schedule)
@@ -1374,7 +1515,13 @@ async def preview_candidate_replacement(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    """장소 제외 결과를 만들되, 저장 후보와 제외 목록은 아직 바꾸지 않는다."""
+    """장소 제외 결과를 만들되, 저장 후보와 제외 목록은 아직 바꾸지 않는다.
+
+    2026-08-15, excluded_place_ids가 비어 있어도 허용 — "일정 추가하기"(뺀 곳
+    없이 AI로 장소 1개를 더 채우는 흐름, CandidateDetailView.vue에 항상 노출)가
+    이 엔드포인트를 그대로 재사용한다. 뺀 곳이 있으면 그 자리를 채우고, 없으면
+    replacement_count=1로 한 곳만 새로 추가한다.
+    """
     schedule_session = _get_owned_session(session, session_id, current_user)
     current_candidate = _find_candidate(schedule_session, candidate_id)
     place_pool = session.exec(
@@ -1386,8 +1533,6 @@ async def preview_candidate_replacement(
         )
 
     requested_exclusions = set(body.excluded_place_ids)
-    if not requested_exclusions:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "뺄 장소를 먼저 선택해주세요.")
     required_ids = {place.place_id for place in _required_places_for_session(session, session_id)}
     if requested_exclusions & required_ids:
         raise HTTPException(
@@ -1399,6 +1544,10 @@ async def preview_candidate_replacement(
     visible_place_ids = _activity_place_ids(current_candidate, place_pool)
     if not requested_exclusions.issubset(visible_place_ids):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "이 후보에 포함되지 않은 장소가 있습니다.")
+    if not requested_exclusions and len(visible_place_ids) >= _MAX_PLACES:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"이미 최대 {_MAX_PLACES}곳까지 채워진 일정이에요."
+        )
 
     combined_exclusions = existing_exclusions | requested_exclusions
     updated = await _generate_candidate_replacement(
@@ -1407,7 +1556,7 @@ async def preview_candidate_replacement(
         current_user,
         candidate_id,
         combined_exclusions,
-        len(requested_exclusions),
+        len(requested_exclusions) or 1,
     )
     updated = _place_replacements_in_removed_slots(
         candidate_with_source_categories(session, schedule_session, current_candidate),
@@ -1645,6 +1794,101 @@ async def save_candidate_reorder(
     return candidate_with_source_categories(session, schedule_session, enriched)
 
 
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/activities/time/preview",
+    response_model=Candidate,
+)
+async def preview_activity_time(
+    session_id: UUID,
+    candidate_id: str,
+    body: ActivityTimeRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """활동 하나의 시간을 사용자가 지정한 값으로 바꾸고 교통편을 다시 계산하되
+    저장은 하지 않는다. 겹치는 안 잠긴 이웃은 자동으로 밀리고, 잠긴 이웃과
+    겹치면 409를 반환한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    updated = _candidate_with_manual_time(
+        visible_candidate, body.order, body.start_time, body.end_time
+    )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    return await enrich_routes(updated, time_range)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/activities/time/save",
+    response_model=Candidate,
+)
+async def save_activity_time(
+    session_id: UUID,
+    candidate_id: str,
+    body: ActivityTimeSaveRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """활동 하나의 시간을 사용자가 지정한 값으로 저장한다."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+
+    visible_candidate = candidate_with_source_categories(
+        session, schedule_session, current_candidate
+    )
+    updated = _candidate_with_manual_time(
+        visible_candidate, body.order, body.start_time, body.end_time
+    )
+    start_raw, end_raw = schedule_session.conditions["time_range"]
+    time_range = (datetime.fromisoformat(start_raw), datetime.fromisoformat(end_raw))
+    enriched = await enrich_routes(updated, time_range)
+    _apply_selected_options(enriched, body.selected_options)
+
+    _replace_candidate(schedule_session, enriched)
+    _remove_candidate_preview(schedule_session, candidate_id)
+    if schedule_session.status == "confirmed":
+        schedule_session.status = "draft"
+        schedule_session.confirmed_candidate_id = None
+    session.add(schedule_session)
+    session.commit()
+    return candidate_with_source_categories(session, schedule_session, enriched)
+
+
+@router.post(
+    "/schedules/{session_id}/candidates/{candidate_id}/activities/{order}/unlock",
+    response_model=Candidate,
+)
+def unlock_activity_time(
+    session_id: UUID,
+    candidate_id: str,
+    order: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """수동으로 고정한 활동 시간을 풀어, 다음 재생성/경로 재조정부터 다시
+    자동으로 계산되게 한다(시간 자체는 이 호출로는 안 바뀐다)."""
+    schedule_session = _get_owned_session(session, session_id, current_user)
+    current_candidate = _find_candidate(schedule_session, candidate_id)
+    if not any(activity.order == order for activity in current_candidate.activities):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "해당 활동을 찾을 수 없습니다.")
+
+    updated_activities = [
+        activity.model_copy(update={"time_locked": False})
+        if activity.order == order
+        else activity
+        for activity in current_candidate.activities
+    ]
+    updated = current_candidate.model_copy(update={"activities": updated_activities})
+    _replace_candidate(schedule_session, updated)
+    session.add(schedule_session)
+    session.commit()
+    return candidate_with_source_categories(session, schedule_session, updated)
+
+
 @router.post("/schedules/{session_id}/regenerate", response_model=ScheduleResponse)
 async def regenerate_schedule(
     session_id: UUID,
@@ -1670,28 +1914,8 @@ async def regenerate_schedule(
     required_place_ids = tuple(place.place_id for place in required_places)
     required_place_ids_set = set(required_place_ids)
     place_candidates = [_place_with_id(place) for place in place_pool.places.get("places", [])]
-    # 사용자가 이름으로 직접 검색해서 고른 필수 장소(is_custom=True)는 표준
-    # 카테고리·태그 검색으로 채워진 place_pool에 애초에 없을 수 있다 — 저장해둔
-    # 원본 좌표(mapx/mapy)로 place_candidates에 직접 주입해서, place_pool에서
-    # 찾는 나머지 로직(_plans_for_cluster의 subset 검사 등)을 그대로 통과하게
-    # 만든다(2026-08-15, RequiredPlace.is_custom 추가와 짝).
-    # ponytail: 이 주입은 아래(1740줄 근처) "후보별 제외" 분기가 따로 만드는
-    # candidate_places/diverse_places에는 안 미친다 — 거기는 place_pool에서만
-    # 다시 뽑는다. 커스텀 필수 장소 + 후보별 제외를 동시에 쓰는 조합은 아직
-    # 처리 안 됨(둘 다 흔치 않은 조합이라 지금은 범위 밖). 필요해지면
-    # _candidate_pool_without_exclusions() 호출부에도 custom_places를 넘길 것.
+    place_candidates += _custom_required_place_candidates(required_places)
     custom_places = {place.place_id: place for place in required_places if place.is_custom}
-    place_candidates += [
-        {
-            "place_id": place.place_id,
-            "title": place.name,
-            "category": place.category,
-            "roadAddress": place.address,
-            "mapx": place.mapx,
-            "mapy": place.mapy,
-        }
-        for place in custom_places.values()
-    ]
     missing_required_ids = [
         place_id
         for place_id in required_place_ids
@@ -1751,12 +1975,13 @@ async def regenerate_schedule(
         loop = asyncio.get_running_loop()
         replacements: list[Candidate] = []
         used_non_required_ids: set[str] = set()
+        custom_required_candidates = _custom_required_place_candidates(required_places)
         for candidate_id in candidate_ids:
             candidate_places = _candidate_pool_without_exclusions(
                 place_pool,
                 effective_exclusions[candidate_id],
                 required_place_ids_set,
-            )
+            ) + custom_required_candidates
             diverse_places = [
                 place
                 for place in candidate_places

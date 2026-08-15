@@ -19,6 +19,13 @@
 #             커스텀 필수 장소가 place_candidates에 좌표째로 주입되는지 검증하는
 #             테스트 5개 추가(사용자 요청: 네이버 지도 딥링크 왕복 없이 이름
 #             검색으로 장소 직접 추가).
+# 2026-08-15(2차), _place_replacements_in_removed_slots가 뺀 개수/새로 채워진
+#             개수 불일치 시에도 유지 활동 상대 순서를 보존하는지 검증하는
+#             테스트 추가(schedule.py의 같은 날짜 변경사항 참고).
+# 2026-08-15(3차), 활동 시간 수동 수정(POST .../activities/time/preview·save,
+#             POST .../activities/{order}/unlock) 테스트 6개 추가 — 안 잠긴
+#             이웃이 밀리는지, 잠긴 이웃끼리 충돌하면 409인지, 잠금 해제가
+#             시간은 안 바꾸는지 검증.
 # ------------------------------------------------------------------
 from datetime import datetime
 from uuid import UUID
@@ -494,6 +501,63 @@ def test_pending_required_liked_place_supersedes_same_tag_during_replacement():
     assert fixed == {"keep", "required-sushi"}
 
 
+def test_place_replacements_preserves_retained_order_when_counts_mismatch():
+    """뺀 장소 수(1개)와 새로 채워진 장소 수(2개)가 안 맞는 경우 —
+    2026-08-15 이전에는 이 함수 전체를 건너뛰고 새로 생성된 원본(활동 순서가
+    시간순이 아닐 수 있음)을 그대로 반환했다. 유지되는 활동(A, C)의 상대
+    순서는 개수가 안 맞아도 항상 보존돼야 한다.
+    """
+    from types import SimpleNamespace
+
+    from app.routers.schedule import _place_replacements_in_removed_slots
+
+    empty_pool = SimpleNamespace(places={"places": []})
+
+    def place(order, name, place_id, start, end):
+        return _activity(order, name).model_copy(
+            update={"place_id": place_id, "start_time": start, "end_time": end}
+        )
+
+    current_candidate = Candidate(
+        candidate_id="A",
+        title="기존",
+        why_recommended="",
+        activities=[
+            place(1, "A", "a", "09:00", "10:00"),
+            place(2, "B", "b", "11:00", "12:00"),
+            place(3, "C", "c", "13:00", "14:00"),
+        ],
+        routes=[],
+    )
+    # 빔서치가 처음부터 다시 짠 조합 — 활동 순서가 시간순이 아니다(버그가 있었다면
+    # 이 순서가 그대로 최종 결과가 됐을 것). "a"는 이미 current_candidate에 있으니
+    # new_activities에서 제외되고, "d"/"e" 둘 다 새 장소라 removed_slots(1개, "b")
+    # 보다 많아 개수가 안 맞는다.
+    replacement_candidate = Candidate(
+        candidate_id="A",
+        title="새로 생성됨",
+        why_recommended="",
+        activities=[
+            place(1, "E", "e", "12:30", "13:30"),
+            place(2, "A", "a", "09:30", "10:30"),
+            place(3, "D", "d", "10:00", "11:00"),
+        ],
+        routes=[],
+    )
+
+    updated = _place_replacements_in_removed_slots(
+        current_candidate, replacement_candidate, empty_pool, {"b"}
+    )
+
+    names_in_order = [a.name for a in updated.activities]
+    assert names_in_order.index("A") < names_in_order.index("C")
+    a_activity = next(a for a in updated.activities if a.name == "A")
+    c_activity = next(a for a in updated.activities if a.name == "C")
+    assert a_activity.start_time == "09:00"
+    assert c_activity.start_time == "13:00"
+    assert {a.name for a in updated.activities} == {"A", "C", "D", "E"}
+
+
 def test_add_required_place_persists_and_get_schedule_returns_it(client, session, monkeypatch):
     headers, session_id = _create_session(client, session, monkeypatch)
     place_id = _pool_place_id(client, session_id, headers)
@@ -645,6 +709,44 @@ def test_regenerate_injects_custom_required_place_into_place_candidates(
     response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
 
     assert response.status_code == 200
+
+
+def test_get_schedule_marks_custom_required_place_activity_as_is_custom(
+    client, session, monkeypatch
+):
+    """이름으로 직접 검색해서 추가한 필수 장소는 프런트가 일반 필수 장소(별)와
+    구분된 그림(돋보기)을 보여줄 수 있도록 활동에 is_custom=true가 붙어야
+    한다(2026-08-15, 사용자 요청) — 일반 필수 장소는 is_required만 true이고
+    is_custom은 false로 남아야 한다.
+    """
+    headers, session_id = _create_session(client, session, monkeypatch)
+    client.post(
+        f"/schedules/{session_id}/required-places/custom",
+        json={"place_id": "custom-1", "name": "롯데월드타워"},
+        headers=headers,
+    )
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0].update({"name": "롯데월드타워", "place_id": "custom-1"})
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    response = client.get(f"/schedules/{session_id}", headers=headers)
+
+    assert response.status_code == 200
+    activities = response.json()["candidates"][0]["activities"]
+    custom_activity = next(a for a in activities if a["place_id"] == "custom-1")
+    other_activity = next(a for a in activities if a["place_id"] != "custom-1")
+    assert custom_activity["is_required"] is True
+    assert custom_activity["is_custom"] is True
+    assert other_activity["is_custom"] is False
 
 
 def test_candidate_preview_changes_only_after_explicit_save(client, session, monkeypatch):
@@ -913,6 +1015,196 @@ def test_replacement_preview_fills_each_removed_time_slot(client, session, monke
     ]
 
 
+def test_replacement_preview_adds_one_place_without_exclusions(client, session, monkeypatch):
+    """뺀 장소 없이도 '일정 추가하기'가 이 엔드포인트로 장소 1개를 더 채울 수
+    있어야 한다(2026-08-15) — replacement_count는 요청 개수(0)가 아니라 1로
+    보정돼야 "추가"가 되고, 기존 두 활동은 그대로 유지돼야 한다.
+    """
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0]["place_id"] = "place-1"
+    activities[1]["place_id"] = "place-2"
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    replacement = _candidate("A").model_copy(
+        update={
+            "activities": [
+                _activity(1, "장소1").model_copy(update={"place_id": "place-1"}),
+                _activity(2, "장소2").model_copy(update={"place_id": "place-2"}),
+                _activity(3, "새로 추가된 장소").model_copy(
+                    update={"start_time": "15:00", "end_time": "16:00", "place_id": "new-place"}
+                ),
+            ]
+        }
+    )
+    captured: dict = {}
+
+    async def fake_replacement(_session, _schedule_session, _current_user, _candidate_id, excluded, count):
+        captured["excluded"] = excluded
+        captured["count"] = count
+        return replacement
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule._generate_candidate_replacement", fake_replacement)
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": []},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert captured["count"] == 1
+    assert [a["name"] for a in preview.json()["candidate"]["activities"]] == [
+        "장소1",
+        "장소2",
+        "새로 추가된 장소",
+    ]
+
+
+def test_replacement_preview_injects_custom_required_place_into_place_candidates(
+    client, session, monkeypatch
+):
+    """실사용자 리포트 회귀 테스트(2026-08-15): 후보에 is_custom 필수 장소가
+    포함된 채로 "일정 추가하기"/장소 빼기 후 채우기를 시도하면
+    candidate_replacement_stage 로그에 draft_count=0이 찍히며 항상 409로
+    실패했다. 원인은 _generate_candidate_replacement()가 available_places를
+    place_pool에서만 구성해서, place_pool에 없는 커스텀 필수 장소가
+    fixed_place_ids에는 들어가지만 place_candidates에는 없었던 것 —
+    _temporary_clusters()의 `required_place_ids.issubset(places_by_id)` 검사가
+    항상 실패해 클러스터가 0개였다. _custom_required_place_candidates()로
+    available_places에도 주입해 수정.
+    """
+    headers, session_id = _create_session(client, session, monkeypatch)
+    client.post(
+        f"/schedules/{session_id}/required-places/custom",
+        json={
+            "place_id": "custom-1",
+            "name": "롯데월드타워앤드롯데월드몰오피스텔",
+            "category": "여행,명소",
+            "address": "서울 송파구",
+            "mapx": "1270999999",
+            "mapy": "375111111",
+        },
+        headers=headers,
+    )
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0]["place_id"] = "custom-1"
+    activities[0]["name"] = "롯데월드타워앤드롯데월드몰오피스텔"
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    captured: dict = {}
+
+    def fake_generate_algorithm_candidates(
+        _provider,
+        _api_key,
+        _conditions,
+        places,
+        _required_ids,
+        _precovered_tags,
+        *,
+        fixed_place_ids,
+        candidate_limit,
+        target_count,
+    ):
+        captured["place_ids"] = {p["place_id"] for p in places}
+        captured["fixed_place_ids"] = fixed_place_ids
+        return [("A", object())]
+
+    def fake_synthesize_and_validate(_provider, _api_key, session_id_str, _conditions, _drafts):
+        return ScheduleResponse(
+            session_id=session_id_str,
+            candidates=[
+                _candidate("A").model_copy(
+                    update={
+                        "activities": [
+                            _activity(1, "롯데월드타워앤드롯데월드몰오피스텔").model_copy(
+                                update={"place_id": "custom-1"}
+                            ),
+                            _activity(2, "새 장소").model_copy(
+                                update={
+                                    "start_time": "15:00",
+                                    "end_time": "16:00",
+                                    "place_id": "new-place",
+                                }
+                            ),
+                        ]
+                    }
+                )
+            ],
+        )
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr(
+        "app.routers.schedule.generate_algorithm_candidates", fake_generate_algorithm_candidates
+    )
+    monkeypatch.setattr(
+        "app.routers.schedule.synthesize_and_validate", fake_synthesize_and_validate
+    )
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": []},
+        headers=headers,
+    )
+
+    assert preview.status_code == 200
+    assert "custom-1" in captured["place_ids"]
+    assert "custom-1" in captured["fixed_place_ids"]
+
+
+def test_replacement_preview_rejects_add_when_already_at_max_places(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+    from app.pipeline.generate_algorithm_step2 import _MAX_PLACES
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    candidates["candidates"][0]["activities"] = [
+        _activity(i, f"장소{i}").model_copy(update={"place_id": f"p{i}"}).model_dump(mode="json")
+        for i in range(1, _MAX_PLACES + 1)
+    ]
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    preview = client.post(
+        f"/schedules/{session_id}/candidates/A/preview",
+        json={"excluded_place_ids": []},
+        headers=headers,
+    )
+
+    assert preview.status_code == 409
+    assert str(_MAX_PLACES) in preview.json()["detail"]
+
+
 def test_removal_preview_ignores_legacy_exclusion_when_place_is_still_in_candidate(
     client, session, monkeypatch
 ):
@@ -1144,6 +1436,64 @@ def test_candidate_reorder_preview_reorders_activities_and_rebases_times(
     assert [a["order"] for a in persisted.candidates["candidates"][0]["activities"]] == [1, 2]
 
 
+def test_candidate_reordered_keeps_locked_activity_untouched_when_it_does_not_move():
+    """장소2가 잠긴 채로 자리를 안 옮기면(가운데 그대로), 시간·잠금 둘 다 그대로
+    남아야 한다 — 실제로 자리를 옮긴 장소1·장소3만 재계산·잠금 해제된다.
+    2026-08-15 사용자 리포트: 드래그 한 번에 손 안 댄 활동까지 전부 잠금이
+    풀리던 버그 수정.
+    """
+    from app.routers.schedule import _candidate_reordered
+
+    candidate = Candidate(
+        candidate_id="A",
+        title="t",
+        why_recommended="",
+        activities=[
+            _activity(1, "장소1").model_copy(update={"start_time": "10:00", "end_time": "11:00"}),
+            _activity(2, "장소2").model_copy(
+                update={"start_time": "11:00", "end_time": "12:00", "time_locked": True}
+            ),
+            _activity(3, "장소3").model_copy(update={"start_time": "12:00", "end_time": "13:00"}),
+        ],
+        routes=[],
+    )
+
+    # 새 순서: [기존 3번, 기존 2번, 기존 1번] — 2번은 가운데(2번째) 자리 그대로.
+    updated = _candidate_reordered(candidate, [3, 2, 1], datetime(2026, 8, 15, 10, 0))
+
+    by_name = {a.name: a for a in updated.activities}
+    assert by_name["장소2"].start_time == "11:00"
+    assert by_name["장소2"].end_time == "12:00"
+    assert by_name["장소2"].time_locked is True
+    assert by_name["장소3"].start_time == "10:00"
+    assert by_name["장소3"].time_locked is False
+    assert by_name["장소1"].start_time == "12:00"
+    assert by_name["장소1"].time_locked is False
+
+
+def test_candidate_reordered_unlocks_locked_activity_that_actually_moves():
+    from app.routers.schedule import _candidate_reordered
+
+    candidate = Candidate(
+        candidate_id="A",
+        title="t",
+        why_recommended="",
+        activities=[
+            _activity(1, "장소1").model_copy(
+                update={"start_time": "10:00", "end_time": "11:00", "time_locked": True}
+            ),
+            _activity(2, "장소2").model_copy(update={"start_time": "11:00", "end_time": "12:00"}),
+        ],
+        routes=[],
+    )
+
+    updated = _candidate_reordered(candidate, [2, 1], datetime(2026, 8, 15, 10, 0))
+
+    by_name = {a.name: a for a in updated.activities}
+    assert by_name["장소1"].time_locked is False
+    assert by_name["장소1"].start_time == "11:00"  # 새 자리(2번째)에 맞게 재계산됨
+
+
 def test_candidate_reorder_preview_rejects_non_permutation(client, session, monkeypatch):
     headers, session_id = _create_session(client, session, monkeypatch)
 
@@ -1167,6 +1517,188 @@ def test_candidate_reorder_for_other_users_session_returns_403(client, session, 
     )
 
     assert response.status_code == 403
+
+
+# ── 활동 시간 수동 수정 (2026-08-15) ────────────────────────────────────────
+
+
+def test_activity_time_preview_shifts_unlocked_neighbor_without_persisting(
+    client, session, monkeypatch
+):
+    """장소1을 10:00~11:15로 바꾸면, 안 잠긴 장소2(원래 10:00~11:00)는 겹치니까
+    11:15~12:15로 밀려야 한다. preview라 DB는 안 바뀐다."""
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/preview",
+        json={"order": 1, "start_time": "10:00", "end_time": "11:15"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    activities = response.json()["activities"]
+    place1 = next(a for a in activities if a["name"] == "장소1")
+    place2 = next(a for a in activities if a["name"] == "장소2")
+    assert place1["time_locked"] is True
+    assert place1["end_time"] == "11:15"
+    assert place2["start_time"] == "11:15"
+    assert place2["end_time"] == "12:15"
+    assert place2["time_locked"] is False
+
+    from app.models.schedule import ScheduleSession
+
+    persisted = session.get(ScheduleSession, UUID(session_id))
+    persisted_activities = persisted.candidates["candidates"][0]["activities"]
+    assert persisted_activities[0]["end_time"] == "11:00"  # 그대로
+
+
+def test_activity_time_save_persists_and_locks(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/save",
+        json={"order": 1, "start_time": "10:00", "end_time": "11:15"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+
+    from app.models.schedule import ScheduleSession
+
+    persisted = session.get(ScheduleSession, UUID(session_id))
+    activities = persisted.candidates["candidates"][0]["activities"]
+    place1 = next(a for a in activities if a["name"] == "장소1")
+    assert place1["end_time"] == "11:15"
+    assert place1["time_locked"] is True
+
+
+def test_activity_time_conflict_between_two_locked_activities_returns_409(
+    client, session, monkeypatch
+):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    # 장소2를 11:00~12:00으로 고정(잠금).
+    lock_response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/save",
+        json={"order": 2, "start_time": "11:00", "end_time": "12:00"},
+        headers=headers,
+    )
+    assert lock_response.status_code == 200
+
+    # 장소1을 10:00~11:30으로 바꾸면 잠긴 장소2(11:00~12:00)와 겹친다.
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/save",
+        json={"order": 1, "start_time": "10:00", "end_time": "11:30"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409
+    assert "장소2" in response.json()["detail"]
+
+    from app.models.schedule import ScheduleSession
+
+    persisted = session.get(ScheduleSession, UUID(session_id))
+    place1 = next(
+        a for a in persisted.candidates["candidates"][0]["activities"] if a["name"] == "장소1"
+    )
+    assert place1["end_time"] == "11:00"  # 실패했으니 그대로
+
+
+def test_activity_time_lock_repositions_instead_of_dragging_other_activities(
+    client, session, monkeypatch
+):
+    """사용자 리포트 회귀 테스트(2026-08-15(2차)): 하루 첫 활동(장소1)을 원래
+    자리(순서 1)는 유지한 채 훨씬 늦은 시각(13:00)으로 고정하면, 예전엔 뒤
+    활동들(장소2, 장소3)이 전부 그만큼씩 밀려서 하루 전체가 13:00부터
+    시작하는 것처럼 보였다. 이제는 안 겹치는 장소2/장소3은 그대로 두고,
+    장소1만 시간순으로 맨 뒤에 재배치돼야 한다(사용자가 이 방향을 선택).
+    """
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    from copy import deepcopy
+
+    from app.models.schedule import ScheduleSession
+
+    schedule = session.get(ScheduleSession, UUID(session_id))
+    candidates = deepcopy(schedule.candidates)
+    activities = candidates["candidates"][0]["activities"]
+    activities[0].update({"start_time": "10:00", "end_time": "10:30"})
+    activities[1].update({"start_time": "11:00", "end_time": "11:30"})
+    activities.append(
+        _activity(3, "장소3").model_copy(update={"start_time": "12:00", "end_time": "12:30"})
+        .model_dump(mode="json")
+    )
+    schedule.candidates = candidates
+    session.add(schedule)
+    session.commit()
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/preview",
+        json={"order": 1, "start_time": "13:00", "end_time": "13:30"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    by_name = {a["name"]: a for a in response.json()["activities"]}
+    assert by_name["장소2"]["start_time"] == "11:00"  # 안 겹쳐서 그대로
+    assert by_name["장소3"]["start_time"] == "12:00"  # 안 겹쳐서 그대로
+    assert by_name["장소1"]["order"] == 3  # 시간순으로 맨 뒤로 재배치
+    assert by_name["장소1"]["time_locked"] is True
+
+
+def test_activity_time_rejects_end_before_start(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/preview",
+        json={"order": 1, "start_time": "11:00", "end_time": "10:00"},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+def test_unlock_activity_time_clears_lock_without_changing_time(client, session, monkeypatch):
+    headers, session_id = _create_session(client, session, monkeypatch)
+
+    async def fake_enrich(candidate, _time_range):
+        return candidate
+
+    monkeypatch.setattr("app.routers.schedule.enrich_routes", fake_enrich)
+    client.post(
+        f"/schedules/{session_id}/candidates/A/activities/time/save",
+        json={"order": 1, "start_time": "10:00", "end_time": "11:15"},
+        headers=headers,
+    )
+
+    response = client.post(
+        f"/schedules/{session_id}/candidates/A/activities/1/unlock", headers=headers
+    )
+
+    assert response.status_code == 200
+    place1 = next(a for a in response.json()["activities"] if a["name"] == "장소1")
+    assert place1["time_locked"] is False
+    assert place1["end_time"] == "11:15"  # 시간 자체는 안 바뀜
 
 
 def test_save_candidate_reorder_persists_new_order_and_resets_confirmed_status(

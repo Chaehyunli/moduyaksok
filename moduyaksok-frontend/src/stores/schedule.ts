@@ -19,6 +19,12 @@ export interface Activity {
   sourceCategory: string | null
   placeId: string | null
   isRequired: boolean
+  // 이름으로 직접 검색해서 고른 필수 장소인지 — true면 isRequired도 항상
+  // true지만, 일반 필수 장소(별)와 구분해 전용 그림(돋보기)을 보여준다.
+  isCustom: boolean
+  // 사용자가 이 활동의 시작/종료 시각을 직접 수정했는지 — true면 이후
+  // 이동시간 재조정·대체·드래그 순서변경이 이 시간을 건드리지 않는다.
+  timeLocked: boolean
 }
 
 export interface RouteOption {
@@ -139,6 +145,8 @@ function mapApiActivity(raw: any): Activity {
     sourceCategory: raw.source_category ?? null,
     placeId: raw.place_id ?? null,
     isRequired: raw.is_required ?? false,
+    isCustom: raw.is_custom ?? false,
+    timeLocked: raw.time_locked ?? false,
   }
 }
 
@@ -599,6 +607,50 @@ export const useScheduleStore = defineStore('schedule', {
       this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
         (id) => id !== candidateId,
       )
+      return saved
+    },
+    async previewActivityTime(
+      candidateId: string,
+      order: number,
+      startTime: string,
+      endTime: string,
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/activities/time/preview`,
+        { order, start_time: startTime, end_time: endTime },
+      )
+      return mapApiCandidate(data)
+    },
+    async saveActivityTime(
+      candidateId: string,
+      order: number,
+      startTime: string,
+      endTime: string,
+      selectedOptions: { from_order: number; option_id: string }[] = [],
+    ): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/activities/time/save`,
+        { order, start_time: startTime, end_time: endTime, selected_options: selectedOptions },
+      )
+      const saved = mapApiCandidate(data)
+      const index = this.candidates.findIndex((candidate) => candidate.id === candidateId)
+      if (index !== -1) this.candidates[index] = saved
+      this.scheduleStatus = 'draft'
+      this.routeSelectionDirtyCandidateIds = this.routeSelectionDirtyCandidateIds.filter(
+        (id) => id !== candidateId,
+      )
+      return saved
+    },
+    async unlockActivityTime(candidateId: string, order: number): Promise<Candidate> {
+      if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const { data } = await api.post(
+        `/schedules/${this.sessionId}/candidates/${candidateId}/activities/${order}/unlock`,
+      )
+      const saved = mapApiCandidate(data)
+      const index = this.candidates.findIndex((candidate) => candidate.id === candidateId)
+      if (index !== -1) this.candidates[index] = saved
       return saved
     },
     async fetchSharedSchedule(slug: string) {

@@ -64,7 +64,7 @@ describe('일정 상세 수정 API', () => {
     store.sessionId = 'session-1'
     store.candidates = [{
       id: 'A', title: '기존 코스', whyRecommended: '', routes: [], feasibilityWarning: null,
-      activities: [{ ...rawActivity('점심', '12:00', '13:00', 'lunch'), time: '12:00-13:00', priceRange: '5,000~10,000원', operatingHours: '', infoNeedsCheck: false, mapUrl: '', lat: null, lng: null, matchedTag: null, sourceCategory: null, placeId: 'lunch', isRequired: false }],
+      activities: [{ ...rawActivity('점심', '12:00', '13:00', 'lunch'), time: '12:00-13:00', priceRange: '5,000~10,000원', operatingHours: '', infoNeedsCheck: false, mapUrl: '', lat: null, lng: null, matchedTag: null, sourceCategory: null, placeId: 'lunch', isRequired: false, isCustom: false, timeLocked: false }],
     }]
     apiPost.mockResolvedValueOnce({ data: { candidate_id: 'A', title: '제거 미리보기', why_recommended: '', routes: [], feasibility_warning: null, activities: [rawActivity('저녁', '18:00', '19:00', 'dinner')] } })
 

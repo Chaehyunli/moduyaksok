@@ -66,7 +66,18 @@ export function buildRegenerationProgressMessages(requiredPlaceNames: string[]):
 }
 
 // 상세 화면에서 뺀 장소의 빈 시간과 동선을 기준으로 대체 장소를 찾을 때 쓴다.
+// 뺀 장소가 없으면(excludedPlaceNames가 빈 배열) '일정 추가하기'가 뺀 곳 없이
+// 장소 1개를 더 채우는 경우이므로 "대체"가 아니라 "추가" 느낌의 문구를 쓴다.
 export function buildReplacementProgressMessages(excludedPlaceNames: string[]): string[] {
+  if (excludedPlaceNames.length === 0) {
+    return [
+      '어울리는 새 장소를 찾고 있어요',
+      '남은 장소와 가까운 곳을 고르고 있어요',
+      '새 장소까지의 이동 동선을 계산하고 있어요',
+      '바뀐 일정의 시간을 다시 맞추고 있어요',
+    ]
+  }
+
   const excludedMessages = excludedPlaceNames.slice(0, 3).map(
     (name) => `${objectParticle(name)} 뺀 자리를 살펴보고 있어요`,
   )

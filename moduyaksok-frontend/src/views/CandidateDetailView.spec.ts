@@ -51,7 +51,8 @@ describe('CandidateDetailView 필수 장소', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('필수 장소 · 18:00-19:00')
+    expect(wrapper.text()).toContain('필수 장소')
+    expect(wrapper.text()).toContain('✏️ 18:00-19:00')
     expect(wrapper.text()).not.toContain('음식점 · 18:00-19:00')
     expect(wrapper.text()).not.toContain('이 장소 빼기')
   })

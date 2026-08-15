@@ -78,6 +78,21 @@ def test_get_walk_option_needs_no_network_call():
     assert option.duration_minutes > 0
 
 
+def test_get_walk_option_uses_walk_speed_not_transit_speed_for_long_distance():
+    """회귀 테스트(2026-08-15): get_walk_option()이 estimate_buffer_minutes()를
+    그대로 쓰던 시절엔 1km가 넘는 구간에서 대중교통 속도(18km/h)로 계산돼
+    "도보"치고 비현실적으로 짧은 시간이 나왔다(사용자 리포트). 강남역-시청
+    (약 8.7km)처럼 먼 거리에서는 도보(4.5km/h) 추정이 대중교통 버퍼 추정보다
+    항상 더 오래 걸려야 한다.
+    """
+    from app.pipeline.travel_estimate import estimate_buffer_minutes
+
+    option = get_walk_option(*_GANGNAM, *_CITY_HALL)
+    transit_buffer_minutes = estimate_buffer_minutes(*_GANGNAM, *_CITY_HALL)
+
+    assert option.duration_minutes > transit_buffer_minutes
+
+
 _TWO_PATH_PAYLOAD = {
     "result": {
         "path": [

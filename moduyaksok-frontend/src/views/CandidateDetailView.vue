@@ -9,6 +9,7 @@ import DoodleButton from '../components/doodle/DoodleButton.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleDivider from '../components/doodle/DoodleDivider.vue'
 import DoodleAlert from '../components/doodle/DoodleAlert.vue'
+import DoodleModal from '../components/doodle/DoodleModal.vue'
 import DoodleMap from '../components/doodle/DoodleMap.vue'
 import DoodleAccordion from '../components/doodle/DoodleAccordion.vue'
 import DoodleProgress from '../components/doodle/DoodleProgress.vue'
@@ -24,10 +25,13 @@ const storedCandidate = computed(() => store.candidates.find((c) => c.id === rou
 const previewCandidate = ref<Candidate | null>(null)
 const removalPreviewCandidate = ref<Candidate | null>(null)
 const reorderPreviewCandidate = ref<Candidate | null>(null)
+const timePreviewCandidate = ref<Candidate | null>(null)
 const previewId = ref<string | null>(null)
 const pendingExcludedPlaceIds = ref<string[]>([])
 const pendingOrderedPositions = ref<number[] | null>(null)
+const pendingTimeEdit = ref<{ order: number; startTime: string; endTime: string } | null>(null)
 const candidate = computed(() => {
+  if (timePreviewCandidate.value) return timePreviewCandidate.value
   if (reorderPreviewCandidate.value) return reorderPreviewCandidate.value
   if (previewCandidate.value) return previewCandidate.value
   if (removalPreviewCandidate.value) return removalPreviewCandidate.value
@@ -76,7 +80,8 @@ const hasPendingChanges = computed(
   () =>
     pendingExcludedPlaceIds.value.length > 0 ||
     Boolean(previewCandidate.value) ||
-    Boolean(reorderPreviewCandidate.value),
+    Boolean(reorderPreviewCandidate.value) ||
+    Boolean(timePreviewCandidate.value),
 )
 // 다른 변경(대체/제외) 미리보기가 떠 있거나 저장 중이면 드래그 자체를 막는다 —
 // 한 번에 한 종류의 변경만 미리보기 상태로 둔다는 원칙(§2, 설계 문서 참고).
@@ -84,6 +89,7 @@ const dragDisabled = computed(
   () =>
     pendingExcludedPlaceIds.value.length > 0 ||
     Boolean(previewCandidate.value) ||
+    Boolean(timePreviewCandidate.value) ||
     regeneratingCandidate.value ||
     refreshingRemovalRoutes.value ||
     savingCandidate.value,
@@ -105,6 +111,7 @@ async function loadRoutes() {
   if (
     previewCandidate.value ||
     removalPreviewCandidate.value ||
+    timePreviewCandidate.value ||
     pendingExcludedPlaceIds.value.length > 0 ||
     !storedCandidate.value ||
     storedCandidate.value.routes.length > 0
@@ -219,12 +226,11 @@ async function excludePlace(placeId: string | null) {
   }
 }
 
+// 뺀 장소가 있으면 그 자리를 채우고, 없으면 '일정 추가하기'로 AI가 장소 1개를
+// 더 채운다 — preview_candidate_replacement가 excluded_place_ids=[]도 받게
+// 백엔드를 완화해서(2026-08-15) 같은 흐름을 재사용한다.
 async function regenerateCandidate() {
-  if (
-    !storedCandidate.value ||
-    pendingExcludedPlaceIds.value.length === 0 ||
-    refreshingRemovalRoutes.value
-  ) return
+  if (!storedCandidate.value || refreshingRemovalRoutes.value) return
   regeneratingCandidate.value = true
   feedbackError.value = ''
   try {
@@ -236,7 +242,7 @@ async function regenerateCandidate() {
     previewCandidate.value = preview.candidate
     removalPreviewCandidate.value = null
   } catch (error: any) {
-    feedbackError.value = error.response?.data?.detail ?? '대체 장소를 찾지 못했어요. 다른 장소를 다시 선택해주세요.'
+    feedbackError.value = error.response?.data?.detail ?? '장소를 찾지 못했어요. 잠시 후 다시 시도해주세요.'
   } finally {
     regeneratingCandidate.value = false
   }
@@ -278,12 +284,88 @@ async function previewReorder(orderedPositions: number[]) {
   }
 }
 
+const editingActivity = ref<Activity | null>(null)
+const timeEditStart = ref('')
+const timeEditEnd = ref('')
+const submittingTimeEdit = ref(false)
+const unlockingOrder = ref<number | null>(null)
+
+const timeEditError = ref('')
+
+function openTimeEditor(activity: Activity) {
+  if (hasPendingChanges.value) return
+  const [start, end] = activity.time.split('-')
+  editingActivity.value = activity
+  timeEditStart.value = start
+  timeEditEnd.value = end
+  timeEditError.value = ''
+}
+
+function closeTimeEditor() {
+  editingActivity.value = null
+}
+
+async function submitTimeEdit() {
+  if (!storedCandidate.value || !editingActivity.value) return
+  if (timeEditEnd.value <= timeEditStart.value) {
+    timeEditError.value = '종료 시각은 시작 시각보다 늦어야 해요.'
+    return
+  }
+  timeEditError.value = ''
+  submittingTimeEdit.value = true
+  feedbackError.value = ''
+  try {
+    const preview = await store.previewActivityTime(
+      storedCandidate.value.id,
+      editingActivity.value.order,
+      timeEditStart.value,
+      timeEditEnd.value,
+    )
+    timePreviewCandidate.value = preview
+    pendingTimeEdit.value = {
+      order: editingActivity.value.order,
+      startTime: timeEditStart.value,
+      endTime: timeEditEnd.value,
+    }
+    editingActivity.value = null
+  } catch (error: any) {
+    timeEditError.value = error.response?.data?.detail ?? '시간을 바꾸지 못했어요.'
+  } finally {
+    submittingTimeEdit.value = false
+  }
+}
+
+async function unlockActivity(activity: Activity) {
+  if (!storedCandidate.value || hasPendingChanges.value || unlockingOrder.value) return
+  unlockingOrder.value = activity.order
+  feedbackError.value = ''
+  try {
+    await store.unlockActivityTime(storedCandidate.value.id, activity.order)
+  } catch {
+    feedbackError.value = '잠금을 해제하지 못했어요. 잠시 후 다시 시도해주세요.'
+  } finally {
+    unlockingOrder.value = null
+  }
+}
+
 async function saveCandidate() {
   if (!storedCandidate.value || !hasPendingChanges.value) return
   savingCandidate.value = true
   feedbackError.value = ''
   try {
-    if (reorderPreviewCandidate.value && pendingOrderedPositions.value) {
+    if (timePreviewCandidate.value && pendingTimeEdit.value) {
+      const selectedOptions = timePreviewCandidate.value.routes.map((segment) => ({
+        from_order: segment.fromOrder,
+        option_id: segment.selectedOptionId,
+      }))
+      await store.saveActivityTime(
+        storedCandidate.value.id,
+        pendingTimeEdit.value.order,
+        pendingTimeEdit.value.startTime,
+        pendingTimeEdit.value.endTime,
+        selectedOptions,
+      )
+    } else if (reorderPreviewCandidate.value && pendingOrderedPositions.value) {
       const selectedOptions = reorderPreviewCandidate.value.routes.map((segment) => ({
         from_order: segment.fromOrder,
         option_id: segment.selectedOptionId,
@@ -317,9 +399,11 @@ async function saveCandidate() {
     previewCandidate.value = null
     removalPreviewCandidate.value = null
     reorderPreviewCandidate.value = null
+    timePreviewCandidate.value = null
     previewId.value = null
     pendingExcludedPlaceIds.value = []
     pendingOrderedPositions.value = null
+    pendingTimeEdit.value = null
   } catch (error: any) {
     feedbackError.value = error.response?.data?.detail ?? '변경한 일정을 저장하지 못했어요.'
   } finally {
@@ -331,9 +415,11 @@ function cancelCandidateChanges() {
   previewCandidate.value = null
   removalPreviewCandidate.value = null
   reorderPreviewCandidate.value = null
+  timePreviewCandidate.value = null
   previewId.value = null
   pendingExcludedPlaceIds.value = []
   pendingOrderedPositions.value = null
+  pendingTimeEdit.value = null
   feedbackError.value = ''
   expandedSegment.value = null
 }
@@ -356,7 +442,10 @@ function cancelCandidateChanges() {
       <DoodleAlert v-if="feedbackError" title="일정을 바꾸지 못했어요" class="mb-6">
         {{ feedbackError }}
       </DoodleAlert>
-      <DoodleAlert v-if="reorderPreviewCandidate" title="바뀐 순서 미리보기" class="mb-6">
+      <DoodleAlert v-if="timePreviewCandidate" title="바뀐 시간 미리보기" class="mb-6">
+        지정한 시간에 맞춰 겹치는 다른 일정 시간을 다시 계산했어요. 아래의 저장 버튼을 눌러야 실제로 반영돼요.
+      </DoodleAlert>
+      <DoodleAlert v-else-if="reorderPreviewCandidate" title="바뀐 순서 미리보기" class="mb-6">
         새 순서로 이동 경로를 다시 계산했어요. 아래의 저장 버튼을 눌러야 실제로 반영돼요.
       </DoodleAlert>
       <DoodleAlert v-else-if="previewCandidate" title="변경된 일정 미리보기" class="mb-6">
@@ -367,8 +456,8 @@ function cancelCandidateChanges() {
         title="장소를 뺀 일정 미리보기"
         class="mb-6"
       >
-        저장하면 지금 보이는 개수로 일정을 줄이고 교통편을 다시 계산해요. 대체 장소를 채우려면
-        ‘대체 장소 채우기’를 눌러주세요.
+        저장하면 지금 보이는 개수로 일정을 줄이고 교통편을 다시 계산해요. 뺀 자리를 채우려면
+        ‘일정 추가하기’를 눌러주세요.
       </DoodleAlert>
 
       <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
@@ -396,7 +485,15 @@ function cancelCandidateChanges() {
                   {{ a.name }}
                 </p>
                 <p class="font-hand text-sm text-ink/60">
-                  {{ a.isRequired ? '필수 장소' : a.category }} · {{ a.time }}
+                  {{ a.isRequired ? '필수 장소' : a.category }} ·
+                  <button
+                    type="button"
+                    class="text-red underline underline-offset-2 hover:text-red/70 disabled:pointer-events-none disabled:text-ink/60 disabled:no-underline"
+                    :disabled="hasPendingChanges"
+                    @click="openTimeEditor(a)"
+                  >
+                    ✏️ {{ a.time }}<span v-if="a.timeLocked">🔒</span>
+                  </button>
                 </p>
                 <p class="mt-1 font-hand text-sm text-ink/60">1인 {{ a.priceRange }}</p>
                 <p v-if="a.infoNeedsCheck" class="mt-1 font-hand text-sm text-ink/50">
@@ -405,13 +502,23 @@ function cancelCandidateChanges() {
                 </p>
               </div>
               <img
-                :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).src"
-                :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag)).alt"
+                :src="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag), a.isCustom).src"
+                :alt="activityImage(a.sourceCategory, a.isRequired, Boolean(a.matchedTag), a.isCustom).alt"
                 class="h-20 w-20 shrink-0 rounded-[2px] object-cover"
               />
             </div>
-            <div v-if="a.placeId && !a.isRequired" class="mt-3 flex justify-end">
+            <div v-if="(a.placeId && !a.isRequired) || a.timeLocked" class="mt-3 flex justify-end gap-2">
               <DoodleButton
+                v-if="a.timeLocked"
+                size="sm"
+                variant="ghost"
+                :disabled="hasPendingChanges || unlockingOrder === a.order"
+                @click="unlockActivity(a)"
+              >
+                {{ unlockingOrder === a.order ? '해제하는 중...' : '시간 잠금 해제' }}
+              </DoodleButton>
+              <DoodleButton
+                v-if="a.placeId && !a.isRequired"
                 size="sm"
                 :disabled="Boolean(previewCandidate) || Boolean(reorderPreviewCandidate) || refreshingRemovalRoutes"
                 @click="excludePlace(a.placeId)"
@@ -473,11 +580,11 @@ function cancelCandidateChanges() {
 
       <div class="flex flex-wrap gap-3">
         <DoodleButton
-          v-if="pendingExcludedPlaceIds.length > 0 && !previewCandidate"
-          :disabled="regeneratingCandidate || refreshingRemovalRoutes"
+          v-if="!previewCandidate && !reorderPreviewCandidate && !timePreviewCandidate"
+          :disabled="regeneratingCandidate || refreshingRemovalRoutes || savingCandidate"
           @click="regenerateCandidate"
         >
-          {{ regeneratingCandidate ? '대체 장소를 찾는 중...' : '대체 장소 채우기' }}
+          {{ regeneratingCandidate ? '장소를 찾는 중...' : '일정 추가하기' }}
         </DoodleButton>
         <DoodleButton
           v-if="hasPendingChanges"
@@ -511,4 +618,36 @@ function cancelCandidateChanges() {
   <div v-else class="notebook-bg flex min-h-dvh items-center justify-center font-hand text-ink/60">
     후보를 찾을 수 없어요.
   </div>
+  <DoodleModal :open="Boolean(editingActivity)" :title="`${editingActivity?.name ?? ''} 시간 수정`" @close="closeTimeEditor">
+    <form class="space-y-4" @submit.prevent="submitTimeEdit">
+      <label class="block font-hand">
+        <span class="mb-1 block text-sm text-ink">시작 시각</span>
+        <input
+          v-model="timeEditStart"
+          type="time"
+          required
+          class="w-full rounded-[2px] border-2 border-ink bg-paper px-3 py-2 font-hand text-base text-ink outline-none focus:border-red"
+        />
+      </label>
+      <label class="block font-hand">
+        <span class="mb-1 block text-sm text-ink">종료 시각</span>
+        <input
+          v-model="timeEditEnd"
+          type="time"
+          required
+          class="w-full rounded-[2px] border-2 border-ink bg-paper px-3 py-2 font-hand text-base text-ink outline-none focus:border-red"
+        />
+      </label>
+      <p class="font-hand text-sm text-ink/60">
+        다른 일정과 시간이 겹치면 안 잠긴 쪽이 자동으로 밀려요. 잠긴(🔒) 일정과 겹치면 저장할 수 없어요.
+      </p>
+      <p v-if="timeEditError" class="font-hand text-sm text-red">{{ timeEditError }}</p>
+      <div class="flex justify-end gap-2">
+        <DoodleButton type="button" variant="ghost" @click="closeTimeEditor">취소</DoodleButton>
+        <DoodleButton type="submit" :disabled="submittingTimeEdit">
+          {{ submittingTimeEdit ? '확인하는 중...' : '확인' }}
+        </DoodleButton>
+      </div>
+    </form>
+  </DoodleModal>
 </template>

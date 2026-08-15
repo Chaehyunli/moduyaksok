@@ -34,6 +34,12 @@
 #             구분할 수 있게 했다 — 사용자 경험(빈 옵션으로 degrade)은 그대로 유지.
 #             네트워크 hiccup 한 번에 그 구간 옵션이 통째로 사라지는 문제도 같이
 #             확인돼 짧은 재시도(1회, 백오프 없음)를 추가했다.
+# 2026-08-15(2차), get_walk_option()이 estimate_buffer_minutes() 대신
+#             estimate_walk_minutes()를 쓰도록 수정 — 사용자가 "도보 시간
+#             측정이 잘못된 것 같다"고 리포트. 원인: estimate_buffer_minutes()는
+#             거리가 1km 넘으면 대중교통(18km/h)/자차(42km/h) 속도로 전환되는데,
+#             "도보" 옵션에 그대로 재사용해서 먼 구간일수록 실제 도보(4.5km/h)
+#             보다 훨씬 짧은 시간이 표시됐다(travel_estimate.py 참고).
 # ------------------------------------------------------------------
 import logging
 
@@ -41,7 +47,7 @@ import httpx
 
 from app.config import settings
 from app.pipeline.schemas import RouteOption
-from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
+from app.pipeline.travel_estimate import estimate_walk_minutes, haversine_distance_m
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +72,18 @@ class OdsayError(Exception):
 
 
 def get_walk_option(lat1: float, lng1: float, lat2: float, lng2: float) -> RouteOption:
-    """도보 옵션은 API 호출 없이 항상 계산 가능 — Step2가 버퍼 추정에 쓰는 것과
-    같은 직선거리 기반 추정(travel_estimate.py)을 그대로 재사용한다. 요금은 0원.
+    """도보 옵션은 API 호출 없이 항상 계산 가능 — 직선거리 기반 추정
+    (travel_estimate.estimate_walk_minutes)을 쓴다. 요금은 0원.
+
+    2026-08-15, Step2 버퍼 추정용 estimate_buffer_minutes()를 쓰던 걸 도보 전용
+    함수로 교체 — 그 함수는 거리가 1km를 넘으면 대중교통/자차 속도로 전환되므로,
+    "도보" 라벨이 붙은 이 옵션에 그대로 쓰면 먼 구간에서 실제보다 훨씬 짧은
+    시간이 나온다(사용자 리포트).
     """
     return RouteOption(
         option_id="walk",
         mode="walk",
-        duration_minutes=estimate_buffer_minutes(lat1, lng1, lat2, lng2),
+        duration_minutes=estimate_walk_minutes(lat1, lng1, lat2, lng2),
         fare_krw=0,
     )
 

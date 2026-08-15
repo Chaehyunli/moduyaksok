@@ -92,6 +92,14 @@
 # 2026-08-15, RequiredPlace에 is_custom/mapx/mapy 추가 — 사용자가 이름으로 직접
 #             검색해서 고른 장소(표준 카테고리·태그 검색 밖)를 재생성 시
 #             place_candidates에 원본 좌표로 주입하기 위함(orchestrate.py 참고).
+# 2026-08-15(2차), Activity.time_locked 추가 — 사용자가 상세 화면에서 시작/종료
+#             시각을 직접 수정하면 true로 표시해, 이후 이동시간 재조정·대체·
+#             드래그 순서변경이 그 시간을 안 건드리게 한다(docs/superpowers/
+#             plans/2026-08-15-candidate-order-and-time-lock.md B절 설계).
+# 2026-08-15(3차), Activity.is_custom 추가 — 이름으로 직접 검색해서 추가한
+#             필수 장소는 지금까지 일반 필수 장소와 같은 별 그림을 써서 구분이
+#             안 됐다(사용자 지적). is_required와 별개로 표시해 프런트가 전용
+#             그림(돋보기)을 보여줄 수 있게 한다.
 # ------------------------------------------------------------------
 from __future__ import annotations
 
@@ -308,6 +316,16 @@ class Activity(BaseModel):
     # 검색 결과의 안정 식별자. 필수 포함 여부를 최종·공유 카드에서도 판별한다.
     place_id: str | None = None
     is_required: bool = False
+    # 이름으로 직접 검색해서 고른 필수 장소(ScheduleRequiredPlace.is_custom)인지
+    # — true면 항상 is_required도 true지만, 프런트가 일반 필수 장소(별)와 구분해
+    # 돋보기 그림을 보여준다(2026-08-15, 사용자가 구분이 안 된다고 지적).
+    is_custom: bool = False
+    # 사용자가 상세 화면에서 이 활동의 시작/종료 시각을 직접 수정했는지
+    # (2026-08-15) — true면 이동시간 재조정(travel_estimate.reconcile_schedule)·
+    # 대체·드래그 순서변경이 이 활동의 시간을 건드리지 않는다. 드래그로 순서를
+    # 옮기면 자동으로 다시 false가 된다(그 위치의 시간은 다시 자동 계산해도
+    # 된다는 의사표시로 취급, routers/schedule.py 참고).
+    time_locked: bool = False
 
 
 class Candidate(BaseModel):

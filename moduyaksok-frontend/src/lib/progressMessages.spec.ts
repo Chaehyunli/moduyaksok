@@ -16,4 +16,10 @@ describe('작업별 진행 문구', () => {
       '인생와플을 뺀 자리를 살펴보고 있어요',
     )
   })
+
+  it('뺀 장소가 없으면(일정 추가하기) 대체가 아닌 추가 문구를 쓴다', () => {
+    const messages = buildReplacementProgressMessages([])
+    expect(messages).toContain('어울리는 새 장소를 찾고 있어요')
+    expect(messages.join(' ')).not.toContain('뺀 자리')
+  })
 })
