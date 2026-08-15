@@ -21,6 +21,9 @@
 # 2026-08-10, generate_candidates_with_perspectives()/generate_single_candidate()
 #             테스트 추가 — Step3 재시도 오케스트레이터(orchestrate.py)가 쓸
 #             "관점 라벨 유지"·"관점 하나만 재생성" 기능 검증.
+# 2026-08-15, 검색 결과 0건인 태그가 있어도 나머지 태그로는 여전히 plan이
+#             만들어지는지 검증하는 테스트 추가(_tag_anchor_variants 수정,
+#             generate_step2.py의 같은 날짜 변경사항 참고).
 # ------------------------------------------------------------------
 from datetime import datetime, time
 
@@ -781,6 +784,49 @@ def test_candidate_plans_expand_radius_for_distinct_preference_anchors():
     waffle_anchors = {dict(plan.required_tag_anchors)["와플"] for plan in plans}
     assert waffle_anchors == {"가까운 와플집", "조금 먼 와플집"}
     assert any(plan.cluster_radius_meters == 1_500 for plan in plans)
+
+
+def test_candidate_plans_skip_tag_with_zero_search_results_instead_of_dropping_all():
+    # "플스방"으로 검색된 장소가 지역에 하나도 없는 경우(사용자 리포트: 잠실
+    # 플스방 0건) — 이 태그 하나 때문에 콩국수 앵커가 있는 조합까지 전부
+    # 사라지면 안 된다. 2026-08-15 이전에는 _tag_anchor_variants가 이 경우
+    # 빈 리스트를 반환해 plans 자체가 하나도 안 나왔다.
+    conditions = _CONDITIONS.model_copy(
+        update={
+            # 점심대만 있는 좁은 시간대로 좁혀 meal_slots=1로 만든다 — 기본
+            # _CONDITIONS(10~21시)는 meal_slots=2라 콩국수집 하나로는 "식사
+            # 슬롯 수보다 식사 장소가 적다"는 무관한 가드에 먼저 걸린다.
+            "time_range": (datetime(2026, 8, 15, 11, 0), datetime(2026, 8, 15, 14, 0)),
+            "liked_tags": [
+                PreferenceTag(tag="콩국수", verifiable=True, is_meal=True),
+                PreferenceTag(tag="플스방", verifiable=True, is_meal=False),
+            ],
+        }
+    )
+    places = [
+        {
+            "title": "콩국수집",
+            "source_category": "한식",
+            "matched_tags": ["콩국수"],
+            "mapx": "1270000000",
+            "mapy": "375000000",
+        },
+        {
+            "title": "일반 카페",
+            "source_category": "카페",
+            "mapx": "1270000500",
+            "mapy": "375000500",
+        },
+    ]
+
+    plans = _build_candidate_plans(conditions, places)
+
+    assert plans
+    assert all(dict(plan.required_tag_anchors)["콩국수"] == "콩국수집" for plan in plans)
+    # 앵커를 못 찾은 태그는 required_non_meal_tags에도 안 남아야 한다 —
+    # 남아있으면 Step3의 _has_missing_required_tags가 결국 다시 드롭시킨다.
+    assert all("플스방" not in plan.required_non_meal_tags for plan in plans)
+    assert all("플스방" not in dict(plan.required_tag_anchors) for plan in plans)
 
 
 def test_candidate_plans_do_not_use_cafe_as_a_meal_tag_anchor():

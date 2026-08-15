@@ -88,8 +88,10 @@ def test_algorithm_returns_three_valid_and_diverse_candidates():
 
     assert len(_rule_based_filter(drafts, _conditions())[0]) == 3
     for draft in drafts:
-        assert len(draft.activities) == 5
-        assert len({activity.place_id for activity in draft.activities}) == 5
+        # 11시간 일정(10~21시) -> round(660/120)=6, _MAX_PLACES(7, 2026-08-15
+        # 사용자 요청으로 5에서 상향)에 안 걸려 6곳이 자연스러운 목표치가 된다.
+        assert len(draft.activities) == 6
+        assert len({activity.place_id for activity in draft.activities}) == 6
         assert sum("마라탕" in activity.matched_tags for activity in draft.activities) == 1
         assert (
             sum(
@@ -106,6 +108,34 @@ def test_algorithm_returns_three_valid_and_diverse_candidates():
         for right in range(left + 1, 3)
     ]
     assert max(overlaps) <= 0.5
+
+
+def test_algorithm_relaxes_coverage_when_two_tags_have_zero_matches(caplog):
+    # 좋아요 태그 4개(마라탕/전시/플스방/한강공원) 중 뒤 2개는 place pool에 아예
+    # 매칭되는 장소가 없다(_places()가 마라탕·전시만 matched_tags로 채움) — 과반수
+    # 공식대로면 4개 태그를 요구 커버리지=3까지 요구하지만, 실제로 만족 가능한
+    # 최대치는 2(마라탕+전시)뿐이라 완화 없이는 candidate가 하나도 안 나온다.
+    conditions = _conditions().model_copy(
+        update={
+            "liked_tags": [
+                *_conditions().liked_tags,
+                PreferenceTag(tag="플스방", verifiable=True, preference_kind="place_type", priority=3),
+                PreferenceTag(tag="한강공원", verifiable=True, preference_kind="place_type", priority=3),
+            ]
+        }
+    )
+    assert _minimum_preference_coverage(conditions) == 3
+
+    with caplog.at_level("INFO", logger="app.pipeline.generate_algorithm_step2"):
+        labeled = generate_algorithm_candidates("upstage", "unused", conditions, _places())
+
+    assert len(labeled) == 3
+    assert "preference_coverage_relaxed" in caplog.text
+    for _, draft in labeled:
+        matched = {tag for activity in draft.activities for tag in activity.matched_tags}
+        assert matched & {"마라탕", "전시"}
+        assert "플스방" not in matched
+        assert "한강공원" not in matched
 
 
 def test_algorithm_includes_activity_category_when_room_and_available():

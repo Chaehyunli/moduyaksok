@@ -110,6 +110,14 @@
 #             있어 프런트의 친근한 "~해요"체 문구들과 톤이 안 맞음 —
 #             generate_step2.py의 rationale과 같은 문제라 같은 방식(Task에
 #             "~해요체로 끝내라" 명시)으로 수정.
+# 2026-08-15(2차), _rule_based_filter()에 relax_preference_coverage 옵션 추가 —
+#             _has_insufficient_preference_coverage만 건너뛰고 나머지 하드
+#             규칙(환각·시간 겹침·예산 등)은 그대로 유지한다.
+#             synthesize_and_validate가 1차 필터링에서 생존자 0명이면 이 옵션으로
+#             재시도하고, 실제로 완화됐을 때만 사용자에게 hedge 안내를 덧붙인다.
+#             generate_algorithm_step2.py의 과반수 커버리지 완화(같은 날 처리)와
+#             짝을 이룬다 — Step2가 완화해서 통과시켜도 Step3가 같은 강도로 다시
+#             드롭하면 소용없어서 두 곳 다 손봤다.
 # ------------------------------------------------------------------
 import logging
 from datetime import datetime, time
@@ -467,7 +475,10 @@ def _time_overrun_minutes(candidate: CandidateDraft, time_range: tuple[datetime,
 
 
 def _rule_based_filter(
-    candidates: list[CandidateDraft], conditions: NormalizedConditions
+    candidates: list[CandidateDraft],
+    conditions: NormalizedConditions,
+    *,
+    relax_preference_coverage: bool = False,
 ) -> tuple[list[CandidateDraft], list[str]]:
     """LLM 호출 전에 결정론적으로 판단 가능한 하드 위반만 걸러낸다 — 장소 환각,
     활동 간 시간 겹침, 같은 태그 중복 반영, 같은 장소 중복 방문, 과도한 이동거리,
@@ -476,6 +487,14 @@ def _rule_based_filter(
     만들어 survivors와 같은 순서로 돌려준다(경고 없으면 빈 문자열) —
     synthesize_and_validate가 LLM의 feasibility_note와 합쳐 최종
     feasibility_warning을 만든다.
+
+    relax_preference_coverage=True면 좋아요 태그 과반수 커버리지 요구
+    (_has_insufficient_preference_coverage)만 건너뛴다 — 나머지 하드 규칙(환각·
+    시간 겹침·예산 등 실제로 잘못된 일정을 걸러내는 규칙)은 그대로 적용한다.
+    synthesize_and_validate가 1차 필터링에서 생존자가 0명일 때만 이 옵션으로
+    재시도한다(2026-08-15, 사용자 리포트: 태그를 여러 개 넣으면 커버리지 요구가
+    높아져서 "결과 없음"이 너무 잦음 — 취향 커버리지는 협상 가능한 소프트
+    조건이지, 환각·시간 겹침처럼 절대 봐주면 안 되는 정합성 문제가 아니다).
     """
     survivors: list[CandidateDraft] = []
     warnings: list[str] = []
@@ -490,7 +509,10 @@ def _rule_based_filter(
             or _has_missing_meal_slot(candidate, conditions)
             or _has_excessive_meal_places(candidate, conditions)
             or _has_missing_required_tags(candidate, conditions)
-            or _has_insufficient_preference_coverage(candidate, conditions)
+            or (
+                not relax_preference_coverage
+                and _has_insufficient_preference_coverage(candidate, conditions)
+            )
             or _has_missing_required_anchors(candidate)
             or _has_missing_required_places(candidate)
         ):
@@ -686,8 +708,31 @@ def synthesize_and_validate(
     LLM이 최종 후보 수를 줄일 권한을 갖지 않는다.
     """
     rule_survivors, rule_warnings = _rule_based_filter(candidates, conditions)
+    coverage_relaxed = False
+    if not rule_survivors:
+        rule_survivors, rule_warnings = _rule_based_filter(
+            candidates, conditions, relax_preference_coverage=True
+        )
+        coverage_relaxed = bool(rule_survivors)
+        if coverage_relaxed:
+            logger.info(
+                "preference_coverage_relaxed_at_step3 survivor_count=%s", len(rule_survivors)
+            )
     if not rule_survivors:
         return _infeasible_response()
+    if coverage_relaxed:
+        rule_warnings = [
+            " ".join(
+                p
+                for p in (
+                    warning,
+                    "취향 태그 조건을 일부 완화해서 찾았어요 — 좋아하는 것을 전부 반영하지는 "
+                    "못했을 수 있어요.",
+                )
+                if p
+            )
+            for warning in rule_warnings
+        ]
 
     similar_pairs = [
         (i, j, score)

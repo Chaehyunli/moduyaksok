@@ -4,6 +4,11 @@
 #              LLM이 실제로 잘 판단하는지가 아니라 규칙 기반 필터링/조립 로직을
 #              검증한다.
 # 작성일      : 2026-08-10
+# 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
+# 2026-08-15, 취향 태그 커버리지 부족으로 1차 필터가 전부 드롭해도
+#             relax_preference_coverage 재시도로 InfeasibleResponse 대신
+#             ScheduleResponse가 나오는지 검증하는 테스트 추가(synthesize_step3.py
+#             의 같은 날짜 변경사항 참고).
 # ------------------------------------------------------------------
 from datetime import datetime
 
@@ -667,6 +672,37 @@ def test_synthesize_and_validate_returns_infeasible_without_calling_llm_when_all
     result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", _CONDITIONS, [hallucinated])
 
     assert isinstance(result, InfeasibleResponse)
+
+
+def test_synthesize_and_validate_relaxes_coverage_instead_of_infeasible(monkeypatch):
+    # 좋아요 태그 5개 중 2개만 실제로 반영된 후보 — 과반수 기준(3개)엔 못
+    # 미치지만(test_preference_coverage_requires_three_of_five_verified_tags의
+    # two_matches와 동일 케이스, 거기선 True(불충분)로 확인됨) "결과 없음" 대신
+    # 완화해서 살려야 한다.
+    monkeypatch.setattr(
+        "app.pipeline.synthesize_step3.call_structured", _fake_judgment(keep_indices={0})
+    )
+    conditions = _CONDITIONS.model_copy(
+        update={
+            "liked_tags": [
+                PreferenceTag(tag=tag, verifiable=True)
+                for tag in ("와플", "파스타", "전시", "보드게임", "커피")
+            ]
+        }
+    )
+    two_matches = _candidate(
+        "두 태그만 반영",
+        [
+            _activity("와플집", start="14:00", end="15:00", matched_tags=["와플"]),
+            _activity("전시장", start="15:20", end="16:20", matched_tags=["전시"]),
+        ],
+    ).model_copy(update={"required_non_meal_tags": ["와플"]})
+
+    result = synthesize_and_validate("anthropic", "sk-fake", "sess-1", conditions, [two_matches])
+
+    assert isinstance(result, ScheduleResponse)
+    assert len(result.candidates) == 1
+    assert "일부 완화" in result.candidates[0].feasibility_warning
 
 
 def test_synthesize_and_validate_builds_schedule_response_from_llm_judgment(monkeypatch):

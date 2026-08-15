@@ -174,6 +174,13 @@
 #             실측 리포트 — hedge 예시 문장("비교적 한산한 편인 곳으로
 #             골랐어요")만으로는 모델이 안정적으로 톤을 못 맞춰서, Task 맨 위에
 #             "~해요체로 끝내라"는 지시를 명시로 추가.
+# 2026-08-15(2차), _tag_anchor_variants()가 태그 하나라도 실제 검색 결과가
+#             0건이면(예: "잠실 플스방") 조합 전체를 return []로 포기하던 걸
+#             수정 — 그 태그만 앵커 없이 건너뛰고 나머지 태그로는 계속 조합을
+#             만든다. 사용자 리포트: 태그를 여러 개 넣었을 때 그중 검색 결과가
+#             없는 태그 하나 때문에 일정 후보 전체가 "결과 없음"으로 자주
+#             떨어짐 — generate_algorithm_step2.py의 과반수 커버리지 완화와
+#             같은 날 같이 처리(둘 다 "결과 없음"의 서로 다른 원인).
 # ------------------------------------------------------------------
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -757,12 +764,13 @@ def _tag_anchor_variants(
     장소를 앵커로 둔다. 식사 태그끼리는 서로 다른 장소여야 하지만, 비식사 태그는
     하나의 장소가 여러 태그를 함께 만족해도 된다.
     """
-    tags = required_meal_tags + required_non_meal_tags
-    if not tags:
+    all_tags = required_meal_tags + required_non_meal_tags
+    if not all_tags:
         return [()]
 
     options: list[list[str]] = []
-    for tag in tags:
+    tags: list[str] = []
+    for tag in all_tags:
         names: list[str] = []
         for place in places:
             name = place.get("title", "")
@@ -776,8 +784,17 @@ def _tag_anchor_variants(
             if len(names) == _MAX_TAG_ANCHORS_PER_TAG:
                 break
         if not names:
-            return []
+            # 이 태그로 실제 검색된 장소가 하나도 없으면(예: "플스방" 0건인
+            # 지역) 태그 하나 때문에 조합 전체를 실패시키지 않고 앵커 없이
+            # 건너뛴다 — 나머지 태그로는 여전히 후보를 만들 수 있다
+            # (2026-08-15, 사용자 리포트: 검색 결과 없는 태그 하나가 섞이면
+            # 전체가 "결과 없음"으로 떨어짐).
+            continue
+        tags.append(tag)
         options.append(names)
+    tags = tuple(tags)
+    if not tags:
+        return [()]
 
     variants: list[tuple[tuple[str, str], ...]] = []
     for names in product(*options):
@@ -861,12 +878,23 @@ def _plans_for_cluster(
                 for anchors in _tag_anchor_variants(
                     places, required_meal_tags, required_non_meal_tags
                 ):
+                    # _tag_anchor_variants가 검색 결과 0건인 태그는 앵커 없이
+                    # 건너뛰므로(2026-08-15), 그 태그를 required_meal_tags/
+                    # required_non_meal_tags에 그대로 남겨두면 Step3의
+                    # _has_missing_required_tags가 "앵커도 없는 필수 태그"를
+                    # 여전히 강제해 결국 다시 드롭된다 — 실제로 앵커를 찾은
+                    # 태그만 남기게 걸러낸다.
+                    anchored_tags = {tag for tag, _ in anchors}
                     plans.append(
                         _CandidatePlan(
                             perspective_label="",
                             place_candidates=places,
-                            required_meal_tags=required_meal_tags,
-                            required_non_meal_tags=required_non_meal_tags,
+                            required_meal_tags=tuple(
+                                tag for tag in required_meal_tags if tag in anchored_tags
+                            ),
+                            required_non_meal_tags=tuple(
+                                tag for tag in required_non_meal_tags if tag in anchored_tags
+                            ),
                             required_tag_anchors=anchors,
                             required_place_ids=required_place_ids,
                             cluster_radius_meters=cluster.radius_meters,

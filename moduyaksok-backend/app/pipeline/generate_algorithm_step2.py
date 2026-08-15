@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -21,7 +22,13 @@ from app.pipeline.schemas import CandidateDraft, NormalizedConditions, PlaceSele
 from app.pipeline.score_preferences_step2 import PlacePreferenceScore, score_soft_preferences
 from app.pipeline.travel_estimate import estimate_buffer_minutes, is_car_dependent_region
 
-_MAX_PLACES = 5
+logger = logging.getLogger(__name__)
+
+# 2026-08-15(3차), 사용자 요청으로 5 -> 7 상향. 필수 장소가 이보다 많으면
+# (_target_place_count/_generate_for_plan의 max(len(seed_places), ...)) 이
+# 상한을 넘어서도 필수 장소는 그대로 유지된다 — 이 값은 "자동으로 채우는
+# 목표치"의 상한이지 절대 개수 제한이 아니다.
+_MAX_PLACES = 7
 _BEAM_WIDTH = 80
 _PER_PLAN_RESULTS = 12
 _MAX_TRAVEL_MINUTES = 15
@@ -96,12 +103,29 @@ def ensure_place_ids(places: list[dict]) -> list[dict]:
 def _rule_valid_drafts(
     drafts: list[_ScoredDraft], conditions: NormalizedConditions
 ) -> list[_ScoredDraft]:
-    """공동 다양성 선택 전에 Step3와 같은 최종 규칙을 통과한 조합만 남긴다."""
+    """공동 다양성 선택 전에 Step3와 같은 최종 규칙을 통과한 조합만 남긴다.
+
+    _has_insufficient_preference_coverage는 conditions.liked_tags 전체 개수로
+    커버리지 최소치를 다시 계산하므로, 위 _generate_for_plan()이 beam 완성
+    조건을 완화해서 넘긴 draft라도 여기서 같은 강도로 재평가하면 다시 걸러질
+    수 있다 — 그래서 여기도 1차는 엄격하게, 전부 걸러지면 커버리지만 완화해서
+    재시도한다(2026-08-15, synthesize_step3.synthesize_and_validate와 같은 패턴).
+    """
     # 순환 import를 피하면서 최종 검증 규칙을 한 곳에서만 유지한다. Step3는 이
     # 생성 모듈을 import하지 않으므로 함수 실행 시점의 지역 import는 안전하다.
     from app.pipeline.synthesize_step3 import _rule_based_filter
 
-    return [scored for scored in drafts if _rule_based_filter([scored.draft], conditions)[0]]
+    strict = [scored for scored in drafts if _rule_based_filter([scored.draft], conditions)[0]]
+    if strict:
+        return strict
+    relaxed = [
+        scored
+        for scored in drafts
+        if _rule_based_filter([scored.draft], conditions, relax_preference_coverage=True)[0]
+    ]
+    if relaxed:
+        logger.info("preference_coverage_relaxed_at_rule_filter draft_count=%s", len(relaxed))
+    return relaxed
 
 
 def _category(place: dict) -> str:
@@ -481,15 +505,40 @@ def _generate_for_plan(
     # 안 나와 409로 떨어지므로(2026-08-14, "구리" 반경 확장과 같은 이유) 있을 때만.
     activity_available = any(_category(place) in _ACTIVITY_CATEGORIES for place in places)
     requires_activity = activity_available and wanted > meal_slots
-    complete = [
-        state
-        for state in beams
-        if len(state.place_ids) == wanted
-        and state.meal_count >= meal_slots
-        and (not requires_activity or state.categories & _ACTIVITY_CATEGORIES)
-        and len((set(state.covered_tags) | set(precovered_liked_tags)) & liked_tags)
-        >= required_coverage
-    ]
+
+    def _complete(coverage: int, need_activity: bool) -> list[_BeamState]:
+        return [
+            state
+            for state in beams
+            if len(state.place_ids) == wanted
+            and state.meal_count >= meal_slots
+            and (not need_activity or state.categories & _ACTIVITY_CATEGORIES)
+            and len((set(state.covered_tags) | set(precovered_liked_tags)) & liked_tags)
+            >= coverage
+        ]
+
+    # 과반수(+1) 커버리지를 만족하는 조합이 하나도 없다고 바로 실패시키지 않는다
+    # — 요구치를 1씩 낮춰가며 재시도하고, coverage=0까지도 안 되면 마지막으로
+    # 놀거리 하드 요구까지 내려서 "beams 안에 있는 조합 중 뭐라도" 하나는 남긴다
+    # (2026-08-15, 사용자 리포트: 태그 5개처럼 커버리지 요구가 높을 때 "결과
+    # 없음"이 너무 잦음 — beams 자체(예산·이동거리·중복방지 등 이미 검증된
+    # 조합들)는 그대로 두고 이 완성 조건만 단계적으로 완화한다).
+    complete: list[_BeamState] = []
+    for coverage in range(required_coverage, -1, -1):
+        complete = _complete(coverage, requires_activity)
+        if complete:
+            if coverage < required_coverage:
+                logger.info(
+                    "preference_coverage_relaxed required=%s relaxed_to=%s",
+                    required_coverage,
+                    coverage,
+                )
+            break
+    if not complete and requires_activity:
+        complete = _complete(0, False)
+        if complete:
+            logger.info("activity_requirement_relaxed required_coverage=%s", required_coverage)
+
     return [
         _draft_for_state(
             state,
