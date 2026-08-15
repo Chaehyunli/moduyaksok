@@ -13,6 +13,13 @@
 # 2026-08-10, resolve_eval_credential()에 선택된 provider를 print하는 줄 추가 —
 #             폴백(upstage→openai→anthropic)이 실제로 어느 단계로 넘어갔는지 이전엔
 #             전혀 로그가 없어서 알 방법이 없었음. `pytest -m eval -s`로 봐야 보임.
+# 2026-08-15, ProviderJudgeModel.generate()의 anthropic 분기가 content[0].text를
+#             바로 썼는데, Step1 judge를 claude-sonnet-5로 임시로 바꿔 실측하다가
+#             AttributeError('ThinkingBlock' object has no attribute 'text')로
+#             크래시하는 걸 발견 — 응답 맨 앞에 텍스트 없는 ThinkingBlock이 먼저
+#             올 수 있었음. content 블록 중 type=="text"인 것만 골라 쓰게 수정.
+#             그동안 DEEPEVAL_ANTHROPIC_API_KEY가 무효했어서(폴백 3순위라 실제로
+#             안 쓰임) 이 경로가 한 번도 실행된 적이 없었던 걸로 보임.
 # ------------------------------------------------------------------
 import pytest
 from anthropic import Anthropic
@@ -85,7 +92,10 @@ class ProviderJudgeModel(DeepEvalBaseLLM):
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text
+            # content[0]이 항상 텍스트 블록이라고 가정하면 안 된다 — claude-sonnet-5는
+            # 응답 앞에 텍스트 없는 ThinkingBlock을 먼저 넣을 때가 있어(실측,
+            # 2026-08-15) content[0].text가 AttributeError로 죽는다.
+            return next(block.text for block in response.content if block.type == "text")
 
         base_url = _OPENAI_COMPATIBLE_BASE_URLS[self.provider]
         client = OpenAI(api_key=self.api_key, base_url=base_url)
