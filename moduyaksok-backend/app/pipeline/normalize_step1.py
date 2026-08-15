@@ -38,6 +38,11 @@
 #             전시 같은 "구체적 장소 카테고리형" 선호를 모델이 분류할 근거가 없었던
 #             게 원인 — verifiable=true 설명에 장소 카테고리 예시를 추가하고, 이
 #             패턴을 직접 겨냥하는 예시 6번 추가(place_type, verifiable=true).
+# 2026-08-15, 오타(예: "차킨" -> "치킨") 정정 지시 + 예시 7번 추가. LLM이 원래도
+#             문맥상 오타를 웬만큼 알아서 이해하긴 하지만, 지금까지 프롬프트에
+#             오타 케이스가 하나도 없어 실제로 표준 표기로 정정해서 태그에 담는지
+#             검증된 적이 없었다 — tests/eval/golden_step1.py에 골든 케이스 추가해
+#             같이 실측.
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -51,7 +56,7 @@ from app.services.structured_llm import call_structured
 # solar-pro로 교체돼(2026-08-12) 문제가 해소됐다 — LOW로 되돌림(2026-08-12).
 TIER = ModelTier.LOW
 
-# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 6개는 각각:
+# RTF(Role/Task/Format) 뼈대 + few-shot. 예시 7개는 각각:
 #   1. 기본 — 명시된 항목만 추출, verifiable=True
 #   2. 부정 표현 — "빼고/못 먹어요"의 대상이 disliked로 가야 함
 #   3. 빈 입력 — 아무것도 지어내면 안 됨 (실제 관측된 할루시네이션 버그를 직접 겨냥)
@@ -60,6 +65,9 @@ TIER = ModelTier.LOW
 #      place_type이어야 함 (2026-08-14 실측된 오분류를 직접 겨냥)
 #   6. verifiable 태그가 상한(MAX_VERIFIABLE_TAGS)보다 많이 언급 — 중요한 것만
 #      남기고 나머진 버려야 함
+#   7. 오타("차킨" 등) — 원문 표기 그대로가 아니라 정정된 표준 표기로 태그를
+#      남겨야 함 (오타를 못 알아본 것과, 원문에 없는 걸 지어낸 할루시네이션은
+#      다르다 — 3번 예시의 금지 규칙과 헷갈리지 않게 구분해서 지시)
 # MAX_VERIFIABLE_TAGS를 문자열로 두 번 박아넣지 않고 f-string으로 주입 — 상한이
 # 바뀔 때(2026-08-11(2차)에 3 -> 5로 한 번 바뀌었음) 프롬프트 문구를 깜빡하고
 # 안 고치는 사고를 막는다.
@@ -87,6 +95,8 @@ _SYSTEM_PROMPT = f"""\
   - verifiable=false 태그와 disliked_tags의 is_meal은 항상 false다.
 - 원문에 없는 내용은 절대 추가하지 마라. 언급이 없거나("(없음)") 막연하면 \
 빈 배열을 반환해라 — 그럴듯한 예시를 지어내면 안 된다.
+- 오타(예: "차킨")는 의도가 명확하면 원문 표기 그대로가 아니라 정정된 표준 \
+표기("치킨")로 태그에 담아라 — 이건 원문에 없는 걸 지어내는 것과 다르다.
 - verifiable=true인 태그는 liked_tags/disliked_tags 각각 최대 {MAX_VERIFIABLE_TAGS}개까지만 \
 남겨라. 그보다 많이 언급됐으면 사용자가 더 강조했거나 먼저/구체적으로 말한 순서로 \
 중요한 {MAX_VERIFIABLE_TAGS}개만 고르고 나머지는 버려라(단순히 등장 순서 앞 \
@@ -146,6 +156,14 @@ disliked_tags=[] \
 (타코·케밥은 "그정도까진 아니에요"로 우선순위가 낮다고 직접 밝혔으므로 \
 {MAX_VERIFIABLE_TAGS}번째 다음부터는 버린다 — 등장 순서가 아니라 사용자가 표현한 \
 중요도로 판단한 것)
+
+입력: 좋아하는 것: 차킨이랑 떡볶이 먹고 싶어요 / 싫어하는 것: (없음)
+출력: liked_tags=[{{tag: "치킨", verifiable: true, is_meal: true, \
+preference_kind: "food_menu", priority: 3}}, \
+{{tag: "떡볶이", verifiable: true, is_meal: true, preference_kind: "food_menu", \
+priority: 3}}], disliked_tags=[] \
+("차킨"은 "치킨"의 오타이므로 원문 표기 그대로가 아니라 정정된 표기로 태그를 \
+남긴다 — 없는 음식을 지어내는 것과는 다르다)
 """
 
 

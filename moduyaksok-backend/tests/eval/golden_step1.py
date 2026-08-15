@@ -6,6 +6,9 @@
 # 작성일      : 2026-08-07
 # 변경사항 내역 (날짜, 변경목적, 변경내용 순으로 기입)
 # 2026-08-07, PreferenceTag.verifiable 관련 케이스 추가/보강
+# 2026-08-15, 오타 정정 케이스 2개 추가 — normalize_step1.py에 오타 정정 지시/
+#             예시를 추가하면서, 프롬프트의 few-shot과 겹치지 않는 다른 단어로
+#             실제 일반화가 되는지 같이 실측.
 # ------------------------------------------------------------------
 from dataclasses import dataclass
 
@@ -86,5 +89,24 @@ GOLDEN_STEP1_CASES = [
         liked_text="",
         disliked_text="시끄러운 곳, 웨이팅 긴 곳 싫어요",
         notes="liked_text 비었으면 liked_tags도 비어야 하고, disliked_tags만 채워져야 함",
+    ),
+    GoldenCase(
+        name="typo_in_liked_item",
+        liked_text="냉묜이랑 김치찌개 먹고 싶어요",
+        disliked_text="",
+        notes=(
+            "'냉묜'은 '냉면'의 오타 — 원문 표기 그대로('냉묜')가 아니라 정정된 "
+            "표준 표기('냉면')로 태그가 남아야 함. 프롬프트 예시의 오타 단어(차킨) "
+            "와는 다른 단어라 암기가 아니라 실제 일반화가 되는지 확인하는 케이스"
+        ),
+    ),
+    GoldenCase(
+        name="typo_in_disliked_item",
+        liked_text="",
+        disliked_text="해산믈은 못 먹어요",
+        notes=(
+            "'해산믈'은 '해산물'의 오타. 부정 표현('못 먹어요')과 오타 정정이 "
+            "동시에 걸리는 케이스 — 정정된 '해산물'이 disliked_tags에 들어가야 함"
+        ),
     ),
 ]
