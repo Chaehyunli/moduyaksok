@@ -21,6 +21,11 @@
 #             추가. conftest.py의 autouse fixture가 기본은 항상 승인하므로, 이
 #             테스트만 별도로 0을 반환하게 덮어씀(tests/test_naver_local_search.py와
 #             같은 패턴).
+# 2026-08-15, 700m 이내 구간은 대중교통/자차가 없어도 hedge 안내가 후보당 한 번만
+#             붙는지, 먼 구간은 안 붙는지 검증하는 테스트 2개 추가. 기존
+#             "기술적 실패는 경고 없음" 테스트 하나는 기본 좌표(두 활동이 완전히
+#             같은 지점)가 새 700m 로직과 우연히 겹쳐서 좌표를 멀리 떨어뜨려
+#             분리했다(enrich_step4.py의 같은 날짜 변경사항 참고).
 # ------------------------------------------------------------------
 import asyncio
 from datetime import datetime
@@ -219,8 +224,13 @@ async def test_enrich_routes_omits_warning_on_transit_failure_but_keeps_walk(mon
 
     monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", failing_transit)
 
+    # 두 활동을 700m 이상 떨어뜨려서(기본 lat/lng는 두 활동이 완전히 같은 좌표라
+    # 700m 이내 hedge 안내와 섞임) "기술적 실패는 경고 없음"만 순수하게 검증한다.
     candidate = _candidate(
-        [_activity(1, "A", "10:00", "10:30"), _activity(2, "B", "11:00", "11:30")]
+        [
+            _activity(1, "A", "10:00", "10:30", lat=37.4979, lng=127.0276),
+            _activity(2, "B", "11:00", "11:30", lat=37.5665, lng=126.9780),
+        ]
     )
     result = await enrich_routes(candidate, _TIME_RANGE)
 
@@ -353,6 +363,48 @@ async def test_enrich_routes_omits_warning_on_car_failure_but_keeps_other_option
     assert result.feasibility_warning is None
 
 
+async def test_enrich_routes_adds_walk_friendly_hedge_once_for_close_segment(monkeypatch):
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(5))
+
+    async def no_transit(*a):
+        return []
+
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", no_transit)
+
+    # 기본 _activity 좌표(37.5, 127.0)는 세 활동 모두 동일 — 700m 이내라 대중교통/
+    # 자차가 없는 게 정상인 케이스. 구간이 2개(3활동)라도 안내는 한 번만 붙어야 함.
+    candidate = _candidate(
+        [
+            _activity(1, "A", "10:00", "10:30"),
+            _activity(2, "B", "11:00", "11:30"),
+            _activity(3, "C", "12:00", "12:30"),
+        ]
+    )
+    result = await enrich_routes(candidate, _TIME_RANGE)
+
+    assert result.feasibility_warning is not None
+    assert result.feasibility_warning.count("걸어가기 좋은 가까운 거리") == 1
+
+
+async def test_enrich_routes_no_walk_friendly_hedge_when_segment_is_far(monkeypatch):
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(30))
+
+    async def no_transit(*a):
+        return []
+
+    monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", no_transit)
+
+    candidate = _candidate(
+        [
+            _activity(1, "A", "10:00", "10:30", lat=37.4979, lng=127.0276),
+            _activity(2, "B", "11:00", "11:30", lat=37.5665, lng=126.9780),
+        ]
+    )
+    result = await enrich_routes(candidate, _TIME_RANGE)
+
+    assert result.feasibility_warning is None
+
+
 async def test_enrich_routes_flags_warning_when_final_schedule_exceeds_time_range(monkeypatch):
     monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(90))
 
@@ -380,7 +432,10 @@ async def test_enrich_routes_returns_no_warning_for_normal_schedule(monkeypatch)
     monkeypatch.setattr("app.pipeline.enrich_step4.get_transit_options", fake_transit)
 
     candidate = _candidate(
-        [_activity(1, "A", "10:00", "10:30"), _activity(2, "B", "10:40", "11:10")]
+        [
+            _activity(1, "A", "10:00", "10:30", lat=37.4979, lng=127.0276),
+            _activity(2, "B", "10:40", "11:10", lat=37.5665, lng=126.9780),
+        ]
     )
     result = await enrich_routes(candidate, _TIME_RANGE)
 

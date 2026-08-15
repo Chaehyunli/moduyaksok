@@ -61,6 +61,15 @@
 #             없는 일시적 장애까지 그 자리에 뜨는 건 오작동처럼 보인다.
 #             로깅(logger.exception)은 그대로 유지해 개발 콘솔에서는 계속
 #             보이게 하고, 사용자 화면에서만 뺀다.
+# 2026-08-15(2차), 700m 이내라 대중교통(ODsay 자체 정책)·자차 옵션이 없는 건
+#             기술적 실패가 아니라 "걸어가기 좋은 거리"라는 정상 상황이다 —
+#             사용자 요청으로, 구간마다 반복해서 경고를 붙이지 않고 그런 구간이
+#             하나라도 있으면 후보당 한 번만 hedge된 안내를 덧붙인다. 자차
+#             쪽엔 ODsay 같은 700m 하드룰이 코드에 없어서(naver_directions.py
+#             참고) 프로바이더 응답만으로는 "가까워서 없음"과 "다른 이유로
+#             없음"을 못 가른다 — 그래서 이 함수가 이미 들고 있는 좌표로 직접
+#             haversine_distance_m()을 계산해 판단한다(제공자 함수를 안 바꾸고
+#             오케스트레이션 레이어에서 같은 공식을 재사용).
 # ------------------------------------------------------------------
 import asyncio
 import logging
@@ -69,10 +78,14 @@ from datetime import datetime
 
 from app.config import settings
 from app.pipeline.schemas import Activity, Candidate, RouteOption, RouteSegment
-from app.pipeline.travel_estimate import reconcile_schedule
+from app.pipeline.travel_estimate import haversine_distance_m, reconcile_schedule
 from app.services.naver_directions import get_car_option
 from app.services.odsay_directions import get_transit_options, get_walk_option
 from app.services.rate_limiter import reserve_daily_budget
+
+# ODsay가 700m 이내를 자체적으로 "대중교통 없음"으로 판단하는 기준과 동일
+# (odsay_directions.py의 _TOO_CLOSE_ERROR_CODE 유발 거리, 실측 확인).
+_WALK_FRIENDLY_DISTANCE_M = 700
 
 logger = logging.getLogger(__name__)
 
@@ -162,11 +175,24 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
     fetched = await asyncio.gather(*(_fetch_segment_options(a, b) for a, b in pairs))
 
     routes: list[RouteSegment] = []
+    has_walk_friendly_segment = False
     for i, (options, warning) in enumerate(fetched):
         if warning:
             warnings.append(warning)
         if not options:
             continue
+
+        a, b = pairs[i]
+        motorized_modes = {option.mode for option in options} - {"walk"}
+        if (
+            not motorized_modes
+            and a.lat is not None
+            and a.lng is not None
+            and b.lat is not None
+            and b.lng is not None
+            and haversine_distance_m(a.lat, a.lng, b.lat, b.lng) < _WALK_FRIENDLY_DISTANCE_M
+        ):
+            has_walk_friendly_segment = True
 
         recommended = min(options, key=lambda o: o.duration_minutes)
         # 상세 화면의 최초 기본값은 자차다. 추천값은 여전히 객관적인 최단 옵션으로
@@ -197,6 +223,11 @@ async def enrich_routes(candidate: Candidate, time_range: tuple[datetime, dateti
         )
         activities = reconcile_schedule(
             activities, i, estimated_buffer, initially_selected.duration_minutes
+        )
+
+    if has_walk_friendly_segment:
+        warnings.append(
+            "일부 구간은 걸어가기 좋은 가까운 거리라 대중교통·자차 정보는 따로 보여드리지 않았어요."
         )
 
     if activities:

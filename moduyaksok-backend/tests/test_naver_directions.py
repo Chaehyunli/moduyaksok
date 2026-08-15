@@ -9,6 +9,8 @@
 # 2026-08-10, _SUCCESS_PAYLOAD에 "path" 필드(NCP가 주는 [lng, lat] 좌표 배열)
 #             추가. 새 테스트 2개 추가: 경로 좌표가 (lat, lng) 튜플로 올바르게
 #             변환되는지, 경로가 없을 때 빈 리스트로 기본값이 되는지 검증.
+# 2026-08-15, 일시적 실패 후 재시도로 성공하는지 검증하는 테스트 추가
+#             (naver_directions.py의 같은 날짜 변경사항 참고).
 # ------------------------------------------------------------------
 import httpx
 import pytest
@@ -146,6 +148,26 @@ async def test_get_car_option_converts_path_to_lat_lng_tuples(monkeypatch):
     option = await get_car_option(*_GANGNAM, *_CITY_HALL)
 
     assert option.path == [(37.497942, 127.027621), (37.52, 127.02), (37.5648, 126.9765)]
+
+
+async def test_get_car_option_retries_once_after_transient_failure(monkeypatch):
+    attempts = {"count": 0}
+
+    class _FlakyClient(_FakeAsyncClient):
+        async def get(self, url, params=None, headers=None):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise httpx.TimeoutException("timed out")
+            return _FakeResponse(200, _SUCCESS_PAYLOAD)
+
+    monkeypatch.setattr(
+        "app.services.naver_directions.httpx.AsyncClient", _FlakyClient(lambda: None)
+    )
+
+    option = await get_car_option(*_GANGNAM, *_CITY_HALL)
+
+    assert option is not None
+    assert attempts["count"] == 2
 
 
 async def test_get_car_option_path_defaults_to_empty_list_when_missing(monkeypatch):

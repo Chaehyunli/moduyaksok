@@ -12,6 +12,8 @@
 # 2026-08-10, 대중교통 경로 폴리라인 테스트 3개 추가. subPath[]에서 좌표 있는
 #             구간만 이어붙이는지, 좌표 없는 구간은 건너뛰는지, subPath 자체가
 #             없는 응답도 처리하는지 검증.
+# 2026-08-15, 700m 이내 스킵/에러 로그 분기, 진짜 실패 재시도 테스트 4개 추가
+#             (odsay_directions.py의 같은 날짜 변경사항 참고).
 # ------------------------------------------------------------------
 import httpx
 import pytest
@@ -266,6 +268,60 @@ async def test_get_transit_options_path_empty_when_subpath_missing(monkeypatch):
     options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
 
     assert options[0].path == []
+
+
+async def test_get_transit_options_logs_info_for_close_coords_skip(monkeypatch, caplog):
+    _patch_client(monkeypatch, lambda: (_ for _ in ()).throw(AssertionError("호출되면 안 됨")))
+
+    with caplog.at_level("INFO", logger="app.services.odsay_directions"):
+        await get_transit_options(*_GANGNAM, *_NEARBY)
+
+    assert "transit_skip_too_close" in caplog.text
+
+
+async def test_get_transit_options_logs_info_for_too_close_error_response(monkeypatch, caplog):
+    payload = {"error": {"msg": "출, 도착지가 700m이내입니다.", "code": "-98"}}
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, payload))
+
+    with caplog.at_level("INFO", logger="app.services.odsay_directions"):
+        await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert "transit_no_route_too_close" in caplog.text
+
+
+async def test_get_transit_options_logs_warning_for_other_error_codes(monkeypatch, caplog):
+    payload = {"error": {"msg": "인증 실패", "code": "-4"}}
+    _patch_client(monkeypatch, lambda: _FakeResponse(200, payload))
+
+    with caplog.at_level("WARNING", logger="app.services.odsay_directions"):
+        options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert options == []
+    assert "transit_no_route_error" in caplog.text
+    assert "-4" in caplog.text
+
+
+async def test_get_transit_options_retries_once_after_transient_failure(monkeypatch):
+    attempts = {"count": 0}
+
+    def flaky_response():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise httpx.TimeoutException("timed out")
+        return _FakeResponse(200, {"result": {"path": []}})
+
+    class _FlakyClient(_FakeAsyncClient):
+        async def get(self, url, params=None, headers=None):
+            return flaky_response()
+
+    monkeypatch.setattr(
+        "app.services.odsay_directions.httpx.AsyncClient", _FlakyClient(lambda: None)
+    )
+
+    options = await get_transit_options(*_GANGNAM, *_CITY_HALL)
+
+    assert options == []
+    assert attempts["count"] == 2
 
 
 async def test_get_transit_options_skips_subpath_leg_missing_coords(monkeypatch):

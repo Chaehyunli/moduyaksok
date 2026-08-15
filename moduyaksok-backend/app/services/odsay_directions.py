@@ -24,17 +24,36 @@
 #             (trafficType 1=지하철, 2=버스, 3=도보)에서 trafficType=3인 구간은
 #             좌표가 없어 건너뛰고, 나머지의 startX/Y·endX/Y를 순서대로 이어붙여
 #             RouteOption.path(lat, lng 튜플 리스트)로 채운다.
+# 2026-08-15, 사용자가 "백 로그를 보니 경로 찾기 실패가 많다"고 리포트했는데,
+#             지금까진 700m 이내 스킵도 ODsay가 준 그 외 에러(인증 실패·일시 장애
+#             등 진짜 실패 포함)도 전부 로그 없이 조용히 빈 리스트로 삼켜서 로그만
+#             보고는 "정상 무경로"와 "진짜 실패"를 구분할 방법이 아예 없었다.
+#             ① 클라이언트 사이드 700m 사전 체크와 ② API가 준 error.code="-98"
+#             (ODsay 자체 판단 700m 이내) 둘 다 info로 남기고, ③ 그 외 에러
+#             코드는 warning으로 code/message를 남겨 다음부터는 로그만으로 원인을
+#             구분할 수 있게 했다 — 사용자 경험(빈 옵션으로 degrade)은 그대로 유지.
+#             네트워크 hiccup 한 번에 그 구간 옵션이 통째로 사라지는 문제도 같이
+#             확인돼 짧은 재시도(1회, 백오프 없음)를 추가했다.
 # ------------------------------------------------------------------
+import logging
+
 import httpx
 
 from app.config import settings
 from app.pipeline.schemas import RouteOption
 from app.pipeline.travel_estimate import estimate_buffer_minutes, haversine_distance_m
 
+logger = logging.getLogger(__name__)
+
 _SEARCH_URL = "https://api.odsay.com/v1/api/searchPubTransPathT"
 
 # 700m 이내면 ODsay가 대중교통 검색 자체를 거부한다(error.code="-98", 실측 확인).
 _TOO_CLOSE_ERROR_CODE = "-98"
+
+# 일시적 네트워크 hiccup 한 번으로 그 구간의 대중교통 옵션이 통째로 사라지는 걸
+# 막기 위한 재시도 횟수(백오프 없이 즉시 재시도) — ponytail: 더 정교한 지수
+# 백오프는 실제로 1회 재시도로 부족하다는 게 실측되면 그때 추가.
+_MAX_ATTEMPTS = 2
 
 # ODsay의 pathType 값 — 공식 문서 기준 1=지하철, 2=버스, 3=지하철+버스 조합.
 _PATH_TYPE_LABELS = {1: "지하철", 2: "버스", 3: "버스+지하철"}
@@ -102,6 +121,9 @@ async def get_transit_options(
     문제는 OdsayError로 올린다.
     """
     if haversine_distance_m(lat1, lng1, lat2, lng2) < 700:
+        logger.info(
+            "transit_skip_too_close lat1=%s lng1=%s lat2=%s lng2=%s", lat1, lng1, lat2, lng2
+        )
         return []
 
     params = {
@@ -114,19 +136,29 @@ async def get_transit_options(
         "output": "json",
     }
     headers = {"Referer": settings.odsay_referer_url}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(_SEARCH_URL, params=params, headers=headers)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise OdsayError(f"ODsay 대중교통 경로 조회 실패: {exc}") from exc
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(_SEARCH_URL, params=params, headers=headers)
+                response.raise_for_status()
+            break
+        except httpx.HTTPError as exc:
+            if attempt == _MAX_ATTEMPTS:
+                raise OdsayError(f"ODsay 대중교통 경로 조회 실패: {exc}") from exc
 
     body = response.json()
-    if body.get("error") is not None:
-        # 700m 이내(-98)든 다른 사유(경로 없음 등)든 "이 구간엔 대중교통이 없다"는
-        # 정상 결과로 취급한다 — ODsay 쪽 일시적 오류와 진짜 무경로를 API 응답만으로
-        # 구분할 수 없어서, 페일세이프하게 "옵션 없음"으로 처리(호출부가
-        # feasibility_warning으로 알린다).
+    error = body.get("error")
+    if error is not None:
+        # "이 구간엔 대중교통이 없다"는 정상 결과로 취급해 빈 리스트로 degrade하는
+        # 건 그대로 유지한다(호출부가 이 경우 도보만 options에 담는다). 다만
+        # 진짜 실패(인증 오류·일시 장애 등)와 정상적인 700m 이내 무경로를 로그에서
+        # 구분할 수 있게 code/message를 남긴다 — 예전엔 여기서 아무 로그도 안
+        # 남아서 "실패가 잦다"는 걸 로그만으로 확인할 방법이 없었다.
+        code = error.get("code") if isinstance(error, dict) else None
+        if code == _TOO_CLOSE_ERROR_CODE:
+            logger.info("transit_no_route_too_close lat1=%s lng1=%s lat2=%s lng2=%s", lat1, lng1, lat2, lng2)
+        else:
+            logger.warning("transit_no_route_error code=%s error=%s", code, error)
         return []
 
     paths = body.get("result", {}).get("path", [])

@@ -21,6 +21,10 @@
 #             쌍으로 주는 좌표 배열을 (lat, lng) 튜플 리스트로 변환해서 반환 —
 #             프런트 Naver Maps JS SDK가 LatLng(lat, lng) 순서를 쓰므로 백엔드에서
 #             미리 맞춰 보낸다. path가 없으면(도보 옵션 등) 빈 리스트 기본값.
+# 2026-08-15, 일시적 네트워크 hiccup 한 번으로 그 구간의 자차 옵션이 통째로
+#             사라지는 문제(사용자 리포트)를 확인 — 재시도 없이 1회 실패로 바로
+#             NaverDirectionsError를 올리고 있었다. 짧은 재시도(1회, 백오프 없음)
+#             추가. odsay_directions.py와 같은 조치.
 # ------------------------------------------------------------------
 import httpx
 
@@ -32,6 +36,9 @@ _DIRECTIONS_URL = "https://maps.apigw.ntruss.com/map-direction/v1/driving"
 # code=0이 성공. 그 외(출발/도착 동일, 도로 주변 아님, 직선거리 1500km 이상 등)는
 # "이 구간엔 자차 경로가 없다"는 정상 상황으로 취급한다(공식 API 레퍼런스 기준).
 _SUCCESS_CODE = 0
+
+# odsay_directions.py와 같은 이유로 짧은 재시도(백오프 없이 즉시) 1회 추가.
+_MAX_ATTEMPTS = 2
 
 
 class NaverDirectionsError(Exception):
@@ -54,12 +61,15 @@ async def get_car_option(lat1: float, lng1: float, lat2: float, lng2: float) -> 
         "x-ncp-apigw-api-key-id": settings.naver_map_client_id,
         "x-ncp-apigw-api-key": settings.naver_map_client_secret,
     }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(_DIRECTIONS_URL, params=params, headers=headers)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise NaverDirectionsError(f"NCP Maps 자차 경로 조회 실패: {exc}") from exc
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(_DIRECTIONS_URL, params=params, headers=headers)
+                response.raise_for_status()
+            break
+        except httpx.HTTPError as exc:
+            if attempt == _MAX_ATTEMPTS:
+                raise NaverDirectionsError(f"NCP Maps 자차 경로 조회 실패: {exc}") from exc
 
     body = response.json()
     if body.get("code") != _SUCCESS_CODE:
