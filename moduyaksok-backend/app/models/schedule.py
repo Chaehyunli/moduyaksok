@@ -34,6 +34,8 @@
 #             태그 검색과 무관)를 구분하고, 재생성 때마다 새로 뜨는
 #             place_candidates에 원본 좌표 그대로 주입할 수 있게 한다. 일반
 #             필수 장소는 매번 다시 검색되므로 mapx/mapy가 비어 있어도 된다.
+# 2026-08-15, FeedbackMessage 제거(마이그레이션 f1a2b3c4d5e6) — 실제로 어디서도
+#             insert되지 않는 미구현 기능의 테이블이라 삭제.
 # ------------------------------------------------------------------
 from datetime import datetime
 from typing import Literal
@@ -117,16 +119,6 @@ class ScheduleRequiredPlace(SQLModel, table=True):
     # place_candidates에서 place_id로 다시 찾아지므로 비워둔다.
     mapx: str | None = None
     mapy: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-
-class FeedbackMessage(SQLModel, table=True):
-    __tablename__ = "feedback_message"
-
-    id: UUID = Field(primary_key=True, default_factory=uuid4)
-    session_id: UUID = Field(foreign_key="schedule_session.id")
-    role: str
-    content: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

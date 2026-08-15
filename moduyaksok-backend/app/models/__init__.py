@@ -1,6 +1,5 @@
 from app.models.llm_credential import LLMCredential
 from app.models.schedule import (
-    FeedbackMessage,
     SchedulePlacePool,
     ScheduleRequiredPlace,
     ScheduleSession,
@@ -14,6 +13,5 @@ __all__ = [
     "ScheduleSession",
     "SchedulePlacePool",
     "ScheduleRequiredPlace",
-    "FeedbackMessage",
     "ShareLink",
 ]
