@@ -211,7 +211,7 @@ async def test_enrich_routes_flags_warning_when_coordinates_missing(monkeypatch)
     assert "좌표를 찾지 못해" in result.feasibility_warning
 
 
-async def test_enrich_routes_flags_warning_on_transit_failure_but_keeps_walk(monkeypatch):
+async def test_enrich_routes_omits_warning_on_transit_failure_but_keeps_walk(monkeypatch):
     monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(10))
 
     async def failing_transit(*a):
@@ -225,7 +225,7 @@ async def test_enrich_routes_flags_warning_on_transit_failure_but_keeps_walk(mon
     result = await enrich_routes(candidate, _TIME_RANGE)
 
     assert [o.mode for o in result.routes[0].options] == ["walk"]
-    assert "대중교통 정보를 가져오지 못했습니다" in result.feasibility_warning
+    assert result.feasibility_warning is None
 
 
 async def test_enrich_routes_skips_odsay_call_and_warns_when_daily_budget_exhausted(monkeypatch):
@@ -332,7 +332,7 @@ async def test_enrich_routes_omits_car_when_none_returned(monkeypatch):
     assert [o.mode for o in result.routes[0].options] == ["walk"]
 
 
-async def test_enrich_routes_flags_warning_on_car_failure_but_keeps_other_options(monkeypatch):
+async def test_enrich_routes_omits_warning_on_car_failure_but_keeps_other_options(monkeypatch):
     monkeypatch.setattr("app.pipeline.enrich_step4.get_walk_option", lambda *a: _walk(10))
 
     async def fake_transit(*a):
@@ -350,7 +350,7 @@ async def test_enrich_routes_flags_warning_on_car_failure_but_keeps_other_option
     result = await enrich_routes(candidate, _TIME_RANGE)
 
     assert {o.mode for o in result.routes[0].options} == {"walk", "transit"}
-    assert "자동차 경로 정보를 가져오지 못했습니다" in result.feasibility_warning
+    assert result.feasibility_warning is None
 
 
 async def test_enrich_routes_flags_warning_when_final_schedule_exceeds_time_range(monkeypatch):

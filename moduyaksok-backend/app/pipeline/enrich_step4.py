@@ -51,6 +51,16 @@
 #             변환을 떠안아야 했다. Candidate.routes/feasibility_warning은 원래
 #             이 함수가 채우라고 만들어둔 필드였으니(schemas.py 주석 참고) 그냥
 #             그 타입을 직접 쓰기로 함 — EnrichedCandidate는 삭제.
+# 2026-08-15, ODsay/NCP Maps 호출이 네트워크 등으로 예외를 던지는 경우
+#             (예산 소진·좌표 없음처럼 사용자가 판단할 여지가 있는 케이스가
+#             아니라 순수 인프라 실패) 더는 feasibility_warning에 기술적
+#             문구("~정보를 가져오지 못했습니다")를 얹지 않는다 — 프런트
+#             상세 화면이 feasibility_warning을 "확인해주세요"(사용자가
+#             검토해야 할 트레이드오프) 타이틀로 그대로 노출하는데, 걷기
+#             옵션은 항상 남아있어 사용자가 뭘 확인하거나 조치할 방법이
+#             없는 일시적 장애까지 그 자리에 뜨는 건 오작동처럼 보인다.
+#             로깅(logger.exception)은 그대로 유지해 개발 콘솔에서는 계속
+#             보이게 하고, 사용자 화면에서만 뺀다.
 # ------------------------------------------------------------------
 import asyncio
 import logging
@@ -95,14 +105,14 @@ async def _fetch_segment_options(a: Activity, b: Activity) -> tuple[list[RouteOp
             logger.exception(
                 "대중교통 경로 응답을 처리하지 못해 해당 옵션만 생략합니다."
             )
-            return [], f"{a.name} → {b.name} 구간의 대중교통 정보를 가져오지 못했습니다."
+            return [], None
 
     async def fetch_car() -> tuple[RouteOption | None, str | None]:
         try:
             return await get_car_option(a.lat, a.lng, b.lat, b.lng), None
         except Exception:
             logger.exception("자동차 경로 응답을 처리하지 못해 해당 옵션만 생략합니다.")
-            return None, f"{a.name} → {b.name} 구간의 자동차 경로 정보를 가져오지 못했습니다."
+            return None, None
 
     transit_result, car_result = await asyncio.gather(fetch_transit(), fetch_car())
     transit_options, transit_warning = transit_result
