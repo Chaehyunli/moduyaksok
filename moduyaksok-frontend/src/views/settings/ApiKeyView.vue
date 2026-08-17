@@ -11,7 +11,7 @@ import DoodleDivider from '../../components/doodle/DoodleDivider.vue'
 const router = useRouter()
 const store = useAuthStore()
 
-const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar' } as const
+const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar', google: 'Gemini' } as const
 
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)

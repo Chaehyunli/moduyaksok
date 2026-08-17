@@ -9,7 +9,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useAuthStore()
 
-const provider = ref<'anthropic' | 'openai' | 'upstage'>(store.apiKeyProvider ?? 'anthropic')
+const provider = ref<'anthropic' | 'openai' | 'upstage' | 'google'>(store.apiKeyProvider ?? 'anthropic')
 
 function next() {
   store.selectProvider(provider.value)
@@ -33,6 +33,7 @@ function next() {
         <DoodleSelectCard
           title="GPT"
           subtitle="OpenAI · platform.openai.com에서 키 발급"
+          note="아직 이 서비스에서 충분히 검증되지 않았어요"
           :selected="provider === 'openai'"
           @select="provider = 'openai'"
         />
@@ -41,6 +42,13 @@ function next() {
           subtitle="Upstage · console.upstage.ai에서 키 발급"
           :selected="provider === 'upstage'"
           @select="provider = 'upstage'"
+        />
+        <DoodleSelectCard
+          title="Gemini"
+          subtitle="Google · aistudio.google.com에서 키 발급"
+          note="아직 이 서비스에서 충분히 검증되지 않았어요"
+          :selected="provider === 'google'"
+          @select="provider = 'google'"
         />
       </div>
 

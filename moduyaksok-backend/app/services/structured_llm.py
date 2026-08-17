@@ -18,6 +18,15 @@
 #             그대로 반환(필드 자체가 없음). GPT/Solar(.parse(), strict json_schema)
 #             에서는 재현된 적 없어서 anthropic 분기에만 넣는다 — 관측 안 된
 #             provider까지 미리 방어하지 않는다.
+# 2026-08-17, google(Gemini) 분기 추가 — google-genai SDK의 response_schema가
+#             Pydantic 모델을 직접 받아 response.parsed로 돌려주는 방식이라
+#             GPT/Solar(.parse())와 같은 계열(선언적 JSON 스키마 강제)로 취급했다.
+#             단, 이 분기는 실제 키로 아직 한 번도 호출해본 적이 없다(BYOK라
+#             등록된 Gemini 키가 없음) — API 문서 기준 "예상" 구현이라는 뜻.
+#             Claude의 tool_use 우회 방식과 근본적으로 다른 경로라 anthropic
+#             분기의 _repair_stringified_lists() 같은 보정이 필요 없을 가능성이
+#             높지만(실제로 GPT/Solar에도 안 넣었다), 이것도 실측 전엔 가정일
+#             뿐이다 — 실제로 찔러봐서 깨지는 형태가 나오면 그때 대응할 것.
 # ------------------------------------------------------------------
 import json
 import logging
@@ -25,6 +34,8 @@ import time
 from typing import TypeVar, get_origin
 
 from anthropic import Anthropic
+from google import genai
+from google.genai import types as genai_types
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -89,6 +100,9 @@ def call_structured(
     provider="openai"/"upstage": openai SDK의 client.beta.chat.completions.parse()에
     Pydantic 모델을 response_format으로 직접 넘김 — SDK가 JSON 스키마 변환·strict
     모드 강제·파싱까지 다 처리해줌.
+
+    provider="google": google-genai SDK에 response_schema로 Pydantic 모델을 직접
+    넘기고 response.parsed로 받음 — openai/upstage와 같은 계열(선언적 JSON 스키마).
     """
     if provider == "anthropic":
         client = Anthropic(api_key=api_key, max_retries=0)
@@ -144,5 +158,31 @@ def call_structured(
             response.usage.completion_tokens,
         )
         return response.choices[0].message.parsed
+
+    if provider == "google":
+        client = genai.Client(api_key=api_key)
+        started = time.perf_counter()
+        response = client.models.generate_content(
+            model=model,
+            contents=user,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                response_schema=schema,
+                http_options=genai_types.HttpOptions(
+                    timeout=int(_REQUEST_TIMEOUT_SECONDS * 1000)
+                ),
+            ),
+        )
+        logger.info(
+            "call_structured provider=%s model=%s elapsed_seconds=%.3f "
+            "input_tokens=%s output_tokens=%s",
+            provider,
+            model,
+            time.perf_counter() - started,
+            response.usage_metadata.prompt_token_count,
+            response.usage_metadata.candidates_token_count,
+        )
+        return response.parsed
 
     raise ValueError(f"알 수 없는 provider: {provider}")

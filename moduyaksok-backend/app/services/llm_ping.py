@@ -6,6 +6,7 @@
 #
 # ------------------------------------------------------------------
 from anthropic import Anthropic
+from google import genai
 from openai import OpenAI
 
 from app.pipeline.models import ModelTier, get_model
@@ -47,5 +48,13 @@ def ping_provider(provider: str, api_key: str) -> str:
             messages=[{"role": "user", "content": _TEST_MESSAGE}],
         )
         return resp.choices[0].message.content or ""
+
+    if provider == "google":
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=get_model("google", ModelTier.LOW),
+            contents=_TEST_MESSAGE,
+        )
+        return resp.text or ""
 
     raise ValueError(f"알 수 없는 provider: {provider}")

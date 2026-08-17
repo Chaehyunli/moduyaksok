@@ -79,6 +79,31 @@ def test_save_credential_rejects_wrong_format(client, monkeypatch):
     assert response.status_code == 422
 
 
+def test_save_credential_accepts_google_key_format(client, monkeypatch):
+    headers, _ = _login(client, monkeypatch)
+
+    response = client.post(
+        "/me/llm-credential",
+        json={"provider": "google", "api_key": "AIza" + "a" * 35},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "google"
+
+
+def test_save_credential_rejects_google_key_without_prefix(client, monkeypatch):
+    headers, _ = _login(client, monkeypatch)
+
+    response = client.post(
+        "/me/llm-credential",
+        json={"provider": "google", "api_key": "sk-" + "a" * 35},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
 def test_save_credential_upserts_single_row_per_user(client, session, monkeypatch):
     headers, user_id = _login(client, monkeypatch)
     client.post(

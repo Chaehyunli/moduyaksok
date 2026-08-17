@@ -26,15 +26,18 @@ from app.services.llm_ping import ping_provider
 
 router = APIRouter()
 
-Provider = Literal["anthropic", "openai", "upstage"]
+Provider = Literal["anthropic", "openai", "upstage", "google"]
 
 # 발급 기관이 공개한 키 접두사 기준. 완전한 형식 보증은 아니고 오탈자/다른 제공자
 # 키 혼동을 막는 용도. 프런트(ApiKeyEditView.vue)에서 같은 패턴으로 먼저 걸러주지만,
 # 요청을 직접 조작해 우회할 수 있으므로 여기서 다시 검증한다.
+# google(Gemini)은 2026-08-17 추가 — "AIza" 접두사는 공개 문서 기준이고 실제 발급된
+# 키로 검증은 안 해봤다(다른 provider 추가 때처럼 실제 키가 생기면 재확인할 것).
 _KEY_PATTERNS: dict[str, re.Pattern[str]] = {
     "anthropic": re.compile(r"^sk-ant-[A-Za-z0-9_-]{20,}$"),  # Claude: "sk-ant-" 접두사
     "openai": re.compile(r"^sk-[A-Za-z0-9_-]{20,}$"),  # GPT: "sk-" 접두사
     "upstage": re.compile(r"^up_[A-Za-z0-9]{20,}$"),  # Solar: "up_" 접두사
+    "google": re.compile(r"^AIza[A-Za-z0-9_-]{30,}$"),  # Gemini: "AIza" 접두사
 }
 
 

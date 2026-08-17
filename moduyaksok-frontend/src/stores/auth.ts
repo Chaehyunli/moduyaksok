@@ -7,7 +7,7 @@ export interface AuthUser {
   name: string | null
 }
 
-type ApiKeyProvider = 'anthropic' | 'openai' | 'upstage'
+type ApiKeyProvider = 'anthropic' | 'openai' | 'upstage' | 'google'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({

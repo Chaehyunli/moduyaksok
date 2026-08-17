@@ -12,7 +12,7 @@
 
 - Google Identity Services 로그인과 `HttpOnly` 쿠키 기반 세션 인증
   - 세션은 2시간이며, 만료 30분 전부터 사용 중인 세션을 자동 연장합니다.
-- 사용자 소유 Claude·GPT·Solar API 키 등록, 암호화 저장 및 실제 호출 검증(BYOK)
+- 사용자 소유 Claude·GPT·Solar·Gemini API 키 등록, 암호화 저장 및 실제 호출 검증(BYOK)
 - 목적·인원·시간·세부 지역·선호·비선호·예산을 반영한 일정 후보 생성
 - 네이버 지역검색 결과만 후보 장소로 사용해 존재하지 않는 장소 생성을 방지
 - 가성비·동선 최소화·취향 반영 관점의 후보 생성 및 규칙·LLM 이중 검증
@@ -61,7 +61,7 @@ AI 파이프라인은 다음 네 단계로 구성됩니다.
 | 백엔드 | FastAPI, SQLModel, Pydantic, Alembic |
 | 데이터 | PostgreSQL 16, Redis 7 |
 | 인증 | Google Identity Services, 자체 JWT `HttpOnly` 세션 쿠키 |
-| AI | Anthropic Claude, OpenAI GPT, Upstage Solar 사용자 BYOK |
+| AI | Anthropic Claude, OpenAI GPT, Upstage Solar, Google Gemini 사용자 BYOK |
 | 장소·경로 | NAVER 지역검색, ODsay 대중교통, NCP Maps Directions 5 |
 | 테스트 | pytest, Vitest, Vue Test Utils, DeepEval |
 | 배포 | Vercel(프런트엔드), Render(백엔드) |

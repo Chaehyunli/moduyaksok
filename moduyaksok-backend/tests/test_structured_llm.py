@@ -164,6 +164,59 @@ def test_call_structured_upstage_uses_same_path_as_openai_with_custom_base_url(m
     assert captured["timeout"] == 20.0
 
 
+class _FakeGeminiUsageMetadata:
+    def __init__(self, a: int, b: int):
+        self.prompt_token_count = a
+        self.candidates_token_count = b
+
+
+class _FakeGeminiResponse:
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.usage_metadata = _FakeGeminiUsageMetadata(15, 6)
+
+
+class _FakeGeminiModels:
+    def __init__(self, captured: dict, parsed):
+        self._captured = captured
+        self._parsed = parsed
+
+    def generate_content(self, **kwargs):
+        self._captured.update(kwargs)
+        return _FakeGeminiResponse(self._parsed)
+
+
+class _FakeGeminiClient:
+    def __init__(self, captured: dict, parsed, api_key: str = "", **_kwargs):
+        self.models = _FakeGeminiModels(captured, parsed)
+
+
+def test_call_structured_google_passes_schema_as_response_schema(monkeypatch):
+    captured: dict = {}
+    parsed = _Schema(liked_tags=["텐동"], disliked_tags=[])
+    monkeypatch.setattr(
+        "app.services.structured_llm.genai.Client",
+        lambda **kwargs: _FakeGeminiClient(captured, parsed, **kwargs),
+    )
+
+    result = call_structured(
+        provider="google",
+        api_key="AIza-fake",
+        model="gemini-2.5-flash",
+        system="시스템 프롬프트",
+        user="유저 프롬프트",
+        schema=_Schema,
+    )
+
+    assert result is parsed
+    assert captured["model"] == "gemini-2.5-flash"
+    assert captured["contents"] == "유저 프롬프트"
+    config = captured["config"]
+    assert config.system_instruction == "시스템 프롬프트"
+    assert config.response_mime_type == "application/json"
+    assert config.response_schema is _Schema
+
+
 class _Judgment(BaseModel):
     candidate_index: int
     keep: bool

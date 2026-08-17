@@ -23,6 +23,16 @@
 #             Step3=HIGH. 실제 TIER 배정은 각 step 파일(normalize_step1.py/
 #             generate_step2.py/synthesize_step3.py) 상단의 TIER 상수가 항상
 #             최신 진실이다 — 이 문서(및 아래 docstring)가 아니라.
+# 2026-08-17, google(Gemini) provider 추가 — 사용자 요청으로 GPT/Solar를 추가할
+#             때처럼 실제 키로 찔러보고 가격표를 실측한 뒤 넣는 게 원칙이지만
+#             (백엔드 CLAUDE.md "Structured output" 절), 지금은 등록된 Gemini
+#             키가 없어 GPT 추가 때와 동일한 수준(가격만 공개 자료 기준으로
+#             정렬, structured_llm.call_structured() 실제 호출은 아직 안 해봄)의
+#             "예상" 상태로 우선 넣는다 — 실제 키가 생기면 다른 provider들처럼
+#             작은 스크립트로 찔러보고 이 표·아래 가격 주석을 실측치로 갱신할 것.
+#             모델 ID는 구글이 공개한 크기 순서(flash-lite < flash < pro)만
+#             신뢰하고 골랐다 — 가격 숫자는 아직 안 넣음(실측 전엔 틀린 숫자를
+#             주석에 박아두는 게 더 위험하다고 판단).
 # ------------------------------------------------------------------
 from enum import StrEnum
 
@@ -78,6 +88,16 @@ MODELS: dict[str, dict[ModelTier, str]] = {
         ModelTier.LOW: "solar-pro4",
         ModelTier.MID: "solar-pro4",
         ModelTier.HIGH: "solar-pro4",
+    },
+    "google": {
+        # 미실측(위 2026-08-17 변경사항 참고) — 가격이 아니라 구글이 공개한 크기
+        # 순서로만 배정. 2.5가 아니라 3세대로 지정(2026-08-17, 사용자 요청) — 3세대
+        # 모델 ID 문자열 자체도 공개 문서 기준 추정이라, 실제 키로 찔러볼 때 구글
+        # 콘솔의 정확한 모델 이름부터 다시 확인할 것. 가격도 아직 안 넣음(실측
+        # 전엔 틀린 숫자를 주석에 박아두는 게 더 위험하다고 판단).
+        ModelTier.LOW: "gemini-3-flash-lite",
+        ModelTier.MID: "gemini-3-flash",
+        ModelTier.HIGH: "gemini-3-pro",
     },
 }
 

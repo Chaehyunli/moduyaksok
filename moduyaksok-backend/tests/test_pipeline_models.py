@@ -9,7 +9,7 @@ import pytest
 
 from app.pipeline.models import MODELS, ModelTier, get_model
 
-_PROVIDERS = ("anthropic", "openai", "upstage")
+_PROVIDERS = ("anthropic", "openai", "upstage", "google")
 
 
 @pytest.mark.parametrize("provider", _PROVIDERS)

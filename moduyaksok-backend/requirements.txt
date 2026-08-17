@@ -10,5 +10,6 @@ requests
 cryptography
 anthropic
 openai
+google-genai
 httpx
 redis

@@ -4,6 +4,7 @@ withDefaults(
     selected?: boolean
     title: string
     subtitle?: string
+    note?: string
   }>(),
   { selected: false },
 )
@@ -26,6 +27,7 @@ defineEmits<{ select: [] }>()
     <span class="font-hand">
       <span class="block text-lg text-ink">{{ title }}</span>
       <span v-if="subtitle" class="block text-sm text-ink/60">{{ subtitle }}</span>
+      <span v-if="note" class="block text-xs text-red">{{ note }}</span>
     </span>
   </button>
 </template>
