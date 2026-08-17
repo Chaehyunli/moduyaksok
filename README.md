@@ -1,5 +1,3 @@
-# 모두약속
-
 만남 목적, 시간, 지역, 예산, 선호·비선호를 입력하면 실제 장소 검색 결과를 바탕으로
 일정 후보를 만들고 이동 경로까지 보여주는 개인화 약속 일정 추천 서비스입니다.
 
@@ -9,6 +7,15 @@
 - 배포 URL: [https://moduyaksok.vercel.app/](https://moduyaksok.vercel.app/)
 
 ## 주요 기능
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/f1618828-0512-4c7d-a95f-84d36a51cfbb" width="48%" alt="모두약속 메인 1">
+  <img src="https://github.com/user-attachments/assets/500e97a3-acb0-4a9c-bd0b-b3a509b9d53a" width="48%" alt="모두약속 메인 2">
+</p>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/c65a4503-7b4e-44b1-9b11-f5f45eade6be" width="48%" alt="image 1">
+  <img src="https://github.com/user-attachments/assets/7da00114-3ee7-47e4-9c36-197b45e37512" width="48%" alt="image 2">
+</p>
 
 - Google Identity Services 로그인과 `HttpOnly` 쿠키 기반 세션 인증
   - 세션은 2시간이며, 만료 30분 전부터 사용 중인 세션을 자동 연장합니다.
