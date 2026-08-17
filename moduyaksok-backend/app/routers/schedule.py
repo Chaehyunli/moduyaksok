@@ -691,42 +691,58 @@ def _candidate_reordered(
     다시 이어붙인다 — enrich_routes()가 그 뒤 구간마다 실제 이동시간만큼
     reconcile_schedule()로 벌려주므로 여기서 이동시간을 미리 추정할 필요가 없다.
 
-    2026-08-15, time_locked=True인 활동은 "실제로 자리를 옮긴 경우"에만 잠금을
-    풀고 새 위치에 맞게 재계산한다 — 자리를 안 옮긴 잠긴 활동은 시간도 잠금도
-    그대로 둔다(그 활동이 끝나는 시각으로 커서만 맞춰서, 그 뒤 안 잠긴 활동이
-    거기부터 이어지게 한다). 처음엔 "이 함수가 항상 전체를 다시 잇는다"는 이유로
-    자리를 안 옮긴 활동까지 전부 잠금을 풀었는데, 실사용 중 "손 안 댄 활동의
-    잠금까지 다 풀린다"는 리포트를 받고 부분 재배치로 다시 설계했다 — 옮기지
-    않은 잠긴 활동을 건드리지 않는 게 "옮기는 순간 잠금 해제"라는 원래 결정
-    (docs/superpowers/plans/2026-08-15-candidate-order-and-time-lock.md 결정 4)
-    의 실제 의도에 맞다. ponytail: 옮긴 활동이 이미 지나간 잠긴 활동의 시간과
-    겹치는 경우까지는 막지 않는다(이 함수엔 원래 겹침 검사가 없었다) — 필요해지면
-    apply_manual_time과 같은 충돌 검사를 여기도 추가할 것.
+    2026-08-17, time_locked=True인 활동은 재정렬 시 위치(order)가 바뀌더라도
+    시간·잠금을 항상 그대로 둔다(그 활동이 끝나는 시각으로 커서만 맞춰서, 그 뒤
+    안 잠긴 활동이 거기부터 이어지게 한다). 이전엔 "원래 order 값 != 새 순서상
+    인덱스"로 "실제로 옮겼는지"를 추정해 그때만 잠금을 풀었는데, 이 인덱스 비교는
+    드래그로 다른 항목 하나만 옮겨도 그 항목이 지나친 모든 항목의 인덱스가
+    같이 밀리기 때문에 사용자가 손도 안 댄 잠긴 항목까지 "옮겨졌다"고 오판해
+    잠금이 풀리는 버그가 있었다(사용자 리포트, 2026-08-17). 잠긴 활동의 시간을
+    바꾸는 유일한 경로는 이제 명시적인 "시간 잠금 해제" 뿐이다.
+
+    2026-08-17(2차), 잠긴 활동의 시간대는 안 잠긴 활동이 못 들어가는 예약 구간으로
+    취급한다(사용자 리포트: 재정렬 후 안 잠긴 활동이 잠긴 활동과 똑같은 시간대로
+    겹쳐 보임) — 커서가 순서상 아직 도달 안 한 잠긴 활동의 시간대를 미리 모르고
+    그 위에 안 잠긴 활동을 그냥 얹어버리던 게 원인. 모든 잠긴 활동의 구간을 먼저
+    모아두고, 안 잠긴 활동을 커서 위치에 놓을 때마다 겹치는 잠긴 구간이 있으면
+    그 구간 뒤로 민다. 잠긴 활동끼리 겹치는 경우는 이 함수에서 만들어지지 않는다
+    (apply_manual_time이 잠금 시점에 이미 막음) — 그 전제가 깨지면 이 함수도
+    다시 봐야 한다.
     """
     by_order = {activity.order: activity for activity in candidate.activities}
     reordered = [by_order[position].model_copy(deep=True) for position in ordered_positions]
 
+    def _combine(reference: datetime, time_str: str) -> datetime:
+        # anchor_start(실제 날짜)와 같은 날짜로 맞춰서 비교해야 한다 — strptime은
+        # 연도 없는 시각을 1900-01-01로 만들어서, 그대로 비교하면 날짜 차이
+        # 때문에 항상 틀린 쪽이 이겨버린다(2026-08-15, 테스트로 발견).
+        return datetime.combine(reference.date(), datetime.strptime(time_str, "%H:%M").time())
+
+    locked_intervals = sorted(
+        (_combine(anchor_start, a.start_time), _combine(anchor_start, a.end_time))
+        for a in reordered
+        if a.time_locked
+    )
+
     cursor = anchor_start
-    for new_index, original_order in enumerate(ordered_positions):
-        activity = reordered[new_index]
-        new_order = new_index + 1
-        moved = original_order != new_order
-        activity.order = new_order
-        if activity.time_locked and not moved:
-            # cursor는 anchor_start(실제 날짜)를 기준으로 누적되는데, strptime("%H:%M")
-            # 은 연도 없는 시각을 1900-01-01로 만든다 — 그대로 max()를 하면 항상
-            # cursor가 이겨서(2026 > 1900) 잠긴 활동이 커서를 절대 못 미는 버그가
-            # 있었다(2026-08-15, 테스트로 발견). cursor와 같은 날짜로 맞춰서 비교.
-            locked_end_time = datetime.strptime(activity.end_time, "%H:%M").time()
-            locked_end = datetime.combine(cursor.date(), locked_end_time)
+    for new_index, activity in enumerate(reordered):
+        activity.order = new_index + 1
+        if activity.time_locked:
+            locked_end = _combine(cursor, activity.end_time)
             cursor = max(cursor, locked_end)
             continue
         duration = datetime.strptime(activity.end_time, "%H:%M") - datetime.strptime(
             activity.start_time, "%H:%M"
         )
-        activity.start_time = cursor.strftime("%H:%M")
-        cursor += duration
-        activity.end_time = cursor.strftime("%H:%M")
+        start = cursor
+        end = start + duration
+        for locked_start, locked_end in locked_intervals:
+            if start < locked_end and end > locked_start:
+                start = locked_end
+                end = start + duration
+        activity.start_time = start.strftime("%H:%M")
+        cursor = end
+        activity.end_time = end.strftime("%H:%M")
         activity.time_locked = False
 
     return candidate.model_copy(update={"activities": reordered, "routes": []}, deep=True)

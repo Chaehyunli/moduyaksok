@@ -1438,7 +1438,7 @@ def test_candidate_reorder_preview_reorders_activities_and_rebases_times(
 
 def test_candidate_reordered_keeps_locked_activity_untouched_when_it_does_not_move():
     """장소2가 잠긴 채로 자리를 안 옮기면(가운데 그대로), 시간·잠금 둘 다 그대로
-    남아야 한다 — 실제로 자리를 옮긴 장소1·장소3만 재계산·잠금 해제된다.
+    남아야 한다 — 자리를 옮긴 장소1·장소3만 재계산된다.
     2026-08-15 사용자 리포트: 드래그 한 번에 손 안 댄 활동까지 전부 잠금이
     풀리던 버그 수정.
     """
@@ -1471,7 +1471,13 @@ def test_candidate_reordered_keeps_locked_activity_untouched_when_it_does_not_mo
     assert by_name["장소1"].time_locked is False
 
 
-def test_candidate_reordered_unlocks_locked_activity_that_actually_moves():
+def test_candidate_reordered_keeps_locked_activity_untouched_even_when_its_own_slot_moves():
+    """장소1이 잠긴 채로 자리 자체가 바뀌어도(1번째→2번째) 시간·잠금은 그대로
+    유지돼야 한다 — 잠긴 활동의 시간을 바꾸는 유일한 경로는 명시적 "시간 잠금
+    해제"뿐이다(2026-08-17, 인덱스 비교로 "실제로 옮겼는지"를 추정하던 이전
+    로직을 제거하면서 이 케이스의 기대값도 바뀜). 앞자리로 온 안 잠긴 장소2는
+    anchor(10:00)가 아니라 잠긴 장소1의 시간대(10:00~11:00)를 피해 11:00부터
+    시작해야 한다(2026-08-17(2차) 겹침 회피 수정으로 기대값 추가 조정)."""
     from app.routers.schedule import _candidate_reordered
 
     candidate = Candidate(
@@ -1490,8 +1496,132 @@ def test_candidate_reordered_unlocks_locked_activity_that_actually_moves():
     updated = _candidate_reordered(candidate, [2, 1], datetime(2026, 8, 15, 10, 0))
 
     by_name = {a.name: a for a in updated.activities}
-    assert by_name["장소1"].time_locked is False
-    assert by_name["장소1"].start_time == "11:00"  # 새 자리(2번째)에 맞게 재계산됨
+    assert by_name["장소1"].time_locked is True
+    assert by_name["장소1"].start_time == "10:00"  # 잠긴 시간 그대로
+    assert by_name["장소1"].order == 2  # 리스트 위치는 반영됨
+    assert by_name["장소2"].order == 1
+    assert by_name["장소2"].start_time == "11:00"  # 잠긴 장소1(10:00~11:00)과 안 겹치게 그 뒤로
+
+
+def test_candidate_reordered_keeps_locked_activity_untouched_when_shifted_by_unrelated_drag():
+    """사용자 리포트(2026-08-17): 4개 중 장소2만 잠근 채로 장소4를 맨 앞으로
+    드래그하면, 장소2는 손도 안 댔는데 인덱스가 2번째→3번째로 밀린다. 이 인덱스
+    이동만으로 잠금이 풀리면 안 된다."""
+    from app.routers.schedule import _candidate_reordered
+
+    candidate = Candidate(
+        candidate_id="A",
+        title="t",
+        why_recommended="",
+        activities=[
+            _activity(1, "장소1").model_copy(update={"start_time": "10:00", "end_time": "11:00"}),
+            _activity(2, "장소2").model_copy(
+                update={"start_time": "11:00", "end_time": "12:00", "time_locked": True}
+            ),
+            _activity(3, "장소3").model_copy(update={"start_time": "12:00", "end_time": "13:00"}),
+            _activity(4, "장소4").model_copy(update={"start_time": "13:00", "end_time": "14:00"}),
+        ],
+        routes=[],
+    )
+
+    # 장소4를 맨 앞으로 드래그: 새 순서 [4, 1, 2, 3] — 장소2는 안 건드렸지만
+    # 인덱스는 2번째(index 1)에서 3번째(index 2)로 밀린다.
+    updated = _candidate_reordered(candidate, [4, 1, 2, 3], datetime(2026, 8, 15, 10, 0))
+
+    by_name = {a.name: a for a in updated.activities}
+    assert by_name["장소2"].time_locked is True
+    assert by_name["장소2"].start_time == "11:00"
+    assert by_name["장소2"].end_time == "12:00"
+    assert by_name["장소2"].order == 3
+
+
+def test_candidate_reordered_does_not_let_unlocked_activity_overlap_a_locked_one():
+    """사용자 리포트(2026-08-17, 스크린샷): 재정렬 후 안 잠긴 활동이 잠긴 활동과
+    똑같은 시간대(13:09~14:39)로 겹쳐 보임. 잠긴 활동의 시간대는 예약된 구간으로
+    취급해 안 잠긴 활동이 거길 피해서 채워져야 한다."""
+    from app.routers.schedule import _candidate_reordered
+
+    candidate = Candidate(
+        candidate_id="A",
+        title="t",
+        why_recommended="",
+        activities=[
+            _activity(1, "장소1").model_copy(update={"start_time": "09:00", "end_time": "10:00"}),
+            _activity(2, "장소2").model_copy(
+                update={"start_time": "11:00", "end_time": "12:00", "time_locked": True}
+            ),
+            _activity(3, "장소3").model_copy(update={"start_time": "12:00", "end_time": "13:00"}),
+            _activity(4, "장소4").model_copy(
+                update={"start_time": "09:00", "end_time": "10:00", "time_locked": True}
+            ),
+        ],
+        routes=[],
+    )
+
+    # 새 순서: [장소1, 장소3, 장소2(잠김), 장소4(잠김)] — 장소4는 09:00~10:00에
+    # 고정돼 있는데 맨 뒤로 옮겨져도 시간은 그대로다. 그런데 커서 계산이 장소4의
+    # 잠긴 시간대를 미리 고려하지 않으면, 맨 앞의 장소1이 똑같이 09:00~10:00을
+    # 차지해버려 겹친다.
+    updated = _candidate_reordered(candidate, [1, 3, 2, 4], datetime(2026, 8, 15, 9, 0))
+
+    def _to_minutes(hhmm: str) -> int:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
+    intervals = [
+        (_to_minutes(a.start_time), _to_minutes(a.end_time)) for a in updated.activities
+    ]
+    for i in range(len(intervals)):
+        for j in range(i + 1, len(intervals)):
+            start_i, end_i = intervals[i]
+            start_j, end_j = intervals[j]
+            assert start_i >= end_j or start_j >= end_i, (
+                f"{updated.activities[i].name}({intervals[i]})와 "
+                f"{updated.activities[j].name}({intervals[j]})가 겹침"
+            )
+
+    by_name = {a.name: a for a in updated.activities}
+    assert by_name["장소2"].start_time == "11:00"  # 잠긴 시간 그대로
+    assert by_name["장소4"].start_time == "09:00"  # 잠긴 시간 그대로
+
+
+def test_candidate_reordered_preserves_two_locked_activities_independently():
+    """잠긴 활동이 2개 이상이어도 서로 독립적으로 시간·잠금이 보존돼야 한다 —
+    한쪽만 처리하고 나머지는 놓치는 회귀를 막기 위한 확인용 테스트."""
+    from app.routers.schedule import _candidate_reordered
+
+    candidate = Candidate(
+        candidate_id="A",
+        title="t",
+        why_recommended="",
+        activities=[
+            _activity(1, "장소1").model_copy(
+                update={"start_time": "10:00", "end_time": "10:30", "time_locked": True}
+            ),
+            _activity(2, "장소2").model_copy(update={"start_time": "10:30", "end_time": "11:30"}),
+            _activity(3, "장소3").model_copy(
+                update={"start_time": "13:00", "end_time": "14:00", "time_locked": True}
+            ),
+            _activity(4, "장소4").model_copy(update={"start_time": "14:00", "end_time": "15:00"}),
+        ],
+        routes=[],
+    )
+
+    # 안 잠긴 장소2와 장소4끼리만 자리를 바꾼다: [1, 4, 3, 2]
+    updated = _candidate_reordered(candidate, [1, 4, 3, 2], datetime(2026, 8, 15, 10, 0))
+
+    by_name = {a.name: a for a in updated.activities}
+    assert by_name["장소1"].time_locked is True
+    assert by_name["장소1"].start_time == "10:00"
+    assert by_name["장소1"].end_time == "10:30"
+    assert by_name["장소3"].time_locked is True
+    assert by_name["장소3"].start_time == "13:00"
+    assert by_name["장소3"].end_time == "14:00"
+    # 안 잠긴 두 활동은 새 순서(장소4가 2번째, 장소2가 4번째)로 재계산됨
+    assert by_name["장소4"].order == 2
+    assert by_name["장소4"].start_time == "10:30"  # 장소1이 끝나는 시각부터
+    assert by_name["장소2"].order == 4
+    assert by_name["장소2"].start_time == "14:00"  # 장소3이 끝나는 시각부터
 
 
 def test_candidate_reorder_preview_rejects_non_permutation(client, session, monkeypatch):

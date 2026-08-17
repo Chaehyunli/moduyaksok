@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { VueDraggable } from 'vue-draggable-plus'
 import { useScheduleStore } from '../stores/schedule'
 import type { Activity, Candidate, RouteSegment } from '../stores/schedule'
 import { tagColorForLabel } from '../lib/tagColors'
@@ -50,9 +49,9 @@ const candidate = computed(() => {
   }
 })
 
-// 카드 목록의 드래그 순서는 이 배열이 정본이다 — candidate.value.activities와
-// 별개 참조라 VueDraggable이 드롭 즉시(네트워크 응답을 기다리지 않고) 직접
-// 재배열한다. candidate가 바뀔 때(미리보기 도착·저장·취소)마다 다시 동기화한다.
+// 카드 목록의 순서는 이 배열이 정본이다 — candidate.value.activities와 별개
+// 참조라 ▲▼ 버튼을 누르면 네트워크 응답을 기다리지 않고 바로 재배열해서 보여준다.
+// candidate가 바뀔 때(미리보기 도착·저장·취소)마다 다시 동기화한다.
 const draggableActivities = ref<Activity[]>([])
 watch(
   () => candidate.value?.activities,
@@ -83,9 +82,9 @@ const hasPendingChanges = computed(
     Boolean(reorderPreviewCandidate.value) ||
     Boolean(timePreviewCandidate.value),
 )
-// 다른 변경(대체/제외) 미리보기가 떠 있거나 저장 중이면 드래그 자체를 막는다 —
+// 다른 변경(대체/제외) 미리보기가 떠 있거나 저장 중이면 순서 변경 자체를 막는다 —
 // 한 번에 한 종류의 변경만 미리보기 상태로 둔다는 원칙(§2, 설계 문서 참고).
-const dragDisabled = computed(
+const reorderDisabled = computed(
   () =>
     pendingExcludedPlaceIds.value.length > 0 ||
     Boolean(previewCandidate.value) ||
@@ -248,18 +247,43 @@ async function regenerateCandidate() {
   }
 }
 
-// 드롭마다 바로 요청을 쏘지 않고 500ms 묶어서 보낸다 — 저장 없이 연속으로
-// 드래그해도 되게 지원해야 하는데, 매 드롭마다 ODsay/NCP 호출까지 나가는
+// 버튼 클릭마다 바로 요청을 쏘지 않고 500ms 묶어서 보낸다 — 저장 없이 연속으로
+// 눌러도 되게 지원해야 하는데, 매 클릭마다 ODsay/NCP 호출까지 나가는
 // enrich_routes()를 그대로 태우면 짧은 시간에 여러 번 재계산이 발생해 응답이
 // 낭비되고 ODsay 일일 호출 예산도 불필요하게 깎인다. 디바운스 중에도 카드
-// 목록(draggableActivities)은 즉시 반영되므로 드래그 조작감은 그대로다.
+// 목록(draggableActivities)은 즉시 반영되므로 조작감은 그대로다.
 let reorderRequestSeq = 0
 let reorderDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
+// /reorder/preview는 매번 저장된(storedCandidate) 상태부터 다시 계산한다 —
+// 저장 안 한 이전 미리보기 응답이 새로 매긴 order 값을 그대로 다음 요청에 쓰면,
+// 백엔드는 그 값을 "원래 저장된" order로 오해해 완전히 다른 배열을 계산해버린다
+// (예: 잠긴 항목을 넘겨 두 번에 나눠 옮기면 첫 이동이 통째로 되돌아가는 버그,
+// 2026-08-17 사용자 리포트로 발견). draggableActivities의 배열 순서 자체는
+// 매 클릭 정확하므로, 항상 storedCandidate에서 안정적인 order 값을 다시 찾아
+// 보낸다 — 저장 없이 몇 번을 나눠 눌러도 항상 올바르게 계산된다.
 function onReorderEnd() {
-  const orderedPositions = draggableActivities.value.map((a) => a.order)
+  const persistedOrderByKey = new Map(
+    (storedCandidate.value?.activities ?? []).map((a) => [a.placeId ?? a.name, a.order]),
+  )
+  const orderedPositions = draggableActivities.value.map(
+    (a) => persistedOrderByKey.get(a.placeId ?? a.name) ?? a.order,
+  )
   clearTimeout(reorderDebounceTimer)
   reorderDebounceTimer = setTimeout(() => previewReorder(orderedPositions), 500)
+}
+
+// ▲▼ 버튼은 바로 옆 항목과만 자리를 바꾼다 — 잠긴 항목이 섞여 있어도 백엔드가
+// (order 인덱스가 아니라) time_locked만 보고 시간을 보존하므로 잠긴 항목을
+// 넘어가며 옮겨도 그 항목의 시간은 절대 안 바뀐다.
+function moveActivity(index: number, direction: -1 | 1) {
+  if (reorderDisabled.value) return
+  const target = index + direction
+  if (target < 0 || target >= draggableActivities.value.length) return
+  const items = [...draggableActivities.value]
+  ;[items[index], items[target]] = [items[target], items[index]]
+  draggableActivities.value = items
+  onReorderEnd()
 }
 
 onUnmounted(() => clearTimeout(reorderDebounceTimer))
@@ -462,23 +486,26 @@ function cancelCandidateChanges() {
 
       <DoodleMap v-if="mapMarkers.length > 0" :markers="mapMarkers" :segments="mapSegments" class="mb-6" />
 
-      <VueDraggable
-        v-model="draggableActivities"
-        :disabled="dragDisabled"
-        handle=".drag-handle"
-        :animation="150"
-        :force-fallback="true"
-        :fallback-tolerance="3"
-        class="space-y-3"
-        @end="onReorderEnd"
-      >
+      <div class="space-y-3">
         <div v-for="(a, i) in draggableActivities" :key="a.placeId ?? a.name">
           <DoodleCard :style="activityAccentStyle(a)">
             <div class="flex items-start gap-3">
-              <span
-                class="drag-handle mt-1 shrink-0 font-hand text-lg leading-none text-ink/40"
-                :class="dragDisabled ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'"
-              >⠿</span>
+              <span class="mt-1 flex shrink-0 flex-col gap-0.5">
+                <button
+                  type="button"
+                  class="font-hand text-sm leading-none text-ink/40 hover:text-ink disabled:pointer-events-none disabled:opacity-30"
+                  :disabled="reorderDisabled || i === 0"
+                  aria-label="위로 이동"
+                  @click="moveActivity(i, -1)"
+                >▲</button>
+                <button
+                  type="button"
+                  class="font-hand text-sm leading-none text-ink/40 hover:text-ink disabled:pointer-events-none disabled:opacity-30"
+                  :disabled="reorderDisabled || i === draggableActivities.length - 1"
+                  aria-label="아래로 이동"
+                  @click="moveActivity(i, 1)"
+                >▼</button>
+              </span>
               <div class="min-w-0 flex-1">
                 <p class="flex items-center gap-2 font-hand text-lg text-ink">
                   <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 border-ink bg-red text-sm text-paper">{{ i + 1 }}</span>
@@ -568,7 +595,7 @@ function cancelCandidateChanges() {
             <p v-else class="font-hand text-sm text-ink/40">이동 경로 정보 없음</p>
           </div>
         </div>
-      </VueDraggable>
+      </div>
 
       <DoodleDivider class="my-8" />
 
