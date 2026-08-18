@@ -48,18 +48,20 @@ Web Crypto API(PBKDF2 → AES-GCM)로 로컬 암호화 → 서버는 암호문�
 ## 3. 전체 아키텍처
 
 ```
-[등록]
-브라우저: 패스프레이즈 입력 → PBKDF2 유도(salt) → AES-GCM 암호화(iv)
+[등록] (verify 통과가 저장의 필수 전제조건 — 실패하면 저장 자체를 안 함)
+브라우저: 패스프레이즈 + API 키(평문) 입력
+   → POST /me/llm-credential/verify { provider, api_key(평문) }
+   서버: ping_provider 호출 결과만 반환, 저장 안 함
+   → 실패 시 "키가 유효하지 않습니다" 피드백하고 여기서 중단
+   → 성공 시에만: PBKDF2 유도(salt) → AES-GCM 암호화(iv)
    → POST /me/llm-credential { provider, ciphertext, salt, iv,
                                 kdf_iterations, masked_key }
 서버: 그대로 저장. 평문을 본 적 없음.
 
-[저장 전 유효성 확인] (버튼 클릭 시, 평문은 저장 안 됨)
-브라우저 → POST /me/llm-credential/verify { provider, api_key(평문) }
-서버: ping_provider 호출 결과만 반환, 저장 안 함.
-
 [스케줄 생성 / 키 재확인]
-브라우저: 캐시된 유도키 있으면 즉시 로컬 복호화, 없으면 패스프레이즈 입력 모달
+브라우저: GET /me/llm-credential로 ciphertext/salt/iv/kdf_iterations 확보(화면
+   진입 시 미리 캐시해두면 이 왕복은 생성 시점에 안 걸림)
+   → 캐시된 유도키 있으면 즉시 로컬 복호화, 없으면 패스프레이즈 입력 모달
    → POST .../generate (또는 /test) { ..., api_key(평문) }
 서버: 그 요청 처리 중에만 평문 사용, 응답 후 버림. DB엔 안 씀.
 ```
@@ -76,6 +78,11 @@ Web Crypto API(PBKDF2 → AES-GCM)로 로컬 암호화 → 서버는 암호문�
 - `kdf_iterations`를 DB에 같이 저장 — 나중에 반복 횟수를 올려도 기존 행은
   그때 저장된 값으로 복호화 가능해야 하므로. salt/iv/iterations는 비밀이
   아니라 평문 컬럼으로 저장해도 안전.
+- `deriveKey`로 만드는 `CryptoKey`는 원칙적으로 `extractable: false`. 단,
+  `sessionStorage` 캐시본(§4.5)은 저장을 위해 raw bytes로 export해야 하므로
+  그 사본만 `extractable: true`로 유도 — devtools 덤프 방어는 이 지점에서
+  포기하는 대신 새로고침 생존 UX를 얻는 의도된 트레이드오프(XSS 앞에서는
+  둘 다 어차피 뚫리므로 실질 손실은 작음).
 
 ### 4.2 DB 스키마 (`llm_credential`, `app/models/llm_credential.py`)
 ```python
@@ -101,12 +108,18 @@ class LLMCredential(SQLModel, table=True):
   그 역할은 아래 `/verify`로 이동.
 - 신규 `POST /me/llm-credential/verify`: body `{provider, api_key}`(평문).
   기존 `_KEY_PATTERNS` 정규식 검증 + `ping_provider` 호출, 결과만 반환하고
-  아무것도 저장하지 않음. 프런트가 등록 직전에 호출해 기존 "저장 전 유효성
-  확인" UX를 유지.
+  아무것도 저장하지 않음. **등록 흐름의 필수 선행 단계** — 프런트는 이 호출이
+  성공해야만 `POST /me/llm-credential`을 호출함(실패한 키가 저장되는 경로
+  자체를 차단). 요청/에러 로깅에 `api_key` 평문이 남지 않도록 주의(로깅
+  미들웨어가 요청 body나 예외 스택트레이스를 통째로 남기지 않는지 확인).
 - `POST /me/llm-credential/test`: body에 평문 `api_key` 추가 필요. 기존처럼
   DB에서 `encrypted_key`를 꺼내 서버가 복호화하는 로직 제거 — body로 받은
   평문을 그대로 `ping_provider`에 전달하고 `verified_at`만 갱신.
-- `GET /me/llm-credential`: `masked_key` 컬럼을 그대로 반환. 복호화 없음.
+- `GET /me/llm-credential`: `masked_key`뿐 아니라 로컬 복호화에 필요한
+  `ciphertext(encrypted_key)`, `salt`, `iv`, `kdf_iterations`도 같이 반환.
+  본인 소유 자격증명만 조회 가능한 기존 인증 스코프 그대로라 노출 범위는
+  안 늘어남 — 브라우저가 이 값들을 못 받으면 애초에 로컬 복호화가 불가능하기
+  때문에 필수. 서버는 여전히 복호화 안 함.
 - `DELETE /me/llm-credential`: 변경 없음.
 
 ### 4.4 스케줄 생성 라우터 (`app/routers/schedule.py`)
@@ -119,14 +132,18 @@ class LLMCredential(SQLModel, table=True):
 - 신규 `src/lib/credentialCrypto.ts`: `deriveKey(passphrase, salt)`,
   `encrypt(plaintext, key)`, `decrypt(ciphertext, key, iv)`, `maskKey(raw)`.
   전부 `crypto.subtle` 기반, 새 npm 의존성 없음.
-- 신규 패스프레이즈 세션 캐시: Pinia store, persist 안 함(새로고침 시 소실 —
-  기존 `auth.ts`가 JWT를 HttpOnly 쿠키로만 다루고 localStorage에 안 두는
-  보안 태도와 동일한 결). 유도된 `CryptoKey`만 메모리에 보관, 패스프레이즈
-  원문은 유도 직후 버림.
+- 신규 패스프레이즈 세션 캐시: Pinia store + `sessionStorage`. 유도 직후
+  `CryptoKey`를 raw bytes로 export → base64 → `sessionStorage`에 저장(Pinia
+  상태는 그 위에 얹은 캐시일 뿐, 진짜 소스는 `sessionStorage`). 새로고침해도
+  탭이 살아있는 한 유지되고, 탭/창을 닫으면 `sessionStorage`가 자동으로
+  비워져 재입력이 필요해짐 — 다른 탭·창과는 애초에 공유 안 됨. 패스프레이즈
+  원문 자체는 유도 직후 버림(저장 대상 아님).
 - `ApiKeyEditView.vue`: 패스프레이즈 입력 필드 추가 → 로컬 유도 →
   `/verify`로 테스트 → 통과 시 로컬 암호화해서 `POST`.
-- 스케줄 생성을 트리거하는 화면들: 캐시된 유도키 있으면 로컬 복호화해서 요청에
-  평문 실음, 없으면 패스프레이즈 입력 모달 먼저.
+- 스케줄 생성을 트리거하는 화면들: `GET /me/llm-credential`로 ciphertext/salt/
+  iv/kdf_iterations를 가져온 뒤(화면 진입 시 미리 fetch해 캐시해두면 생성
+  시점엔 이 왕복이 안 걸림), 캐시된 유도키 있으면 로컬 복호화해서 요청에
+  평문 실음, 없으면 패스프레이즈 입력 모달 먼저 → 유도 후 복호화.
 
 ## 5. 에러 처리
 - **패스프레이즈 오입력**: AES-GCM은 인증 태그가 있어 틀린 키로 복호화하면
@@ -134,7 +151,9 @@ class LLMCredential(SQLModel, table=True):
   잡아 "패스프레이즈가 틀렸어요" 즉시 피드백.
 - **패스프레이즈 분실**: 서버가 패스프레이즈를 전혀 모르므로 복구 불가(설계상
   당연한 결과, §3.4에서 이미 예견됨). "등록된 키 삭제 후 재등록"만 안내.
-- **세션 만료 후 유도키 소실**: 새로고침/재로그인 시 패스프레이즈 재입력 요구.
+- **유도키 소실**: 탭/창을 닫았다 다시 열거나(`sessionStorage` 자동 소실),
+  다른 탭에서 접속했거나, 재로그인한 경우 패스프레이즈 재입력 요구. 같은
+  탭 안에서의 새로고침은 `sessionStorage`가 살아있으므로 재입력 불필요.
 
 ## 6. 기존 데이터 마이그레이션
 

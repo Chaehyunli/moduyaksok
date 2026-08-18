@@ -14,7 +14,7 @@
 
 - KDF는 PBKDF2-SHA256, 600,000 iterations (Argon2 기각 — WASM 의존성 필요).
 - salt(16byte)/iv(12byte)는 매 암호화마다 새로 생성, 비밀 아님(DB/응답에 평문 저장 가능).
-- 패스프레이즈 원문은 유도 직후 버리고, 유도된 `CryptoKey`만 Pinia store에 메모리로만 캐시(persist 안 함, 새로고침 시 소실).
+- 패스프레이즈 원문은 유도 직후 버림. 유도된 `CryptoKey`는 Pinia store + `sessionStorage`에 캐시 — 같은 탭에서 새로고침해도 유지되고, 탭/창을 닫으면 `sessionStorage`가 비워져 재입력 필요(다른 탭과는 공유 안 됨). 캐시용 사본만 `extractable: true`로 유도(devtools 덤프 방어보다 새로고침 생존 UX를 우선한 트레이드오프).
 - 기존 `llm_credential` 행은 마이그레이션에서 전부 삭제 — 신구 스킴 병행 지원 없음.
 - `user` 테이블은 이번 변경과 무관, 그대로 유지.
 - `tests/*.py`는 provider SDK를 항상 monkeypatch(백엔드 CLAUDE.md 관례) — 이 규칙은 이번 작업에서도 그대로 따른다.
@@ -964,7 +964,7 @@ git commit -m "feat: 스케줄 생성 엔드포인트가 클라이언트가 보�
 - Create: `moduyaksok-frontend/src/lib/credentialCrypto.spec.ts`
 
 **Interfaces:**
-- Produces: `EncryptedBundle` 타입, `encryptApiKey(passphrase, apiKey)`, `deriveKeyFromBundle(passphrase, bundle)`, `decryptApiKey(derivedKey, bundle)`, `maskKey(rawKey)` — Task 4(`credentialSession` store)와 Task 5(`ApiKeyEditView.vue`)가 소비.
+- Produces: `EncryptedBundle` 타입, `encryptApiKey(passphrase, apiKey)`, `deriveKeyFromBundle(passphrase, bundle)`, `decryptApiKey(derivedKey, bundle)`, `maskKey(rawKey)`, `exportDerivedKey(key)`, `importDerivedKey(base64)` — Task 4(`credentialSession` store)와 Task 5(`ApiKeyEditView.vue`)가 소비.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -972,7 +972,14 @@ git commit -m "feat: 스케줄 생성 엔드포인트가 클라이언트가 보�
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { decryptApiKey, deriveKeyFromBundle, encryptApiKey, maskKey } from './credentialCrypto'
+import {
+  decryptApiKey,
+  deriveKeyFromBundle,
+  encryptApiKey,
+  exportDerivedKey,
+  importDerivedKey,
+  maskKey,
+} from './credentialCrypto'
 
 describe('credentialCrypto', () => {
   it('암호화한 값을 같은 패스프레이즈로 그대로 복호화한다', async () => {
@@ -989,6 +996,16 @@ describe('credentialCrypto', () => {
     const wrongKey = await deriveKeyFromBundle('wrong passphrase', bundle)
 
     await expect(decryptApiKey(wrongKey, bundle)).rejects.toThrow()
+  })
+
+  it('유도키를 export/import해도 같은 값으로 복호화한다 (sessionStorage 캐시 라운드트립)', async () => {
+    const bundle = await encryptApiKey('correct horse battery staple', 'sk-ant-abc123')
+    const key = await deriveKeyFromBundle('correct horse battery staple', bundle)
+
+    const exported = await exportDerivedKey(key)
+    const reimported = await importDerivedKey(exported)
+
+    expect(await decryptApiKey(reimported, bundle)).toBe('sk-ant-abc123')
   })
 
   it('앞 7자/뒤 4자만 남기고 마스킹한다', () => {
@@ -1031,6 +1048,7 @@ async function deriveKey(
   passphrase: string,
   salt: Uint8Array,
   iterations: number,
+  extractable = false,
 ): Promise<CryptoKey> {
   const baseKey = await crypto.subtle.importKey(
     'raw',
@@ -1043,16 +1061,30 @@ async function deriveKey(
     { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
     baseKey,
     { name: 'AES-GCM', length: 256 },
-    false,
+    extractable,
     ['encrypt', 'decrypt'],
   )
 }
 
+// 세션 캐시(sessionStorage)에 넣으려면 export가 가능해야 하므로 extractable: true로
+// 유도한다 — devtools 덤프 방어보다 새로고침 생존 UX를 우선한 트레이드오프
+// (docs/superpowers/specs/2026-08-17-byok-client-side-encryption-design.md §4.1).
 export function deriveKeyFromBundle(
   passphrase: string,
   bundle: Pick<EncryptedBundle, 'salt' | 'kdfIterations'>,
 ): Promise<CryptoKey> {
-  return deriveKey(passphrase, fromBase64(bundle.salt), bundle.kdfIterations)
+  return deriveKey(passphrase, fromBase64(bundle.salt), bundle.kdfIterations, true)
+}
+
+export async function exportDerivedKey(key: CryptoKey): Promise<string> {
+  const raw = await crypto.subtle.exportKey('raw', key)
+  return toBase64(raw)
+}
+
+export function importDerivedKey(base64Key: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', fromBase64(base64Key), { name: 'AES-GCM' }, false, [
+    'decrypt',
+  ])
 }
 
 export async function encryptApiKey(passphrase: string, apiKey: string): Promise<EncryptedBundle> {
@@ -1092,7 +1124,7 @@ export function maskKey(rawKey: string): string {
 - [ ] **Step 4: 테스트 실행해서 통과 확인**
 
 Run: `cd moduyaksok-frontend && npx vitest run src/lib/credentialCrypto.spec.ts`
-Expected: PASS (3개 전부)
+Expected: PASS (4개 전부)
 
 - [ ] **Step 5: 커밋**
 
@@ -1112,7 +1144,7 @@ git commit -m "feat: BYOK 키 클라이언트 암호화 유틸(PBKDF2+AES-GCM) �
 - Modify: `moduyaksok-frontend/src/App.vue`
 
 **Interfaces:**
-- Consumes: Task 3의 `encryptApiKey`/`deriveKeyFromBundle`/`decryptApiKey`/`EncryptedBundle`.
+- Consumes: Task 3의 `encryptApiKey`/`deriveKeyFromBundle`/`decryptApiKey`/`exportDerivedKey`/`importDerivedKey`/`EncryptedBundle`.
 - Produces: `useCredentialSessionStore().ensureDecryptedApiKey(): Promise<string>`, `.setBundle(bundle)`, `.clear()` — Task 5(`ApiKeyEditView.vue`)와 Task 6(`stores/schedule.ts`)가 소비.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -1123,8 +1155,8 @@ git commit -m "feat: BYOK 키 클라이언트 암호화 유틸(PBKDF2+AES-GCM) �
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { api } from '../lib/api'
-import { deriveKeyFromBundle, encryptApiKey } from '../lib/credentialCrypto'
-import { useCredentialSessionStore } from './credentialSession'
+import { deriveKeyFromBundle, encryptApiKey, exportDerivedKey } from '../lib/credentialCrypto'
+import { DERIVED_KEY_STORAGE_KEY, useCredentialSessionStore } from './credentialSession'
 
 vi.mock('../lib/api', () => ({
   api: { get: vi.fn() },
@@ -1136,6 +1168,7 @@ describe('credentialSession 스토어', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     apiGet.mockReset()
+    sessionStorage.clear()
   })
 
   it('캐시된 유도키가 있으면 API를 다시 부르지 않고 즉시 복호화한다', async () => {
@@ -1150,6 +1183,19 @@ describe('credentialSession 스토어', () => {
     expect(apiGet).not.toHaveBeenCalled()
   })
 
+  it('메모리엔 없어도 sessionStorage에 캐시된 유도키가 있으면 재입력 없이 복호화한다', async () => {
+    const bundle = await encryptApiKey('패스프레이즈', 'sk-ant-restored')
+    const key = await deriveKeyFromBundle('패스프레이즈', bundle)
+    sessionStorage.setItem(DERIVED_KEY_STORAGE_KEY, await exportDerivedKey(key))
+    const store = useCredentialSessionStore()
+    store.bundle = { provider: 'anthropic', ...bundle }
+
+    const decrypted = await store.ensureDecryptedApiKey()
+
+    expect(decrypted).toBe('sk-ant-restored')
+    expect(store.showPassphraseModal).toBe(false)
+  })
+
   it('패스프레이즈가 틀리면 에러를 남기고 유도키를 캐시하지 않는다', async () => {
     const bundle = await encryptApiKey('올바른패스프레이즈', 'sk-ant-x')
     const store = useCredentialSessionStore()
@@ -1159,9 +1205,10 @@ describe('credentialSession 스토어', () => {
 
     expect(store.passphraseError).toBe('패스프레이즈가 틀렸어요')
     expect(store.derivedKey).toBeNull()
+    expect(sessionStorage.getItem(DERIVED_KEY_STORAGE_KEY)).toBeNull()
   })
 
-  it('패스프레이즈가 맞으면 대기 중이던 요청을 평문으로 해결한다', async () => {
+  it('패스프레이즈가 맞으면 대기 중이던 요청을 평문으로 해결하고 sessionStorage에 캐시한다', async () => {
     const bundle = await encryptApiKey('내패스프레이즈', 'sk-ant-y')
     apiGet.mockResolvedValueOnce({
       data: {
@@ -1179,6 +1226,7 @@ describe('credentialSession 스토어', () => {
     await store.submitPassphrase('내패스프레이즈')
 
     await expect(pending).resolves.toBe('sk-ant-y')
+    expect(sessionStorage.getItem(DERIVED_KEY_STORAGE_KEY)).not.toBeNull()
   })
 })
 ```
@@ -1195,15 +1243,26 @@ Expected: FAIL — `./credentialSession` 모듈이 없음
 ```ts
 import { defineStore } from 'pinia'
 import { api } from '../lib/api'
-import { decryptApiKey, deriveKeyFromBundle, type EncryptedBundle } from '../lib/credentialCrypto'
+import {
+  decryptApiKey,
+  deriveKeyFromBundle,
+  exportDerivedKey,
+  importDerivedKey,
+  type EncryptedBundle,
+} from '../lib/credentialCrypto'
 
 interface StoredBundle extends EncryptedBundle {
   provider: string
 }
 
-// 유도된 CryptoKey는 이 store(Pinia 기본 상태, persist 안 함)에만 메모리로 캐시한다.
-// 새로고침하면 사라지고 패스프레이즈를 다시 물어본다 — auth.ts가 JWT를 localStorage에
-// 안 두고 HttpOnly 쿠키만 쓰는 것과 같은 이유(모두약속 프런트 CLAUDE.md).
+// 유도된 CryptoKey는 Pinia 상태 + sessionStorage에 캐시한다(진짜 소스는
+// sessionStorage, Pinia는 그 위에 얹은 캐시). 같은 탭에서 새로고침해도 유지되고,
+// 탭/창을 닫으면 sessionStorage가 자동으로 비워져 재입력이 필요해진다 — 다른
+// 탭과는 애초에 공유 안 됨(docs/superpowers/specs/2026-08-17-byok-client-side-
+// encryption-design.md §4.5). 패스프레이즈 원문 자체는 저장 대상이 아니라 유도
+// 직후 버려진다.
+export const DERIVED_KEY_STORAGE_KEY = 'byok_derived_key'
+
 export const useCredentialSessionStore = defineStore('credentialSession', {
   state: () => ({
     bundle: null as StoredBundle | null,
@@ -1221,6 +1280,7 @@ export const useCredentialSessionStore = defineStore('credentialSession', {
     clear() {
       this.bundle = null
       this.derivedKey = null
+      sessionStorage.removeItem(DERIVED_KEY_STORAGE_KEY)
     },
     async ensureBundle(): Promise<StoredBundle> {
       if (this.bundle) return this.bundle
@@ -1237,8 +1297,25 @@ export const useCredentialSessionStore = defineStore('credentialSession', {
     },
     async ensureDecryptedApiKey(): Promise<string> {
       const bundle = await this.ensureBundle()
+      if (!this.derivedKey) {
+        const cached = sessionStorage.getItem(DERIVED_KEY_STORAGE_KEY)
+        if (cached) {
+          try {
+            this.derivedKey = await importDerivedKey(cached)
+          } catch {
+            sessionStorage.removeItem(DERIVED_KEY_STORAGE_KEY)
+          }
+        }
+      }
       if (this.derivedKey) {
-        return decryptApiKey(this.derivedKey, bundle)
+        try {
+          return await decryptApiKey(this.derivedKey, bundle)
+        } catch {
+          // 재등록 등으로 salt/iv가 바뀌어 캐시가 더 이상 안 맞는 경우 — 버리고
+          // 재입력을 받는다.
+          this.derivedKey = null
+          sessionStorage.removeItem(DERIVED_KEY_STORAGE_KEY)
+        }
       }
       return new Promise((resolve, reject) => {
         this._resolve = resolve
@@ -1254,6 +1331,7 @@ export const useCredentialSessionStore = defineStore('credentialSession', {
         const key = await deriveKeyFromBundle(passphrase, this.bundle)
         const plaintext = await decryptApiKey(key, this.bundle)
         this.derivedKey = key
+        sessionStorage.setItem(DERIVED_KEY_STORAGE_KEY, await exportDerivedKey(key))
         this.showPassphraseModal = false
         this._resolve?.(plaintext)
         this._resolve = null
@@ -1277,7 +1355,7 @@ export const useCredentialSessionStore = defineStore('credentialSession', {
 - [ ] **Step 4: 테스트 실행해서 통과 확인**
 
 Run: `cd moduyaksok-frontend && npx vitest run src/stores/credentialSession.spec.ts`
-Expected: PASS (3개 전부)
+Expected: PASS (5개 전부)
 
 - [ ] **Step 5: `PassphraseModal.vue` 작성**
 
