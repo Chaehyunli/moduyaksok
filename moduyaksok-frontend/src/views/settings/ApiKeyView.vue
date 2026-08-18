@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { useCredentialSessionStore } from '../../stores/credentialSession'
 import { api } from '../../lib/api'
 import DoodleButton from '../../components/doodle/DoodleButton.vue'
 import DoodleCard from '../../components/doodle/DoodleCard.vue'
@@ -10,6 +11,7 @@ import DoodleDivider from '../../components/doodle/DoodleDivider.vue'
 
 const router = useRouter()
 const store = useAuthStore()
+const credentialSession = useCredentialSessionStore()
 
 const providerNames = { anthropic: 'Claude', openai: 'GPT', upstage: 'Solar', google: 'Gemini' } as const
 
@@ -20,7 +22,8 @@ async function testKey() {
   testing.value = true
   testResult.value = null
   try {
-    const { data } = await api.post('/me/llm-credential/test')
+    const apiKey = await credentialSession.ensureDecryptedApiKey()
+    const { data } = await api.post('/me/llm-credential/test', { api_key: apiKey })
     testResult.value = { ok: true, message: `정상 작동해요 — 응답: "${data.reply}"` }
   } catch (err: any) {
     testResult.value = { ok: false, message: err.response?.data?.detail ?? '테스트에 실패했어요.' }
@@ -35,6 +38,7 @@ async function removeKey() {
   } catch {
     // 이미 삭제됐거나 없는 경우도 로컬 상태는 정리한다.
   }
+  credentialSession.clear()
   store.clearApiKey()
 }
 </script>

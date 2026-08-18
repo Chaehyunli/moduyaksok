@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { api } from '../lib/api'
+import { useCredentialSessionStore } from './credentialSession'
 
 export interface AuthUser {
   id: string
@@ -65,6 +66,7 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('user_name')
       localStorage.removeItem('api_key_masked')
       localStorage.removeItem('api_key_provider')
+      useCredentialSessionStore().clear()
       this.loggedIn = false
       this.initialized = true
       this.userName = ''
