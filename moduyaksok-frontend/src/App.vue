@@ -5,6 +5,7 @@ import { useAuthStore } from './stores/auth'
 import { useScheduleStore } from './stores/schedule'
 import DoodleUnderline from './components/doodle/DoodleUnderline.vue'
 import LoginModal from './components/doodle/LoginModal.vue'
+import PassphraseModal from './components/doodle/PassphraseModal.vue'
 import DoodleButton from './components/doodle/DoodleButton.vue'
 import { GOOGLE_LOGIN_REDIRECT_KEY } from './lib/mobileAuth'
 
@@ -109,4 +110,5 @@ watch(
   </div>
 
   <LoginModal />
+  <PassphraseModal />
 </template>
