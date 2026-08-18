@@ -48,8 +48,6 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     frontend_url: str = ""
 
-    credential_encryption_key: str = ""
-
     # 개발 편의용 폴백 키. ENV=development 일 때만 사용된다.
     anthropic_api_key: str | None = None
 
