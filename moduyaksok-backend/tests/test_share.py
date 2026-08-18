@@ -17,7 +17,6 @@ from sqlmodel import select
 
 from app.models.llm_credential import LLMCredential
 from app.pipeline.schemas import NormalizedConditions
-from app.services.credential import encrypt_key
 
 # generate_schedule_candidates()가 2026-08-11(2차)부터 (result, conditions,
 # place_candidates) 튜플을 반환하게 바뀌어서(SchedulePlacePool 저장에 필요),
@@ -50,7 +49,13 @@ def _login(client, monkeypatch, google_id="share-test-google-id") -> tuple[dict,
 def _register_credential(session, user_id: UUID) -> None:
     session.add(
         LLMCredential(
-            user_id=user_id, provider="anthropic", encrypted_key=encrypt_key("sk-ant-fake-key")
+            user_id=user_id,
+            provider="anthropic",
+            encrypted_key=b"fake-ciphertext",
+            salt=b"fake-salt-0000000",
+            iv=b"fake-iv-0000",
+            kdf_iterations=600_000,
+            masked_key="sk-ant-••••••••uvwx",
         )
     )
     session.commit()
@@ -103,6 +108,7 @@ def _create_and_confirm_session(client, session, monkeypatch) -> str:
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,
+        "api_key": "sk-ant-fake-key",
     }
     create_response = client.post("/schedules", json=create_body, headers=headers)
     session_id = create_response.json()["session_id"]
@@ -147,9 +153,7 @@ def test_owner_style_share_url_resolves_without_login(client, session, monkeypat
     # helper가 만든 로그인 쿠키를 제거해도 공개 URL 변환이 가능해야 한다.
     client.cookies.clear()
 
-    response = client.get(
-        f"/public-share-links/{share_link.session_id}/candidates/A"
-    )
+    response = client.get(f"/public-share-links/{share_link.session_id}/candidates/A")
 
     assert response.status_code == 200
     assert response.json() == {"slug": slug}
@@ -162,9 +166,7 @@ def test_owner_style_share_url_rejects_unconfirmed_candidate(client, session, mo
     share_link = session.exec(select(ShareLink).where(ShareLink.slug == slug)).one()
     client.cookies.clear()
 
-    response = client.get(
-        f"/public-share-links/{share_link.session_id}/candidates/B"
-    )
+    response = client.get(f"/public-share-links/{share_link.session_id}/candidates/B")
 
     assert response.status_code == 404
 
@@ -223,6 +225,7 @@ def test_get_shared_schedule_only_exposes_confirmed_candidate(client, session, m
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,
+        "api_key": "sk-ant-fake-key",
     }
     create_response = client.post("/schedules", json=create_body, headers=headers)
     session_id = create_response.json()["session_id"]
@@ -280,6 +283,7 @@ def test_get_shared_schedule_preserves_route_option_path(client, session, monkey
         "liked_text": "",
         "disliked_text": "",
         "budget_per_person": 50000,
+        "api_key": "sk-ant-fake-key",
     }
     create_response = client.post("/schedules", json=create_body, headers=headers)
     session_id = create_response.json()["session_id"]

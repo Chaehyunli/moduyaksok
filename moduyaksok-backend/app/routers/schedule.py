@@ -147,10 +147,9 @@ from app.pipeline.schemas import (
     RequiredPlace,
     ScheduleResponse,
 )
-from app.pipeline.travel_estimate import ManualTimeConflictError, apply_manual_time
 from app.pipeline.synthesize_step3 import synthesize_and_validate
+from app.pipeline.travel_estimate import ManualTimeConflictError, apply_manual_time
 from app.services.auth import get_current_user
-from app.services.credential import decrypt_key
 from app.services.naver_local_search import NaverSearchError, place_id_for, search_places
 from app.services.naver_map_url import build_naver_map_url
 
@@ -167,10 +166,15 @@ class ScheduleCreateRequest(BaseModel):
     liked_text: str = Field(default="", max_length=50)
     disliked_text: str = Field(default="", max_length=50)
     budget_per_person: int
+    api_key: str  # 클라이언트가 로컬에서 복호화해 실어 보낸 평문. 서버는 저장하지 않는다.
 
 
 class RoutesRequest(BaseModel):
     candidate_id: str
+
+
+class RegenerateScheduleRequest(BaseModel):
+    api_key: str  # 클라이언트가 로컬에서 복호화해 실어 보낸 평문. 서버는 저장하지 않는다.
 
 
 class SelectedOption(BaseModel):
@@ -220,6 +224,13 @@ class CustomRequiredPlaceRequest(BaseModel):
 
 class CandidatePreviewRequest(BaseModel):
     excluded_place_ids: list[str]
+
+
+class CandidateReplacementPreviewRequest(CandidatePreviewRequest):
+    """장소 교체 미리보기는 파이프라인을 실제로 호출하므로 평문 API 키가 필요하다
+    (removal/preview는 로컬 재계산만 하므로 CandidatePreviewRequest 그대로 사용)."""
+
+    api_key: str
 
 
 class CandidatePreviewResponse(BaseModel):
@@ -869,6 +880,7 @@ async def _generate_candidate_replacement(
     current_user: User,
     candidate_id: str,
     excluded_place_ids: set[str],
+    api_key: str,
     replacement_count: int = 1,
 ) -> Candidate:
     """현재 후보의 남은 장소는 고정하고, 제외된 자리에 새 장소를 채운다.
@@ -918,7 +930,6 @@ async def _generate_candidate_replacement(
     conditions = _relax_unavailable_liked_tags(conditions, available_places)
 
     credential = _get_user_credential(session, current_user.id)
-    api_key = decrypt_key(credential.encrypted_key)
     import asyncio
 
     loop = asyncio.get_running_loop()
@@ -1026,7 +1037,7 @@ async def create_schedule(
     그래서 NaverSearchError도 ValidationError와 같은 try 블록에서 잡는다.
     """
     credential = _get_user_credential(session, current_user.id)
-    api_key = decrypt_key(credential.encrypted_key)
+    api_key = body.api_key
 
     session_id = uuid4()
     try:
@@ -1049,7 +1060,10 @@ async def create_schedule(
     schedule_session = ScheduleSession(
         id=session_id,
         user_id=current_user.id,
-        conditions=body.model_dump(mode="json"),
+        # api_key(평문)는 파이프라인 호출에만 쓰고 저장하지 않는다 — exclude 없이
+        # model_dump()하면 이 컬럼에 그대로 영구 저장돼버린다(2026-08-18 보안
+        # 리뷰에서 발견).
+        conditions=body.model_dump(mode="json", exclude={"api_key"}),
         normalized_conditions=conditions.model_dump(mode="json"),
         candidates={"candidates": [c.model_dump(mode="json") for c in result.candidates]},
     )
@@ -1399,8 +1413,10 @@ async def search_places_by_name(
         return []
     try:
         items = await search_places(query, display=5, session_id=str(session_id))
-    except NaverSearchError:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "장소 검색에 실패했습니다. 잠시 후 다시 시도해주세요.")
+    except NaverSearchError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "장소 검색에 실패했습니다. 잠시 후 다시 시도해주세요."
+        ) from exc
     return [
         PlaceSearchResultItem(
             place_id=place_id_for(item),
@@ -1527,7 +1543,7 @@ def remove_required_place(
 async def preview_candidate_replacement(
     session_id: UUID,
     candidate_id: str,
-    body: CandidatePreviewRequest,
+    body: CandidateReplacementPreviewRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -1572,6 +1588,7 @@ async def preview_candidate_replacement(
         current_user,
         candidate_id,
         combined_exclusions,
+        body.api_key,
         len(requested_exclusions) or 1,
     )
     updated = _place_replacements_in_removed_slots(
@@ -1893,9 +1910,7 @@ def unlock_activity_time(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "해당 활동을 찾을 수 없습니다.")
 
     updated_activities = [
-        activity.model_copy(update={"time_locked": False})
-        if activity.order == order
-        else activity
+        activity.model_copy(update={"time_locked": False}) if activity.order == order else activity
         for activity in current_candidate.activities
     ]
     updated = current_candidate.model_copy(update={"activities": updated_activities})
@@ -1908,6 +1923,7 @@ def unlock_activity_time(
 @router.post("/schedules/{session_id}/regenerate", response_model=ScheduleResponse)
 async def regenerate_schedule(
     session_id: UUID,
+    body: RegenerateScheduleRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -1943,7 +1959,7 @@ async def regenerate_schedule(
         )
 
     credential = _get_user_credential(session, current_user.id)
-    api_key = decrypt_key(credential.encrypted_key)
+    api_key = body.api_key
     if schedule_session.normalized_conditions:
         conditions = NormalizedConditions.model_validate(schedule_session.normalized_conditions)
     else:
@@ -1993,11 +2009,14 @@ async def regenerate_schedule(
         used_non_required_ids: set[str] = set()
         custom_required_candidates = _custom_required_place_candidates(required_places)
         for candidate_id in candidate_ids:
-            candidate_places = _candidate_pool_without_exclusions(
-                place_pool,
-                effective_exclusions[candidate_id],
-                required_place_ids_set,
-            ) + custom_required_candidates
+            candidate_places = (
+                _candidate_pool_without_exclusions(
+                    place_pool,
+                    effective_exclusions[candidate_id],
+                    required_place_ids_set,
+                )
+                + custom_required_candidates
+            )
             diverse_places = [
                 place
                 for place in candidate_places

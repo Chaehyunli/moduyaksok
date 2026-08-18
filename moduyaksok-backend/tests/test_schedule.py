@@ -43,7 +43,6 @@ from app.pipeline.schemas import (
     RouteSegment,
     ScheduleResponse,
 )
-from app.services.credential import encrypt_key
 
 _TIME_RANGE = ["2026-08-15T10:00:00", "2026-08-15T21:00:00"]
 _CREATE_BODY = {
@@ -54,6 +53,7 @@ _CREATE_BODY = {
     "liked_text": "",
     "disliked_text": "",
     "budget_per_person": 50000,
+    "api_key": "sk-ant-fake-key",
 }
 
 # generate_schedule_candidates()가 2026-08-11(2차)부터 (result, conditions,
@@ -87,7 +87,13 @@ def _login(client, monkeypatch, google_id="schedule-test-google-id") -> tuple[di
 def _register_credential(session, user_id: UUID) -> None:
     session.add(
         LLMCredential(
-            user_id=user_id, provider="anthropic", encrypted_key=encrypt_key("sk-ant-fake-key")
+            user_id=user_id,
+            provider="anthropic",
+            encrypted_key=b"fake-ciphertext",
+            salt=b"fake-salt-0000000",
+            iv=b"fake-iv-0000",
+            kdf_iterations=600_000,
+            masked_key="sk-ant-••••••••uvwx",
         )
     )
     session.commit()
@@ -198,6 +204,9 @@ def test_create_schedule_success_returns_candidates_and_persists_session(
     assert stored is not None
     assert stored.status == "draft"
     assert stored.candidates["candidates"][0]["candidate_id"] == "A"
+    # 보안 회귀 방지: 클라이언트가 로컬 복호화해 보낸 평문 api_key는 파이프라인
+    # 호출에만 쓰고 DB(conditions 컬럼)엔 절대 남으면 안 된다.
+    assert "api_key" not in stored.conditions
 
 
 def test_create_schedule_success_persists_place_pool(client, session, monkeypatch):
@@ -706,7 +715,11 @@ def test_regenerate_injects_custom_required_place_into_place_candidates(
 
     monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
 
-    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    response = client.post(
+        f"/schedules/{session_id}/regenerate",
+        json={"api_key": "sk-ant-fake-key"},
+        headers=headers,
+    )
 
     assert response.status_code == 200
 
@@ -780,7 +793,7 @@ def test_candidate_preview_changes_only_after_explicit_save(client, session, mon
 
     preview_response = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": [excluded_place_id]},
+        json={"excluded_place_ids": [excluded_place_id], "api_key": "sk-ant-fake-key"},
         headers=headers,
     )
 
@@ -1003,7 +1016,10 @@ def test_replacement_preview_fills_each_removed_time_slot(client, session, monke
 
     preview = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": [first_removed_id, "removed-afternoon"]},
+        json={
+            "excluded_place_ids": [first_removed_id, "removed-afternoon"],
+            "api_key": "sk-ant-fake-key",
+        },
         headers=headers,
     )
 
@@ -1048,7 +1064,9 @@ def test_replacement_preview_adds_one_place_without_exclusions(client, session, 
     )
     captured: dict = {}
 
-    async def fake_replacement(_session, _schedule_session, _current_user, _candidate_id, excluded, count):
+    async def fake_replacement(
+        _session, _schedule_session, _current_user, _candidate_id, excluded, _api_key, count
+    ):
         captured["excluded"] = excluded
         captured["count"] = count
         return replacement
@@ -1061,7 +1079,7 @@ def test_replacement_preview_adds_one_place_without_exclusions(client, session, 
 
     preview = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": []},
+        json={"excluded_place_ids": [], "api_key": "sk-ant-fake-key"},
         headers=headers,
     )
 
@@ -1168,7 +1186,7 @@ def test_replacement_preview_injects_custom_required_place_into_place_candidates
 
     preview = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": []},
+        json={"excluded_place_ids": [], "api_key": "sk-ant-fake-key"},
         headers=headers,
     )
 
@@ -1197,7 +1215,7 @@ def test_replacement_preview_rejects_add_when_already_at_max_places(client, sess
 
     preview = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": []},
+        json={"excluded_place_ids": [], "api_key": "sk-ant-fake-key"},
         headers=headers,
     )
 
@@ -1259,7 +1277,7 @@ def test_candidate_preview_rejects_required_place(client, session, monkeypatch):
 
     response = client.post(
         f"/schedules/{session_id}/candidates/A/preview",
-        json={"excluded_place_ids": [place_id]},
+        json={"excluded_place_ids": [place_id], "api_key": "sk-ant-fake-key"},
         headers=headers,
     )
 
@@ -1357,7 +1375,11 @@ def test_removing_last_applied_required_place_can_regenerate_without_required(
 
     monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
 
-    first = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    first = client.post(
+        f"/schedules/{session_id}/regenerate",
+        json={"api_key": "sk-ant-fake-key"},
+        headers=headers,
+    )
     assert first.status_code == 200
     assert first.json()["applied_required_place_ids"] == [place_id]
 
@@ -1366,7 +1388,11 @@ def test_removing_last_applied_required_place_can_regenerate_without_required(
     assert changed["required_places"] == []
     assert changed["applied_required_place_ids"] == [place_id]
 
-    second = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    second = client.post(
+        f"/schedules/{session_id}/regenerate",
+        json={"api_key": "sk-ant-fake-key"},
+        headers=headers,
+    )
     assert second.status_code == 200
     assert second.json()["required_places"] == []
     assert second.json()["applied_required_place_ids"] == []
@@ -1568,9 +1594,7 @@ def test_candidate_reordered_does_not_let_unlocked_activity_overlap_a_locked_one
         h, m = hhmm.split(":")
         return int(h) * 60 + int(m)
 
-    intervals = [
-        (_to_minutes(a.start_time), _to_minutes(a.end_time)) for a in updated.activities
-    ]
+    intervals = [(_to_minutes(a.start_time), _to_minutes(a.end_time)) for a in updated.activities]
     for i in range(len(intervals)):
         for j in range(i + 1, len(intervals)):
             start_i, end_i = intervals[i]
@@ -1770,7 +1794,8 @@ def test_activity_time_lock_repositions_instead_of_dragging_other_activities(
     activities[0].update({"start_time": "10:00", "end_time": "10:30"})
     activities[1].update({"start_time": "11:00", "end_time": "11:30"})
     activities.append(
-        _activity(3, "장소3").model_copy(update={"start_time": "12:00", "end_time": "12:30"})
+        _activity(3, "장소3")
+        .model_copy(update={"start_time": "12:00", "end_time": "12:30"})
         .model_dump(mode="json")
     )
     schedule.candidates = candidates
@@ -1887,7 +1912,11 @@ def test_regenerate_passes_persisted_required_place_and_replaces_candidates(
 
     monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
 
-    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    response = client.post(
+        f"/schedules/{session_id}/regenerate",
+        json={"api_key": "sk-ant-fake-key"},
+        headers=headers,
+    )
 
     assert response.status_code == 200
     assert response.json()["candidates"][0]["candidate_id"] == "B"
@@ -1914,7 +1943,11 @@ def test_regenerate_failure_keeps_existing_candidates(client, session, monkeypat
 
     monkeypatch.setattr("app.routers.schedule.regenerate_schedule_candidates", fake_regenerate)
 
-    response = client.post(f"/schedules/{session_id}/regenerate", headers=headers)
+    response = client.post(
+        f"/schedules/{session_id}/regenerate",
+        json={"api_key": "sk-ant-fake-key"},
+        headers=headers,
+    )
 
     assert response.status_code == 409
     assert response.json()["reason"] == "필수 장소 주변 후보가 부족합니다."
