@@ -24,7 +24,6 @@ uvicorn app.main:app --reload
 | `JWT_SECRET_KEY` | 세션 JWT 서명 키 |
 | `GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID (`id_token` 검증 시 audience로 사용) |
 | `FRONTEND_URL` | iOS Google redirect 로그인 완료 후 돌아갈 프런트 주소. 로컬 기본값 `http://localhost:5173`, 운영 기본값 `https://moduyaksok.vercel.app` |
-| `CREDENTIAL_ENCRYPTION_KEY` | BYOK 키 암호화용 Fernet 키. 생성: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `ANTHROPIC_API_KEY` | 개발자 본인 키 (개발 편의용 폴백, `ENV=development`에서만 사용) |
 | `NAVER_SEARCH_CLIENT_ID`/`SECRET` | Step2 `place_candidates` 조회용 (NAVER API HUB, 지도 API와 별개 상품) |
 | `ODSAY_API_KEY` | Step4 길찾기(lab.odsay.com, Basic 등급) |
@@ -40,11 +39,11 @@ uvicorn app.main:app --reload
 > 형식 텍스트 붙여넣기를 지원). Render 자체는 이 `.env.production` 파일을 읽지 않는다 —
 > 실제 배포 프로세스는 Render가 주입하는 환경변수를 그대로 OS 환경변수로 읽는다.
 
-> **알아둘 점**: `CREDENTIAL_ENCRYPTION_KEY`를 가진 사람(지금은 이 `.env`에 접근 가능한
-> 사람)은 DB에 저장된 어떤 사용자의 BYOK 키든 복호화할 수 있다. 이 구조적 한계와
-> 검토했던 대안(클라이언트 사이드 호출, PIN 기반 envelope encryption 등), 왜 지금은
-> 구조를 안 바꾸기로 했는지는 [`docs/기술설계_2026-08-06.md` §3.4](../docs/기술설계_2026-08-06.md)
-> 참고.
+> **알아둘 점**: BYOK API 키는 2026-08-17부터 클라이언트 패스프레이즈로 암호화된다
+> (`salt`/`iv`/`kdf_iterations`와 함께 암호문만 DB에 저장) — 서버는 마스터키를
+> 갖지 않으므로 어떤 사용자의 키든 스스로 복호화할 방법이 없다. 상세 설계와
+> 검토 과정은 [`docs/기술설계_2026-08-06.md` §3.4](../docs/기술설계_2026-08-06.md),
+> `docs/superpowers/specs/2026-08-17-byok-client-side-encryption-design.md` 참고.
 
 ## 구조
 
@@ -67,7 +66,7 @@ tests/           pytest
 |---|---|---|---|
 | `health.py` | `GET /health` | 서버 상태 확인 | - |
 | `auth.py` | `POST /auth/google`<br>`POST /auth/google/redirect`<br>`POST /auth/logout`<br>`GET /me` | Google id_token 검증 후 로그인/자동가입, 세션 JWT 발급<br>iOS ITP 대응 redirect 로그인(CSRF 이중 토큰 검증)<br>로그아웃과 현재 사용자 조회 | `services/auth.py`, `models/user.py` |
-| `credential.py` | `POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | BYOK API 키(Claude/GPT/Solar/Gemini) 저장 — 접두사 정규식 검증 후 암호화<br>등록된 키 마스킹 조회<br>등록된 키로 실제 provider에 "안녕" 보내 유효성 확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/credential.py`, `services/llm_ping.py`, `models/llm_credential.py` |
+| `credential.py` | `POST /me/llm-credential/verify`<br>`POST /me/llm-credential`<br>`GET /me/llm-credential`<br>`POST /me/llm-credential/test`<br>`DELETE /me/llm-credential` | 저장 전 평문 키를 provider에 테스트만(저장 안 함) — 접두사 정규식 검증 포함<br>클라이언트가 이미 암호화한 ciphertext/salt/iv/kdf_iterations/masked_key를 그대로 저장(서버는 평문을 보지 않음)<br>저장된 암호문 번들(ciphertext 포함) 조회 — 브라우저가 로컬 복호화할 재료 제공<br>프런트가 로컬 복호화해 보낸 평문으로 재확인, 성공 시 `verified_at` 갱신<br>키 삭제 | `services/llm_ping.py`, `models/llm_credential.py` |
 | `schedule.py` | `POST /schedules`<br>`POST`/`DELETE /schedules/{id}/required-places`<br>`GET /schedules/{id}/place-search`<br>`POST /schedules/{id}/required-places/custom`<br>`POST /schedules/{id}/regenerate`<br>`POST /schedules/{id}/routes`<br>`GET /schedules/{id}`<br>`POST /schedules/{id}/confirm`<br>`POST /schedules/{id}/candidates/{cid}/activities/time/preview`<br>`POST /schedules/{id}/candidates/{cid}/activities/time/save`<br>`POST /schedules/{id}/candidates/{cid}/activities/{order}/unlock` | Step1→2→3 실행해 경로 없는 후보 생성, 검색 풀과 정규화 조건을 저장<br>후보 풀의 장소를 `ScheduleRequiredPlace` 제약으로 추가·해제하고, 새 검색 없이 그 장소를 모두 포함하는 후보로 재생성(성공할 때만 기존 후보 교체)<br>표준 카테고리·태그 검색과 무관하게 이름으로 네이버 지역검색 직접 호출<br>검색 결과를 `is_custom=True` 필수 장소로 저장(최대 3개), 재생성 시 `place_candidates`에 원본 좌표로 직접 주입<br>사용자가 고른 후보 1개에 Step4 실행해 이동 옵션 저장<br>세션 조회·후보 확정과 공유 링크 발급<br>활동 시간 수동 수정 미리보기 — `travel_estimate.apply_manual_time()`으로 겹치는 안 잠긴 이웃을 밀고 잠긴 이웃과 겹치면 409<br>활동 시간 수동 수정 저장(`time_locked=True`로 고정)<br>잠긴 시간 해제(시간 값 자체는 안 바꿈) | `pipeline/orchestrate.py`, `pipeline/enrich_step4.py`, `pipeline/travel_estimate.py`, `services/naver_local_search.py`, `models/schedule.py` |
 | `share.py` | `GET /share/{slug}`<br>`GET /public-share-links/{session_id}/candidates/{candidate_id}` | slug로 확정된 후보 하나만 공개 조회(로그인 불필요)<br>확정 직후 남는 소유자 형식 URL을 공개 slug로 변환. URL의 후보가 실제 확정 후보와 일치할 때만 slug를 반환하며 초안·다른 후보는 404 | `routers/schedule.py`(`_find_candidate`), `models/schedule.py` |
 
@@ -76,7 +75,6 @@ tests/           pytest
 | 파일 | 기능 |
 |---|---|
 | `auth.py` | Google id_token 검증(`verify_google_id_token`), 세션 JWT 발급/검증(`create_access_token`, `get_current_user`) |
-| `credential.py` | BYOK 키 Fernet 암호화/복호화(`encrypt_key`, `decrypt_key`), 표시용 마스킹(`mask_key`) |
 | `llm_ping.py` | provider(Claude/GPT/Solar/Gemini)별 SDK로 짧은 메시지를 보내 키가 실제로 동작하는지 확인(`ping_provider`). Solar는 openai SDK에 Upstage `base_url`만 바꿔서 사용 |
 | `structured_llm.py` | `call_structured(provider, api_key, model, system, user, schema)` — Pydantic 스키마에 맞는 구조화 응답을 provider 상관없이 받는 공용 인터페이스. Claude는 tool use, GPT/Solar는 `client.beta.chat.completions.parse()`(Solar가 이 방식까지 지원하는 걸 실제 키로 확인함, 2026-08-07), Gemini는 `google-genai`의 `response_schema`(2026-08-17 추가 — 실제 Gemini 키로는 아직 검증 안 함, 아래 provider 추가 항목 참고) — 분기는 anthropic 1개 / openai·upstage 공용 1개 / google 1개, 총 3갈래 |
 | `naver_local_search.py` | `search_places(query, display)` — 네이버 지역검색(NAVER API HUB, `NAVER_SEARCH_CLIENT_ID/SECRET`)으로 place_candidates 사전 조회. 응답 title의 `<b>` 강조 태그 제거, display는 API 제약상 최대 5로 clamp(페이지네이션은 `start` 파라미터를 API가 무시해서 실측+공식 문서로 불가 확인). 호출 하나마다 `rate_limiter.acquire_call_slot()`으로 초당 상한을 기다림. `search_places_for_region(region, liked_tags, disliked_tags)`(2026-08-11(2차), 이전 이름 `search_places_for_regions`) — 세부지역 포함 단일 region 하나에 대해 카테고리(`_PLACE_CATEGORIES`, 16개 — 한식/중식/일식/양식/분식/고깃집/카페/베이커리/술집/액티비티/방탈출/보드게임카페/전시/공연장/영화관/공원(2026-08-15 추가)) × verifiable 태그(각 최대 `MAX_VERIFIABLE_TAGS`=5개)마다 "{region} {tag}" 검색을 팬아웃해서 지역당 최소 50개 이상의 고유 장소를 모은다(여러 지역 지원은 포기 — display/start 제약상 지역을 쪼갤수록 지역당 결과만 희석됨). liked 매칭 장소는 `matched_tag` 부착, disliked 매칭 장소는 결과에서 제거. 카테고리 쿼리로 나온 장소엔 `source_category`(어느 카테고리 검색에서 나왔는지) 부착. 쏘기 전에 `rate_limiter.reserve_daily_budget()`으로 일일 예산 확보, 부족하면 확보되는 만큼만 검색(카테고리 쿼리 우선 생존) |
@@ -106,7 +104,7 @@ tests/           pytest
 | 파일 | 테이블 | 용도 |
 |---|---|---|
 | `user.py` | `user` | Google 계정 기반 사용자 |
-| `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키(암호화 저장), `user_id` unique — 사용자당 1개 |
+| `llm_credential.py` | `llm_credential` | 사용자별 BYOK API 키, `user_id` unique — 사용자당 1개. `encrypted_key`는 클라이언트가 패스프레이즈로 AES-GCM 암호화한 값(서버는 복호화 못 함), `salt`/`iv`/`kdf_iterations`/`masked_key`는 클라이언트가 등록 시 같이 보냄 |
 | `schedule.py` | `schedule_session`, `schedule_place_pool`, `schedule_required_place`, `share_link` | 일정 세션, 검색된 장소 풀, 사용자가 고른 필수 장소, 공유 링크. `schedule_required_place`는 세션·장소 ID 조합을 unique로 보장하고 선택 시점 스냅샷을 보관해, 재생성 반복·새로고침 뒤에도 고정한 장소를 확인·해제할 수 있게 한다. 자유 텍스트 피드백용 `feedback_message`는 실제로 쓰인 적 없어 2026-08-15에 테이블째 삭제 |
 
 라우터/서비스/모델 표는 새 엔드포인트나 파일을 추가할 때 같이 갱신할 것 — 프런트 [`../moduyaksok-frontend/README.md`](../moduyaksok-frontend/README.md)의 화면·컴포넌트 표와 같은 역할.

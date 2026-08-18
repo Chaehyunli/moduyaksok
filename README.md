@@ -139,7 +139,7 @@ uvicorn app.main:app --reload
 | 분류 | 주요 변수 |
 |---|---|
 | 앱·DB | `ENV`, `DATABASE_URL`, `REDIS_URL` |
-| 인증·암호화 | `JWT_SECRET_KEY`, `GOOGLE_CLIENT_ID`, `CREDENTIAL_ENCRYPTION_KEY` |
+| 인증 | `JWT_SECRET_KEY`, `GOOGLE_CLIENT_ID` |
 | 장소 검색 | `NAVER_SEARCH_CLIENT_ID`, `NAVER_SEARCH_CLIENT_SECRET` |
 | 경로 | `ODSAY_API_KEY`, `ODSAY_REFERER_URL`, `NAVER_MAP_CLIENT_ID`, `NAVER_MAP_CLIENT_SECRET` |
 | 평가 전용 | `DEEPEVAL_UPSTAGE_API_KEY`, `DEEPEVAL_OPENAI_API_KEY`, `DEEPEVAL_ANTHROPIC_API_KEY` |
@@ -198,7 +198,9 @@ npm run build
 - 이후 인증은 JavaScript에서 읽을 수 없는 `HttpOnly` 세션 쿠키를 사용합니다.
 - 운영 API는 Vercel의 `/api`를 통해 프록시해 모바일에서도 first-party 세션 쿠키를
   사용하며, iOS Google 로그인은 ITP 호환 redirect 방식으로 처리합니다.
-- 사용자 AI API 키는 Fernet으로 암호화해 DB에 저장하고 화면에는 마스킹 값만 표시합니다.
+- 사용자 AI API 키는 브라우저가 사용자 패스프레이즈로 로컬 암호화(PBKDF2→AES-GCM)한
+  뒤 암호문만 서버에 저장합니다 — 서버는 평문을 복호화할 마스터키를 갖지 않으며,
+  화면에는 마스킹 값만 표시합니다.
 - 상태 변경 쿠키 요청은 허용된 프런트엔드 Origin만 통과하도록 검사합니다.
 - 운영 비밀값과 실제 사용자 API 키는 저장소에 커밋하지 않습니다.
 
