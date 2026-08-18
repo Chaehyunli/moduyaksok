@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { api } from '../lib/api'
+import { useCredentialSessionStore } from './credentialSession'
 
 export interface Activity {
   order: number
@@ -306,6 +307,7 @@ export const useScheduleStore = defineStore('schedule', {
 
       const [startIso, endIso] = buildTimeRange(conditions.startTime, conditions.endTime)
       try {
+        const apiKey = await useCredentialSessionStore().ensureDecryptedApiKey()
         const { data } = await api.post('/schedules', {
           purpose: conditions.purpose,
           headcount: conditions.headcount,
@@ -314,6 +316,7 @@ export const useScheduleStore = defineStore('schedule', {
           liked_text: conditions.likedText,
           disliked_text: conditions.dislikedText,
           budget_per_person: conditions.budgetPerPerson,
+          api_key: apiKey,
         })
         this.sessionId = data.session_id
         localStorage.setItem(ACTIVE_DRAFT_SESSION_KEY, data.session_id)
@@ -497,7 +500,10 @@ export const useScheduleStore = defineStore('schedule', {
       if (!this.sessionId) return
       this.scheduleError = null
       try {
-        const { data } = await api.post(`/schedules/${this.sessionId}/regenerate`)
+        const apiKey = await useCredentialSessionStore().ensureDecryptedApiKey()
+        const { data } = await api.post(`/schedules/${this.sessionId}/regenerate`, {
+          api_key: apiKey,
+        })
         this.selectedCandidateId = null
         this.candidates = data.candidates.map(mapApiCandidate)
         this.placePool = mapApiPlacePool(data.place_pool)
@@ -521,9 +527,10 @@ export const useScheduleStore = defineStore('schedule', {
       excludedPlaceIds: string[],
     ): Promise<{ previewId: string; candidate: Candidate }> {
       if (!this.sessionId) throw new Error('일정 세션이 없습니다.')
+      const apiKey = await useCredentialSessionStore().ensureDecryptedApiKey()
       const { data } = await api.post(
         `/schedules/${this.sessionId}/candidates/${candidateId}/preview`,
-        { excluded_place_ids: excludedPlaceIds },
+        { excluded_place_ids: excludedPlaceIds, api_key: apiKey },
       )
       return {
         previewId: data.preview_id,

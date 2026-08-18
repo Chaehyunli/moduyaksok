@@ -7,6 +7,12 @@ vi.mock('../lib/api', () => ({
   api: { post: vi.fn(), get: vi.fn() },
 }))
 
+vi.mock('./credentialSession', () => ({
+  useCredentialSessionStore: () => ({
+    ensureDecryptedApiKey: vi.fn().mockResolvedValue('sk-ant-fake-key'),
+  }),
+}))
+
 const apiPost = vi.mocked(api.post)
 const apiGet = vi.mocked(api.get)
 
@@ -91,7 +97,7 @@ describe('일정 상세 수정 API', () => {
     await store.saveCandidatePreview('A', replacement.previewId, [])
     await store.saveCandidateRemoval('A', ['new-lunch'])
 
-    expect(apiPost).toHaveBeenNthCalledWith(1, '/schedules/session-1/candidates/A/preview', { excluded_place_ids: ['old-lunch'] })
+    expect(apiPost).toHaveBeenNthCalledWith(1, '/schedules/session-1/candidates/A/preview', { excluded_place_ids: ['old-lunch'], api_key: 'sk-ant-fake-key' })
     expect(apiPost).toHaveBeenNthCalledWith(2, '/schedules/session-1/candidates/A/preview/preview-1/save', { selected_options: [] })
     expect(apiPost).toHaveBeenNthCalledWith(3, '/schedules/session-1/candidates/A/removal/save', { excluded_place_ids: ['new-lunch'], selected_options: [] })
     expect(store.candidates[0].title).toBe('장소 제거 저장됨')
