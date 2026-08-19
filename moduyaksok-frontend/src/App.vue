@@ -7,6 +7,7 @@ import DoodleUnderline from './components/doodle/DoodleUnderline.vue'
 import LoginModal from './components/doodle/LoginModal.vue'
 import PassphraseModal from './components/doodle/PassphraseModal.vue'
 import DoodleButton from './components/doodle/DoodleButton.vue'
+import DoodleProgress from './components/doodle/DoodleProgress.vue'
 import { GOOGLE_LOGIN_REDIRECT_KEY } from './lib/mobileAuth'
 
 const route = useRoute()
@@ -14,6 +15,19 @@ const router = useRouter()
 const store = useAuthStore()
 const scheduleStore = useScheduleStore()
 const generationNotice = computed(() => scheduleStore.generationNotice)
+
+// router.beforeEach가 모든 라우트에서 restoreSession()(GET /me)을 기다리는데,
+// Render 무료 플랜은 15분 이상 쉬면 콜드스타트에 수십 초가 걸린다(router/index.ts
+// 참고) — 그동안 RouterView가 비어 있어 헤더만 뜨고 빈 화면으로 보였다.
+// store.initialized는 이 첫 확인이 끝나야 true가 되므로, 그 전까지는 RouterView
+// 대신 로딩 화면을 보여준다.
+const bootMessages = [
+  '서버에 연결하고 있어요...',
+  '오랜만에 접속하면 서버를 깨우는 데 시간이 조금 걸려요',
+  '느긋하게 기다려주시면 금방 준비될게요',
+  '거의 다 왔어요',
+  '조금만 더 기다려주세요, 곧 만나요!',
+]
 
 function openGeneratedSchedule() {
   const sessionId = generationNotice.value?.sessionId
@@ -78,7 +92,12 @@ watch(
     </nav>
   </header>
 
-  <div class="pt-14">
+  <div v-if="!store.initialized" class="notebook-bg flex min-h-dvh items-center justify-center px-6 pt-14">
+    <div class="w-full max-w-sm">
+      <DoodleProgress :messages="bootMessages" />
+    </div>
+  </div>
+  <div v-else class="pt-14">
     <RouterView />
   </div>
 
