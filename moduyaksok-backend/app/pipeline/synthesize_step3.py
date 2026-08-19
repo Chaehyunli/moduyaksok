@@ -578,7 +578,6 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
                 end_time=draft.end_time,
                 price_range_per_person=draft.price_range_per_person,
                 operating_hours="",
-                phone=None,
                 info_needs_check=True,
                 map_url=map_url,
                 lat=draft.lat,

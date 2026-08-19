@@ -294,7 +294,6 @@ class Activity(BaseModel):
     end_time: str
     price_range_per_person: tuple[int, int]
     operating_hours: str
-    phone: str | None = None
     info_needs_check: bool = False
     # naver_map_url.build_naver_map_url()로 만든 링크 — 영업시간을 자동 확인 못 하는
     # 대신(info_needs_check=True) 사용자가 클릭 한 번으로 직접 확인하게 유도.
