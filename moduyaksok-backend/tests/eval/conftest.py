@@ -26,27 +26,31 @@ from anthropic import Anthropic
 from deepeval.metrics import GEval
 from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase
+from google import genai
 from openai import OpenAI
 
 from app.config import settings
 from app.pipeline.models import ModelTier, get_model
 from app.services.llm_ping import ping_provider
 
-# provider별 OpenAI 호환 엔드포인트. anthropic은 여기 없음 — Anthropic SDK를
-# 따로 쓰기 때문에(ProviderJudgeModel.generate() 참고) base_url 개념 자체가
-# 적용 안 됨. 3개 provider 중 upstage/openai만 이 SDK를 공유한다.
+# provider별 OpenAI 호환 엔드포인트. anthropic/google은 여기 없음 — 각자 전용
+# SDK를 쓰기 때문에(ProviderJudgeModel.generate() 참고) base_url 개념 자체가
+# 적용 안 됨. upstage/openai만 이 SDK를 공유한다.
 _OPENAI_COMPATIBLE_BASE_URLS: dict[str, str | None] = {
     "upstage": "https://api.upstage.ai/v1/solar",
     "openai": None,  # OpenAI SDK 기본 엔드포인트(api.openai.com) 그대로 사용
 }
 
-# DEEPEVAL_UPSTAGE_API_KEY -> DEEPEVAL_OPENAI_API_KEY -> DEEPEVAL_ANTHROPIC_API_KEY
-# 순으로 시도. 지금은 upstage만 실제로 채워져 있고 나머지는 비어있을 수 있음 —
-# 나중에 다른 키로 바꾸고 싶으면 .env 값만 채우면 되고 이 순서/로직은 안 바뀜.
+# DEEPEVAL_UPSTAGE_API_KEY -> DEEPEVAL_ANTHROPIC_API_KEY -> DEEPEVAL_OPENAI_API_KEY
+# -> DEEPEVAL_GOOGLE_API_KEY 순으로 시도(2026-08-19, google 추가하며 우선순위
+# 재조정 — 사용자 결정). 지금은 upstage만 실제로 채워져 있고 나머지는 비어있을
+# 수 있음 — 나중에 다른 키로 바꾸고 싶으면 .env 값만 채우면 되고 이 순서/로직은
+# 안 바뀜.
 _CANDIDATES: list[tuple[str, str | None]] = [
     ("upstage", settings.deepeval_upstage_api_key),
-    ("openai", settings.deepeval_openai_api_key),
     ("anthropic", settings.deepeval_anthropic_api_key),
+    ("openai", settings.deepeval_openai_api_key),
+    ("google", settings.deepeval_google_api_key),
 ]
 
 
@@ -66,8 +70,8 @@ def resolve_eval_credential() -> tuple[str, str]:
         return provider, api_key
     pytest.skip(
         "DeepEval 테스트용 키가 하나도 유효하지 않습니다 — "
-        ".env의 DEEPEVAL_UPSTAGE_API_KEY / DEEPEVAL_OPENAI_API_KEY / "
-        "DEEPEVAL_ANTHROPIC_API_KEY 중 하나를 설정하세요."
+        ".env의 DEEPEVAL_UPSTAGE_API_KEY / DEEPEVAL_ANTHROPIC_API_KEY / "
+        "DEEPEVAL_OPENAI_API_KEY / DEEPEVAL_GOOGLE_API_KEY 중 하나를 설정하세요."
     )
 
 
@@ -96,6 +100,11 @@ class ProviderJudgeModel(DeepEvalBaseLLM):
             # 응답 앞에 텍스트 없는 ThinkingBlock을 먼저 넣을 때가 있어(실측,
             # 2026-08-15) content[0].text가 AttributeError로 죽는다.
             return next(block.text for block in response.content if block.type == "text")
+
+        if self.provider == "google":
+            client = genai.Client(api_key=self.api_key)
+            response = client.models.generate_content(model=self.name, contents=prompt)
+            return response.text or ""
 
         base_url = _OPENAI_COMPATIBLE_BASE_URLS[self.provider]
         client = OpenAI(api_key=self.api_key, base_url=base_url)

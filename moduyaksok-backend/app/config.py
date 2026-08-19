@@ -52,11 +52,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
 
     # DeepEval 파이프라인 성능평가 테스트 전용 키(tests/eval/). 사용자 BYOK 키와
-    # 무관 — 우리 자신이 파이프라인 품질을 채점할 때만 씀. upstage → openai →
-    # anthropic 순으로 시도해서 첫 번째로 유효한 것을 쓴다 (tests/eval/_provider.py).
+    # 무관 — 우리 자신이 파이프라인 품질을 채점할 때만 씀. upstage → anthropic →
+    # openai → google 순으로 시도해서 첫 번째로 유효한 것을 쓴다
+    # (tests/eval/conftest.py의 _CANDIDATES).
     deepeval_upstage_api_key: str | None = None
     deepeval_openai_api_key: str | None = None
     deepeval_anthropic_api_key: str | None = None
+    deepeval_google_api_key: str | None = None
 
     # Step2 place_candidates 조회용 (NAVER Developers 포털 발급, 지도 API와 별개).
     naver_search_client_id: str = ""
