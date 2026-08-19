@@ -165,8 +165,8 @@ pytest -m eval tests/eval/test_step1_normalize_eval.py -v # Step1만
   `addopts = "-m 'not eval'"`) — 실제 API 키로 과금되는 테스트라 일반 개발 루프와
   분리했다.
 - 쓰는 키는 사용자 BYOK 키와 무관한 **평가 전용** 키다: `.env`의
-  `DEEPEVAL_UPSTAGE_API_KEY` → `DEEPEVAL_OPENAI_API_KEY` → `DEEPEVAL_ANTHROPIC_API_KEY`
-  순으로 값이 있고 실제로 동작하는(`ping_provider`로 확인) 첫 번째 키를 자동으로
+  `DEEPEVAL_UPSTAGE_API_KEY` → `DEEPEVAL_ANTHROPIC_API_KEY` → `DEEPEVAL_OPENAI_API_KEY`
+  → `DEEPEVAL_GOOGLE_API_KEY` 순으로 값이 있고 실제로 동작하는(`ping_provider`로 확인) 첫 번째 키를 자동으로
   골라 쓴다(`tests/eval/conftest.py`의 `resolve_eval_credential()`). 지금은
   Upstage 키만 채워져 있음 — 나중에 다른 키로 바꾸고 싶으면 `.env` 값만 채우면
   되고 순서/로직은 안 바뀐다.
