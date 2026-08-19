@@ -44,6 +44,12 @@ const buttonEl = ref<HTMLElement | null>(null)
 // 401 인터셉터와 같은 ?login=1&redirect=... 패턴을 재사용(App.vue가 마운트 시
 // 다시 읽어 모달을 연다).
 const RENDER_RETRY_KEY = 'gsi_button_render_retry'
+// Google 문서는 initialize()를 페이지 로드당 한 번만 호출하라고 권장한다 — 모달을
+// 열 때마다(같은 페이지에서, 새로고침 없이) 다시 호출하면 GSI 내부 상태가 꼬여
+// "origin not allowed"가 간헐적으로 재현되는 것으로 보인다(2026-08-19, 새로고침
+// 하면 늘 풀리던 버그의 근본 원인으로 추정). renderButton()은 모달 열릴 때마다
+// 버튼을 다시 그려야 하므로 계속 호출한다.
+let googleIdentityInitialized = false
 
 async function handleCredential(resp: { credential: string }) {
   loading.value = true
@@ -85,14 +91,21 @@ async function renderGoogleButton() {
   }
   renderFailed.value = false
   if (needsGoogleRedirect()) {
+    // 리다이렉트 목적지는 모달을 열 때마다 최신 loginRedirect로 갱신해야 하므로
+    // initialize() 가드와 무관하게 매번 다시 씀.
     sessionStorage.setItem(GOOGLE_LOGIN_REDIRECT_KEY, store.loginRedirect)
-    google.accounts.id.initialize({
-      client_id: clientId,
-      ux_mode: 'redirect',
-      login_uri: googleRedirectLoginUri(import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'),
-    })
-  } else {
-    google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+  }
+  if (!googleIdentityInitialized) {
+    if (needsGoogleRedirect()) {
+      google.accounts.id.initialize({
+        client_id: clientId,
+        ux_mode: 'redirect',
+        login_uri: googleRedirectLoginUri(import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'),
+      })
+    } else {
+      google.accounts.id.initialize({ client_id: clientId, callback: handleCredential })
+    }
+    googleIdentityInitialized = true
   }
   google.accounts.id.renderButton(buttonEl.value, { theme: 'outline', size: 'large', width: 320 })
   setTimeout(() => {
