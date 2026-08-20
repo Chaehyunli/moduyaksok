@@ -113,7 +113,7 @@
 #             장소가 일반 필수 장소와 같은 별 그림을 써서 구분이 안 된다는
 #             지적. is_required와 별개 플래그로 둬서 프런트가 전용 그림을
 #             고를 수 있게 한다(app/lib/categoryImages.ts 참고).
-# 2026-08-20, ScheduleCreateRequest에 model_validator(validate_time_range) 추가 —
+# 2026-08-20, ScheduleCreateRequest에 model_validator(validate_conditions) 추가 —
 #             프런트는 시작<종료만 통과시키는데, 요청 직접 조작(API 직호출)으로
 #             우회하면 동일 시간·역전된 time_range가 그대로 파이프라인까지 가는
 #             문제(docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 5). 종료가
@@ -126,9 +126,9 @@
 #             추가(항목 2 — 초밥/해산물처럼 의미가 겹치는 좋아요·싫어요).
 #             normalize_step1.detect_semantic_conflicts()가 양쪽 verifiable 태그를
 #             비교해 겹칠 수 있는 쌍만 뽑는다. 강제 선택 UI 대신 설명만 보여주고,
-#             실제 조정은 이미 있는 태그 이동/제외 컨트롤(항목 1·3)로 하기로
-#             결정(사용자 확인) — generate_algorithm_step2._matches_verifiable_dislike()
-#             의 문자열 매칭 필터링 로직 자체는 이번엔 안 건드림.
+#             실제 조정은 모달의 선택 필수 UI(좋아요 유지/싫어요 유지/둘 다 제외)로
+#             확정해 resolved 태그에 반영한다. Step2의 비선호 문자열 매칭 필터링
+#             로직 자체는 이번엔 안 건드림.
 # ------------------------------------------------------------------
 import asyncio
 import logging
@@ -206,10 +206,23 @@ class ScheduleCreateRequest(BaseModel):
     # 프런트가 시작<종료만 통과시키지만, 요청을 직접 조작해 우회할 수 있으므로
     # 여기서 다시 검증한다(NormalizedConditions.validate_region과 같은 패턴).
     @model_validator(mode="after")
-    def validate_time_range(self) -> "ScheduleCreateRequest":
+    def validate_conditions(self) -> "ScheduleCreateRequest":
         start, end = self.time_range
         if end <= start:
             raise ValueError("time_range의 종료 시간은 시작 시간보다 늦어야 합니다")
+        # 정규화 확인 화면을 거친 요청은 사용자가 확정한 태그가 정본이다. 양쪽에
+        # 같은 태그를 다시 넣으면 어느 쪽을 우선할지 알 수 없으므로, 프런트 모달을
+        # 우회한 API 호출도 422로 막는다. resolved_*를 보내지 않는 기존 요청은
+        # Step1이 처리하므로 호환성을 위해 여기서 거절하지 않는다.
+        if self.resolved_liked_tags is not None or self.resolved_disliked_tags is not None:
+            liked = {tag.tag for tag in self.resolved_liked_tags or []}
+            disliked = {tag.tag for tag in self.resolved_disliked_tags or []}
+            conflicts = sorted(liked & disliked)
+            if conflicts:
+                raise ValueError(
+                    "같은 조건을 좋아요와 싫어요에 동시에 반영할 수 없습니다: "
+                    + ", ".join(conflicts)
+                )
         return self
 
 
@@ -228,8 +241,10 @@ class NormalizePreviewResponse(BaseModel):
     # liked_tags/disliked_tags 둘 다에 같은 문구로 들어간 태그(직접 충돌) —
     # 프런트가 이 태그들만 선택 UI로 강조해서 사용자가 셋 중 하나를 고르게 한다.
     conflicting_tags: list[str]
-    # 문구는 다르지만 의미가 겹칠 수 있는 쌍(예: 초밥/해산물, 항목 2) — 강제 선택은
-    # 아니고 설명만 보여준다. 실제 조정은 이미 있는 태그 이동/제외 버튼으로 한다.
+    # 문구는 다르지만 의미가 겹칠 수 있는 쌍(예: 초밥/해산물, 항목 2) — 프런트는
+    # 쌍마다 좋아요 유지/싫어요 유지/둘 다 제외 중 하나를 고르게 해 resolved 태그를
+    # 모순 없이 만든다. 이 판단은 LLM 보조 결과라 서버의 결정적 422 규칙에는 넣지
+    # 않고, 동일 문구 직접 충돌만 ScheduleCreateRequest가 서버에서 422로 막는다.
     semantic_conflicts: list[SemanticConflict] = []
 
 

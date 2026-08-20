@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { NormalizePreview, PreferenceTag } from '../../stores/schedule'
+import { tagColorStyle } from '../../lib/tagColors'
 import DoodleModal from './DoodleModal.vue'
 import DoodleButton from './DoodleButton.vue'
 
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>()
 
 type Resolution = 'liked' | 'disliked' | 'excluded' | null
+type SemanticResolution = Exclude<Resolution, null>
 
 interface Row {
   tag: PreferenceTag
@@ -23,12 +25,14 @@ interface Row {
 }
 
 const rows = ref<Row[]>([])
+const semanticResolutions = ref<(SemanticResolution | null)[]>([])
 
 watch(
   () => props.preview,
   (preview) => {
     if (!preview) {
       rows.value = []
+      semanticResolutions.value = []
       return
     }
     const conflictSet = new Set(preview.conflictingTags)
@@ -46,11 +50,17 @@ watch(
       next.push({ tag, isConflict: false, resolution: 'disliked' })
     }
     rows.value = next
+    semanticResolutions.value = preview.semanticConflicts.map(() => null)
   },
   { immediate: true },
 )
 
 const unresolvedConflicts = computed(() => rows.value.filter((r) => r.resolution === null))
+const unresolvedSemanticConflicts = computed(() =>
+  semanticResolutions.value
+    .map((resolution, index) => ({ resolution, index }))
+    .filter(({ resolution }) => resolution === null),
+)
 const likedRows = computed(() => rows.value.filter((r) => r.resolution === 'liked'))
 const dislikedRows = computed(() => rows.value.filter((r) => r.resolution === 'disliked'))
 const droppedTags = computed(() => [
@@ -58,8 +68,63 @@ const droppedTags = computed(() => [
   ...(props.preview?.droppedDislikedTags ?? []),
 ])
 
+// 일정 결과에서 좋아요 조건을 구분할 때 쓰는 팔레트(tagColors.ts)를 의미 충돌에도
+// 그대로 쓴다. 같은 충돌 쌍의 두 태그는 항상 같은 색 테두리·배경으로 보인다.
+function semanticColorClass(index: number): string {
+  const style = tagColorStyle(index)
+  return `${style.border} ${style.bg} ${style.text}`
+}
+
+function semanticColorForTag(tag: string): string {
+  const index = props.preview?.semanticConflicts.findIndex(
+    (conflict) => conflict.likedTag === tag || conflict.dislikedTag === tag,
+  ) ?? -1
+  return index === -1 ? '' : semanticColorClass(index)
+}
+
+const semanticResolutionInconsistent = computed(() => {
+  const expected = new Map<string, Resolution>()
+  for (const [index, resolution] of semanticResolutions.value.entries()) {
+    if (!resolution) continue
+    const conflict = props.preview?.semanticConflicts[index]
+    if (!conflict) continue
+    const constraints: [string, Resolution][] = resolution === 'liked'
+      ? [[conflict.likedTag, 'liked'], [conflict.dislikedTag, 'excluded']]
+      : resolution === 'disliked'
+        ? [[conflict.likedTag, 'excluded'], [conflict.dislikedTag, 'disliked']]
+        : [[conflict.likedTag, 'excluded'], [conflict.dislikedTag, 'excluded']]
+    for (const [tag, value] of constraints) {
+      if (expected.has(tag) && expected.get(tag) !== value) return true
+      expected.set(tag, value)
+    }
+  }
+  return [...expected].some(([tag, value]) => rows.value.find((row) => row.tag.tag === tag)?.resolution !== value)
+})
+
+function resolveSemanticConflict(index: number, resolution: SemanticResolution) {
+  const conflict = props.preview?.semanticConflicts[index]
+  if (!conflict) return
+  semanticResolutions.value[index] = resolution
+  const likedRow = rows.value.find((row) => row.tag.tag === conflict.likedTag)
+  const dislikedRow = rows.value.find((row) => row.tag.tag === conflict.dislikedTag)
+  if (resolution === 'liked') {
+    if (likedRow) likedRow.resolution = 'liked'
+    if (dislikedRow) dislikedRow.resolution = 'excluded'
+  } else if (resolution === 'disliked') {
+    if (likedRow) likedRow.resolution = 'excluded'
+    if (dislikedRow) dislikedRow.resolution = 'disliked'
+  } else {
+    if (likedRow) likedRow.resolution = 'excluded'
+    if (dislikedRow) dislikedRow.resolution = 'excluded'
+  }
+}
+
 function confirm() {
-  if (unresolvedConflicts.value.length > 0) return
+  if (
+    unresolvedConflicts.value.length > 0 ||
+    unresolvedSemanticConflicts.value.length > 0 ||
+    semanticResolutionInconsistent.value
+  ) return
   emit('confirm', {
     liked: likedRows.value.map((r) => r.tag),
     disliked: dislikedRows.value.map((r) => r.tag),
@@ -87,7 +152,7 @@ function confirm() {
         <p v-if="!likedRows.length" class="font-hand text-sm text-ink/50">없어요</p>
         <ul v-else class="space-y-1.5">
           <li v-for="row in likedRows" :key="row.tag.tag" class="flex flex-wrap items-center justify-between gap-2">
-            <span class="font-hand text-base text-ink">{{ row.tag.tag }}</span>
+            <span :class="['rounded-[2px] border px-1.5 py-0.5 font-hand text-base text-ink', semanticColorForTag(row.tag.tag)]">{{ row.tag.tag }}</span>
             <span class="flex items-center gap-3">
               <button type="button" class="font-hand text-sm text-ink/50 hover:text-ink" @click="row.resolution = 'disliked'">싫어요로 이동</button>
               <button type="button" class="font-hand text-sm text-red/70 hover:text-red" @click="row.resolution = 'excluded'">✕ 제외</button>
@@ -101,7 +166,7 @@ function confirm() {
         <p v-if="!dislikedRows.length" class="font-hand text-sm text-ink/50">없어요</p>
         <ul v-else class="space-y-1.5">
           <li v-for="row in dislikedRows" :key="row.tag.tag" class="flex flex-wrap items-center justify-between gap-2">
-            <span class="font-hand text-base text-ink">{{ row.tag.tag }}</span>
+            <span :class="['rounded-[2px] border px-1.5 py-0.5 font-hand text-base text-ink', semanticColorForTag(row.tag.tag)]">{{ row.tag.tag }}</span>
             <span class="flex items-center gap-3">
               <button type="button" class="font-hand text-sm text-ink/50 hover:text-ink" @click="row.resolution = 'liked'">좋아요로 이동</button>
               <button type="button" class="font-hand text-sm text-red/70 hover:text-red" @click="row.resolution = 'excluded'">✕ 제외</button>
@@ -115,21 +180,31 @@ function confirm() {
       </p>
 
       <div v-if="preview.semanticConflicts.length" class="rounded-[2px] border-2 border-ink/25 bg-ink/5 p-3">
-        <p class="mb-1 font-hand text-sm text-ink/70">겹칠 수 있는 조건이 있어요</p>
-        <ul class="space-y-1">
-          <li
-            v-for="conflict in preview.semanticConflicts"
-            :key="`${conflict.likedTag}-${conflict.dislikedTag}`"
-            class="font-hand text-sm text-ink/55"
-          >
-            {{ conflict.explanation }} — 필요하면 위 목록에서 태그를 직접 옮기거나 빼주세요.
-          </li>
-        </ul>
+        <p class="mb-3 font-hand text-sm text-ink/70">겹칠 수 있는 조건이 있어요. 각 쌍의 방향을 골라주세요.</p>
+        <div
+          v-for="(conflict, index) in preview.semanticConflicts"
+          :key="`${conflict.likedTag}-${conflict.dislikedTag}`"
+          :class="['mb-3 rounded-[2px] border p-2.5 last:mb-0', semanticColorClass(index)]"
+        >
+          <p class="font-hand text-sm">
+            좋아하는 것 ‘<span :class="['inline-block rounded-[2px] border px-1 py-0.5', semanticColorClass(index)]">{{ conflict.likedTag }}</span>’과
+            싫어하는 것 ‘<span :class="['inline-block rounded-[2px] border px-1 py-0.5', semanticColorClass(index)]">{{ conflict.dislikedTag }}</span>’이 충돌할 수 있어요.
+          </p>
+          <p class="mt-1 font-hand text-sm text-ink/70">{{ conflict.explanation }}</p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <DoodleButton size="sm" variant="ghost" @click="resolveSemanticConflict(index, 'liked')">좋아요 유지</DoodleButton>
+            <DoodleButton size="sm" variant="ghost" @click="resolveSemanticConflict(index, 'disliked')">싫어요 유지</DoodleButton>
+            <DoodleButton size="sm" variant="ghost" @click="resolveSemanticConflict(index, 'excluded')">둘 다 제외</DoodleButton>
+          </div>
+        </div>
+        <p v-if="semanticResolutionInconsistent" class="mt-3 font-hand text-sm text-red">
+          여러 충돌 선택이 서로 맞지 않아요. 태그가 한 방향으로만 남도록 다시 골라주세요.
+        </p>
       </div>
 
       <div class="flex justify-between pt-2">
         <DoodleButton variant="ghost" @click="emit('close')">이전으로</DoodleButton>
-        <DoodleButton :disabled="unresolvedConflicts.length > 0" @click="confirm">이대로 진행하기</DoodleButton>
+        <DoodleButton :disabled="unresolvedConflicts.length > 0 || unresolvedSemanticConflicts.length > 0 || semanticResolutionInconsistent" @click="confirm">이대로 진행하기</DoodleButton>
       </div>
     </div>
   </DoodleModal>

@@ -12,7 +12,7 @@ import DoodleStepper from '../components/doodle/DoodleStepper.vue'
 import DoodleCard from '../components/doodle/DoodleCard.vue'
 import DoodleProgress from '../components/doodle/DoodleProgress.vue'
 import NormalizeConfirmModal from '../components/doodle/NormalizeConfirmModal.vue'
-import { buildProgressMessages } from '../lib/progressMessages'
+import { buildNormalizePreviewProgressMessages, buildProgressMessages } from '../lib/progressMessages'
 
 const router = useRouter()
 const route = useRoute()
@@ -115,9 +115,16 @@ const submitting = ref(false)
 const normalizing = ref(false)
 const normalizePreview = ref<import('../stores/schedule').NormalizePreview | null>(null)
 const normalizeModalOpen = ref(false)
+const normalizationError = ref('')
 const progressMessages = computed(() =>
   buildProgressMessages({
     region: regionLabel.value,
+    likedText: form.likedText,
+    dislikedText: form.dislikedText,
+  }),
+)
+const normalizeProgressMessages = computed(() =>
+  buildNormalizePreviewProgressMessages({
     likedText: form.likedText,
     dislikedText: form.dislikedText,
   }),
@@ -136,13 +143,15 @@ async function submit() {
   }
   // 선호 입력이 없으면 확인할 태그도 없으므로 기존 생성 흐름을 바로 탄다.
   if (conditions.likedText || conditions.dislikedText) {
+    normalizationError.value = ''
     normalizing.value = true
     try {
       normalizePreview.value = await store.previewNormalization(conditions.likedText, conditions.dislikedText)
       normalizeModalOpen.value = true
     } catch {
-      // 미리보기 실패는 일정을 생성하지 않은 상태이므로, 기존 오류 문구를 재사용한다.
-      store.scheduleError = '입력 내용을 확인하는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
+      // 아직 일정 생성 요청을 보내지 않았으므로 CandidatesView로 넘기지 않고, 현재
+      // 위저드에서 재시도 가능한 오류를 바로 보여준다.
+      normalizationError.value = '입력 내용을 확인하는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
     } finally {
       normalizing.value = false
     }
@@ -281,7 +290,9 @@ const purposeLabel = computed(() => PURPOSES.find((p) => p.value === form.purpos
         </DoodleCard>
       </div>
 
-      <DoodleProgress v-if="submitting || normalizing" :messages="progressMessages" class="mt-6" />
+      <p v-if="normalizationError" class="mt-6 font-hand text-sm text-red">{{ normalizationError }}</p>
+      <DoodleProgress v-if="submitting" :messages="progressMessages" class="mt-6" />
+      <DoodleProgress v-else-if="normalizing" :messages="normalizeProgressMessages" class="mt-6" />
 
       <div class="mt-10 flex justify-between">
         <DoodleButton v-if="step > 0" variant="ghost" :disabled="submitting || normalizing" @click="back">이전</DoodleButton>

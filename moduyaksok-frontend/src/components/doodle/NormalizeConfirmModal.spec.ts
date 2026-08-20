@@ -74,7 +74,7 @@ describe('NormalizeConfirmModal — 직접 충돌·오분류 확인 화면', () 
     expect(wrapper.text()).toContain('최대 5개')
   })
 
-  it('의미가 겹치는 태그는 강제 선택 없이 설명만 보여준다', () => {
+  it('의미 충돌은 쌍을 설명·같은 색으로 표시하고 해결 전에는 진행을 막는다', async () => {
     const preview: NormalizePreview = {
       likedTags: [tag('초밥')],
       dislikedTags: [tag('해산물')],
@@ -91,7 +91,62 @@ describe('NormalizeConfirmModal — 직접 충돌·오분류 확인 화면', () 
     })
 
     expect(wrapper.text()).toContain('초밥은 해산물에 포함될 수 있어요')
+    expect(wrapper.text()).toContain('좋아하는 것 ‘초밥’과')
+    expect(wrapper.text()).toContain('싫어하는 것 ‘해산물’')
     const confirmButton = wrapper.findAll('button').find((b) => b.text() === '이대로 진행하기')!
+    expect(confirmButton.attributes('disabled')).toBeDefined()
+
+    await wrapper.findAll('button').find((b) => b.text() === '좋아요 유지')!.trigger('click')
+
     expect(confirmButton.attributes('disabled')).toBeUndefined()
+    await confirmButton.trigger('click')
+    expect(wrapper.emitted('confirm')![0][0]).toEqual({ liked: [tag('초밥')], disliked: [] })
+  })
+
+  it('의미 충돌에서 둘 다 제외를 선택하면 두 태그를 전송하지 않는다', async () => {
+    const preview: NormalizePreview = {
+      likedTags: [tag('초밥')],
+      dislikedTags: [tag('해산물')],
+      droppedLikedTags: [],
+      droppedDislikedTags: [],
+      conflictingTags: [],
+      semanticConflicts: [
+        { likedTag: '초밥', dislikedTag: '해산물', explanation: '초밥은 해산물에 포함될 수 있어요' },
+      ],
+    }
+    const wrapper = mount(NormalizeConfirmModal, {
+      props: { open: true, preview },
+      global: { stubs: { Teleport: true } },
+    })
+
+    await wrapper.findAll('button').find((b) => b.text() === '둘 다 제외')!.trigger('click')
+    await wrapper.findAll('button').find((b) => b.text() === '이대로 진행하기')!.trigger('click')
+
+    expect(wrapper.emitted('confirm')![0][0]).toEqual({ liked: [], disliked: [] })
+  })
+
+  it('여러 의미 충돌의 선택이 같은 태그를 반대로 남기면 진행을 막는다', async () => {
+    const preview: NormalizePreview = {
+      likedTags: [tag('초밥')],
+      dislikedTags: [tag('해산물'), tag('갑각류')],
+      droppedLikedTags: [],
+      droppedDislikedTags: [],
+      conflictingTags: [],
+      semanticConflicts: [
+        { likedTag: '초밥', dislikedTag: '해산물', explanation: '초밥은 해산물에 포함될 수 있어요' },
+        { likedTag: '초밥', dislikedTag: '갑각류', explanation: '초밥에 갑각류가 포함될 수 있어요' },
+      ],
+    }
+    const wrapper = mount(NormalizeConfirmModal, {
+      props: { open: true, preview },
+      global: { stubs: { Teleport: true } },
+    })
+
+    await wrapper.findAll('button').filter((b) => b.text() === '좋아요 유지')[0].trigger('click')
+    await wrapper.findAll('button').filter((b) => b.text() === '싫어요 유지')[1].trigger('click')
+
+    expect(wrapper.text()).toContain('여러 충돌 선택이 서로 맞지 않아요')
+    const confirmButton = wrapper.findAll('button').find((b) => b.text() === '이대로 진행하기')!
+    expect(confirmButton.attributes('disabled')).toBeDefined()
   })
 })

@@ -80,7 +80,7 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `DoodleModal` | 모달. `open`, `title` prop, `@close` |
 | `LoginModal` | `App.vue`에 전역으로 마운트된 로그인 모달(`DoodleModal` 래핑). 비로그인 상태로 보호된 라우트에 진입하면 별도 `/login` 페이지 대신 메인 화면 위에 이걸 띄운다(`stores/auth.ts`의 `showLoginModal`/`openLoginModal`) |
 | `AddCustomPlaceModal` | `CandidatesView.vue`의 좋아요 태그 그룹 "+" 버튼으로 여는 모달(`DoodleModal` 래핑). 이름/주소로 네이버 지역검색을 직접 호출해 결과 목록을 보여주고, 탭해서 고르면 `is_custom` 필수 장소로 저장(최대 3개) |
-| `NormalizeConfirmModal` | `ConditionWizardView.vue`가 일정 생성 직전에 여는 모달(`DoodleModal` 래핑). 좋아요·싫어요 텍스트를 정규화한 결과(`POST /schedules/normalize-preview`)를 보여주고, 같은 태그가 양쪽에 있으면(직접 충돌) 좋아요/싫어요/제외 3버튼 중 하나를 고르기 전엔 진행 버튼을 막는다. 비충돌 태그도 반대쪽 이동·제외 가능(오분류 수정), 상한(5개) 초과로 안 반영되는 태그도 안내 |
+| `NormalizeConfirmModal` | `ConditionWizardView.vue`가 일정 생성 직전에 여는 모달(`DoodleModal` 래핑). 좋아요·싫어요 텍스트를 정규화한 결과(`POST /schedules/normalize-preview`)를 보여주고, 같은 태그가 양쪽에 있으면(직접 충돌) 좋아요/싫어요/제외 3버튼 중 하나를 고르기 전엔 진행 버튼을 막는다. 의미 충돌도 같은 색 태그 박스와 설명으로 보여주고 좋아요 유지/싫어요 유지/둘 다 제외를 선택해야 진행한다. 비충돌 태그도 반대쪽 이동·제외 가능(오분류 수정), 상한(5개) 초과로 안 반영되는 태그도 안내 |
 | `DoodleStepper` | 단계 진행 표시 (다단계 입력 폼용) |
 | `DoodleProgress` | 대기 중 순환 진행 문구 + 인디케이터 바. `messages`(string[]), `intervalMs` prop — 일정 생성/재생성처럼 응답까지 시간이 걸리는 작업에서 문구를 2.2초 간격으로 순환 표시 |
 | `DoodleDivider` | 점선 구분선 |

@@ -241,6 +241,41 @@ def test_create_schedule_accepts_headcount_and_budget_boundaries(
     assert response.status_code == 200
 
 
+def test_create_schedule_rejects_overlapping_resolved_preference_tags(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    shared_tag = PreferenceTag(tag="초밥", verifiable=True, is_meal=True).model_dump(mode="json")
+    body = {
+        **_CREATE_BODY,
+        "resolved_liked_tags": [shared_tag],
+        "resolved_disliked_tags": [shared_tag],
+    }
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 422
+    assert "동시에 반영" in response.json()["detail"][0]["msg"]
+
+
+def test_create_schedule_allows_distinct_resolved_preference_tags(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    _mock_pipeline_success(monkeypatch)
+    body = {
+        **_CREATE_BODY,
+        "resolved_liked_tags": [
+            PreferenceTag(tag="초밥", verifiable=True, is_meal=True).model_dump(mode="json")
+        ],
+        "resolved_disliked_tags": [
+            PreferenceTag(tag="해산물", verifiable=True, is_meal=True).model_dump(mode="json")
+        ],
+    }
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 200
+
+
 def test_normalize_preview_flags_direct_conflict(client, session, monkeypatch):
     headers, user_id = _login(client, monkeypatch)
     _register_credential(session, user_id)
