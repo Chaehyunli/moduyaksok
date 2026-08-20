@@ -82,6 +82,15 @@ function semanticColorForTag(tag: string): string {
   return index === -1 ? '' : semanticColorClass(index)
 }
 
+// 의미 충돌에 속한 태그는 위 충돌 카드의 세 선택으로만 바꾼다. 목록의 일반
+// 이동/제외 버튼까지 열어두면 같은 결정을 두 번 제공할 뿐 아니라, 막 해결한
+// 충돌을 다시 모순된 상태로 되돌릴 수 있다.
+function isSemanticConflictTag(tag: string): boolean {
+  return (props.preview?.semanticConflicts ?? []).some(
+    (conflict) => conflict.likedTag === tag || conflict.dislikedTag === tag,
+  )
+}
+
 const semanticResolutionInconsistent = computed(() => {
   const expected = new Map<string, Resolution>()
   for (const [index, resolution] of semanticResolutions.value.entries()) {
@@ -153,7 +162,7 @@ function confirm() {
         <ul v-else class="space-y-1.5">
           <li v-for="row in likedRows" :key="row.tag.tag" class="flex flex-wrap items-center justify-between gap-2">
             <span :class="['rounded-[2px] border px-1.5 py-0.5 font-hand text-base text-ink', semanticColorForTag(row.tag.tag)]">{{ row.tag.tag }}</span>
-            <span class="flex items-center gap-3">
+            <span v-if="!isSemanticConflictTag(row.tag.tag)" class="flex items-center gap-3">
               <button type="button" class="font-hand text-sm text-ink/50 hover:text-ink" @click="row.resolution = 'disliked'">싫어요로 이동</button>
               <button type="button" class="font-hand text-sm text-red/70 hover:text-red" @click="row.resolution = 'excluded'">✕ 제외</button>
             </span>
@@ -167,7 +176,7 @@ function confirm() {
         <ul v-else class="space-y-1.5">
           <li v-for="row in dislikedRows" :key="row.tag.tag" class="flex flex-wrap items-center justify-between gap-2">
             <span :class="['rounded-[2px] border px-1.5 py-0.5 font-hand text-base text-ink', semanticColorForTag(row.tag.tag)]">{{ row.tag.tag }}</span>
-            <span class="flex items-center gap-3">
+            <span v-if="!isSemanticConflictTag(row.tag.tag)" class="flex items-center gap-3">
               <button type="button" class="font-hand text-sm text-ink/50 hover:text-ink" @click="row.resolution = 'liked'">좋아요로 이동</button>
               <button type="button" class="font-hand text-sm text-red/70 hover:text-red" @click="row.resolution = 'excluded'">✕ 제외</button>
             </span>
