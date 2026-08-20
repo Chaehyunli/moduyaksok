@@ -23,6 +23,7 @@ from app.pipeline.schemas import (
 from app.pipeline.synthesize_step3 import (
     _budget_overrun_ratio,
     _CandidateJudgment,
+    _diagnose_rule_rejection,
     _has_duplicate_place,
     _has_duplicate_tag_match,
     _has_excessive_meal_places,
@@ -825,3 +826,37 @@ def test_synthesize_and_validate_builds_map_url_from_address(monkeypatch):
     activity = result.candidates[0].activities[0]
     assert activity.info_needs_check is True
     assert activity.map_url.startswith("https://map.naver.com/")
+
+
+# ── _diagnose_rule_rejection ────────────────────────────────────────────
+
+
+def test_diagnose_rule_rejection_blames_preference_when_required_tags_missing():
+    candidate = CandidateDraft(
+        title="A",
+        activities=[_activity("가게1")],
+        rationale="r",
+        required_non_meal_tags=["콩국수"],
+    )
+
+    reason, adjustable = _diagnose_rule_rejection([candidate], _CONDITIONS)
+
+    assert "좋아하는" in reason
+    assert adjustable == ["liked_text", "disliked_text"]
+
+
+def test_diagnose_rule_rejection_blames_budget_and_time_on_overrun():
+    candidate = _candidate("A", [_activity("비싼가게", price=(200000, 250000))])
+
+    reason, adjustable = _diagnose_rule_rejection([candidate], _CONDITIONS)
+
+    assert "예산" in reason
+    assert adjustable == ["budget_per_person", "time_range"]
+
+
+def test_diagnose_rule_rejection_falls_back_to_generic_message_for_data_quality_issues():
+    candidate = _candidate("A", [_activity("환각가게", lat=None, lng=None)])
+
+    reason, adjustable = _diagnose_rule_rejection([candidate], _CONDITIONS)
+
+    assert adjustable == ["budget_per_person", "time_range", "region"]

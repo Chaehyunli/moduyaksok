@@ -513,8 +513,7 @@ def _generate_for_plan(
             if len(state.place_ids) == wanted
             and state.meal_count >= meal_slots
             and (not need_activity or state.categories & _ACTIVITY_CATEGORIES)
-            and len((set(state.covered_tags) | set(precovered_liked_tags)) & liked_tags)
-            >= coverage
+            and len((set(state.covered_tags) | set(precovered_liked_tags)) & liked_tags) >= coverage
         ]
 
     # 과반수(+1) 커버리지를 만족하는 조합이 하나도 없다고 바로 실패시키지 않는다
@@ -616,6 +615,49 @@ def _select_diverse_set(
     )
 
 
+def _fixed_and_places(
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+    required_place_ids: tuple[str, ...],
+    fixed_place_ids: tuple[str, ...] | None,
+) -> tuple[tuple[str, ...], list[dict]]:
+    places = ensure_place_ids(place_candidates)
+    fixed = fixed_place_ids if fixed_place_ids is not None else required_place_ids
+    fixed_set = set(fixed)
+    places = [
+        place
+        for place in places
+        if _place_id(place) in fixed_set or not _matches_verifiable_dislike(place, conditions)
+    ]
+    return fixed, places
+
+
+def diagnose_empty_result(
+    conditions: NormalizedConditions,
+    place_candidates: list[dict],
+    required_place_ids: tuple[str, ...] = (),
+    precovered_liked_tags: tuple[str, ...] = (),
+) -> tuple[str, list[str]]:
+    """generate_algorithm_candidates()가 빈 리스트를 반환했을 때만 호출하는 진단
+    전용 함수(2026-08-20, docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 9) —
+    실제 생성 경로와 같은 전처리(_fixed_and_places)를 공유해, 후보 조합 자체가
+    안 나왔는지(지역·필수 장소 문제)와 조합은 나왔는데 beam search가 시간/예산/
+    이동거리 하드룰을 못 버텼는지(시간·예산 문제)를 구분한다. LLM/네트워크 호출이
+    없는 순수 계산이라 실패 응답 경로에서 한 번 더 불러도 비용이 없다.
+    """
+    fixed, places = _fixed_and_places(conditions, place_candidates, required_place_ids, None)
+    plans = _build_candidate_plans(conditions, places, fixed, precovered_liked_tags)
+    if not plans:
+        adjustable = ["region"]
+        if required_place_ids:
+            adjustable.append("required_places")
+        return "지역 내에서 조건에 맞는 장소 조합 자체를 찾지 못했습니다.", adjustable
+    return (
+        "선택하신 시간대·예산·이동거리 조건과 맞는 일정 조합을 찾지 못했습니다.",
+        ["time_range", "budget_per_person"],
+    )
+
+
 def generate_algorithm_candidates(
     provider: str,
     api_key: str,
@@ -628,14 +670,10 @@ def generate_algorithm_candidates(
     candidate_limit: int = 3,
     target_count: int | None = None,
 ) -> list[tuple[str, CandidateDraft]]:
-    places = ensure_place_ids(place_candidates)
-    fixed = fixed_place_ids if fixed_place_ids is not None else required_place_ids
+    fixed, places = _fixed_and_places(
+        conditions, place_candidates, required_place_ids, fixed_place_ids
+    )
     fixed_set = set(fixed)
-    places = [
-        place
-        for place in places
-        if _place_id(place) in fixed_set or not _matches_verifiable_dislike(place, conditions)
-    ]
     # 수정 시 남겨둔 장소도 계획 단계부터 절대 빠질 수 없는 고정점으로 취급한다.
     plans = _build_candidate_plans(conditions, places, fixed, precovered_liked_tags)
     if not plans:

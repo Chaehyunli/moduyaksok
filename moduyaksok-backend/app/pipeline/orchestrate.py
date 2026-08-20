@@ -41,6 +41,13 @@
 #             지금 파이프라인이 어느 단계인지 바로 보려는 용도(운영 모니터링 목적
 #             아님, 응답에는 안 실림). 이 파일이 이미 "여러 Step을 잇는" 역할이라
 #             각 Step 파일 내부를 안 건드리고 여기 한 곳에서만 로깅.
+# 2026-08-20, hybrid 모드에서 labeled_drafts가 비었을 때(Step2 자체가 조합을
+#             못 만듦) 고정 문구 대신 generate_algorithm_step2.diagnose_empty_result()
+#             로 지역·필수 장소 문제인지 시간·예산 문제인지 구분해 reason/
+#             adjustable_conditions를 채우도록 변경(docs/입력_엣지케이스_개선계획_
+#             2026-08-14.md 항목 9 — "생성 불가 사유별 완화 제안"). 이 진단 함수는
+#             LLM/네트워크 호출이 없어 실패 응답 경로에서만 추가로 불러도 비용이
+#             없다.
 # ------------------------------------------------------------------
 import asyncio
 import logging
@@ -48,6 +55,7 @@ import time
 
 from app.config import settings
 from app.pipeline.generate_algorithm_step2 import (
+    diagnose_empty_result,
     ensure_place_ids,
     generate_algorithm_candidates,
 )
@@ -203,10 +211,13 @@ async def regenerate_schedule_candidates(
         )
         if not labeled_drafts:
             logger.info("[step2] 후보 초안 생성 실패 - %s, 조합 부족", conditions.region)
+            reason, adjustable = diagnose_empty_result(
+                conditions, place_candidates, required_place_ids, precovered_liked_tags
+            )
             return InfeasibleResponse(
                 detail="조건을 만족하는 일정 후보를 만들 수 없어요.",
-                reason="필수 장소·식사·좋아요·동선 조건을 동시에 만족하는 장소 조합이 부족합니다.",
-                adjustable_conditions=["required_places", "time_range", "region"],
+                reason=reason,
+                adjustable_conditions=adjustable,
             )
         logger.info("[step2] 후보 초안 생성 완료 - %d개 관점", len(labeled_drafts))
 

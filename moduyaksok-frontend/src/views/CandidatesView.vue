@@ -23,6 +23,27 @@ const changingRequiredPlaceId = ref<string | null>(null)
 const regenerating = ref(false)
 const requiredPlaceError = ref('')
 const scheduleRegion = computed(() => store.conditions?.region ?? '')
+// 409(생성 불가) 응답의 adjustable_conditions(백엔드 필드명)를 사람이 읽을 라벨과
+// ConditionWizardView로 넘길 쿼리로 바꾼다(docs/입력_엣지케이스_개선계획_2026-08-14.md
+// 항목 9 — "생성 불가 사유별 완화 제안"). 새 화면에서 직전 조건을 그대로 채운 채
+// 문제된 단계로 바로 이동하는 건 ConditionWizardView의 retry 쿼리 처리 몫이다.
+const ADJUSTABLE_LABELS: Record<string, string> = {
+  region: '지역',
+  time_range: '시간대',
+  budget_per_person: '예산',
+  liked_text: '좋아하는 것',
+  disliked_text: '싫어하는 것',
+  required_places: '필수 장소',
+}
+const adjustableLabel = computed(() => {
+  const labels = [
+    ...new Set(store.scheduleAdjustableConditions.map((field) => ADJUSTABLE_LABELS[field]).filter(Boolean)),
+  ]
+  return labels.join('·')
+})
+const retryQuery = computed(() =>
+  store.scheduleAdjustableConditions.length ? { retry: store.scheduleAdjustableConditions.join(',') } : {},
+)
 const progressMessages = computed(() =>
   buildRegenerationProgressMessages(store.requiredPlaces.map((place) => place.name)),
 )
@@ -130,13 +151,20 @@ onMounted(async () => {
       <DoodleAlert v-else-if="store.candidates.length === 0" title="이 조건으로는 일정을 만들 수 없어요">
         {{ store.scheduleError ?? '예산이 너무 적어서 조건을 만족하는 장소가 없어요. 예산을 늘리거나 지역을 넓혀보세요.' }}
         <template #actions>
-          <DoodleButton size="sm" @click="router.push('/new')">조건 완화하기</DoodleButton>
+          <DoodleButton size="sm" @click="router.push({ path: '/new', query: retryQuery })">
+            {{ adjustableLabel ? `${adjustableLabel} 조정하기` : '조건 완화하기' }}
+          </DoodleButton>
         </template>
       </DoodleAlert>
 
       <template v-else>
         <DoodleAlert v-if="store.scheduleError" title="다시 생성하지 못했어요" class="mb-6">
           {{ store.scheduleError }}
+          <template v-if="adjustableLabel" #actions>
+            <DoodleButton size="sm" @click="router.push({ path: '/new', query: retryQuery })">
+              {{ adjustableLabel }} 조정하기
+            </DoodleButton>
+          </template>
         </DoodleAlert>
 
         <DoodleAccordion

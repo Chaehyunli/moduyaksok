@@ -35,6 +35,16 @@ const allFilteredSelected = computed(
   () => filteredSchedules.value.length > 0 && filteredSchedules.value.every((item) => selectedIds.value.includes(item.sessionId)),
 )
 
+// 같은 지역에서 여러 일정을 만들면 제목·지역이 겹칠 수 있어(백엔드가 이름 없는
+// 일정에 "지역 (1)"/"(2)"를 붙이긴 하지만, 사용자가 직접 지은 제목은 그대로
+// 겹칠 수 있음) 목록에서 구분할 수 있게 생성일도 같이 보여준다
+// (docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 8).
+function formatCreatedAt(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, '0')}.${String(date.getDate()).padStart(2, '0')}`
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -212,7 +222,9 @@ onMounted(load)
                     {{ item.status === 'confirmed' ? '확정' : '초안' }}
                   </DoodleBadge>
                 </h2>
-                <p class="mt-1 font-hand text-sm text-ink/60">{{ item.candidateTitle }} · {{ item.region }}</p>
+                <p class="mt-1 font-hand text-sm text-ink/60">
+                  {{ item.candidateTitle }} · {{ item.region }} · {{ formatCreatedAt(item.createdAt) }}
+                </p>
                 <button
                   class="mt-2 font-hand text-sm text-red underline underline-offset-2"
                   @click.stop="startEditing(item)"

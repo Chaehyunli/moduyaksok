@@ -118,6 +118,13 @@
 #             generate_algorithm_step2.py의 과반수 커버리지 완화(같은 날 처리)와
 #             짝을 이룬다 — Step2가 완화해서 통과시켜도 Step3가 같은 강도로 다시
 #             드롭하면 소용없어서 두 곳 다 손봤다.
+# 2026-08-20, _diagnose_rule_rejection() 추가 — 규칙 기반 필터가 후보를 전부
+#             드롭했을 때(_infeasible_response) 항상 같은 고정 문구 대신, 이미 있는
+#             하드룰 판정 함수를 다시 호출해 선호 조건(좋아요/싫어요)이 많이 걸렸는지
+#             예산·시간·이동거리가 많이 걸렸는지를 세어 reason/adjustable_conditions를
+#             다르게 채운다(docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 9 —
+#             "생성 불가 사유별 완화 제안"). 실제 드롭 결정(_rule_based_filter)은
+#             전혀 안 건드림 — 이미 드롭된 뒤에만 순수 진단용으로 다시 계산한다.
 # ------------------------------------------------------------------
 import logging
 from datetime import datetime, time
@@ -591,11 +598,57 @@ def _to_activities(drafts: list[ActivityDraft]) -> list[Activity]:
     return activities
 
 
-def _infeasible_response() -> InfeasibleResponse:
+def _diagnose_rule_rejection(
+    candidates: list[CandidateDraft], conditions: NormalizedConditions
+) -> tuple[str, list[str]]:
+    """규칙 기반 필터가 후보를 전부 드롭했을 때(_rule_survivors가 비었을 때)만
+    호출되는 진단 전용 함수 — 실제 드롭 결정을 바꾸지 않고, 이미 있는 하드룰
+    판정 함수를 다시 호출해 어느 조건이 많이 걸렸는지만 센다(2026-08-20,
+    docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 9 — "생성 불가 사유별
+    완화 제안"). 환각·시간겹침·중복장소처럼 사용자가 조정할 수 없는 내부 품질
+    문제가 다수면 기존 일반 메시지로 폴백한다.
+    """
+    car_dependent = is_car_dependent_region(conditions.region)
+    preference_hits = sum(
+        _has_missing_required_tags(c, conditions)
+        or _has_insufficient_preference_coverage(c, conditions)
+        for c in candidates
+    )
+    budget_time_hits = sum(
+        _has_excessive_travel(c, car_dependent)
+        or _budget_overrun_ratio(c, conditions.budget_per_person) > _BUDGET_OVERRUN_TOLERANCE_RATIO
+        or _time_overrun_minutes(c, conditions.time_range) > _TIME_OVERRUN_TOLERANCE_MINUTES
+        for c in candidates
+    )
+    if preference_hits >= budget_time_hits and preference_hits > 0:
+        return (
+            "좋아하는 것·싫어하는 것 조건을 모두 만족하는 일정을 찾지 못했습니다.",
+            ["liked_text", "disliked_text"],
+        )
+    if budget_time_hits > 0:
+        return (
+            "예산·시간대·이동거리 조건에 맞는 일정을 찾지 못했습니다.",
+            ["budget_per_person", "time_range"],
+        )
+    return (
+        "예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
+        ["budget_per_person", "time_range", "region"],
+    )
+
+
+def _infeasible_response(
+    candidates: list[CandidateDraft] | None = None,
+    conditions: NormalizedConditions | None = None,
+) -> InfeasibleResponse:
+    if candidates and conditions is not None:
+        reason, adjustable = _diagnose_rule_rejection(candidates, conditions)
+    else:
+        reason = "예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다."
+        adjustable = ["budget_per_person", "time_range", "region"]
     return InfeasibleResponse(
         detail="생성 가능한 일정이 없어요 ㅠㅠ 조건을 다시 설정해주세요.",
-        reason="예산·시간대·지역 조건에 맞는 일정을 만들지 못했습니다.",
-        adjustable_conditions=["budget_per_person", "time_range", "region"],
+        reason=reason,
+        adjustable_conditions=adjustable,
     )
 
 
@@ -718,7 +771,7 @@ def synthesize_and_validate(
                 "preference_coverage_relaxed_at_step3 survivor_count=%s", len(rule_survivors)
             )
     if not rule_survivors:
-        return _infeasible_response()
+        return _infeasible_response(candidates, conditions)
     if coverage_relaxed:
         rule_warnings = [
             " ".join(

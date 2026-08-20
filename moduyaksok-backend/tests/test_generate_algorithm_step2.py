@@ -2,6 +2,7 @@ from datetime import datetime
 
 from app.pipeline.generate_algorithm_step2 import (
     _minimum_preference_coverage,
+    diagnose_empty_result,
     ensure_place_ids,
     generate_algorithm_candidates,
 )
@@ -119,8 +120,12 @@ def test_algorithm_relaxes_coverage_when_two_tags_have_zero_matches(caplog):
         update={
             "liked_tags": [
                 *_conditions().liked_tags,
-                PreferenceTag(tag="플스방", verifiable=True, preference_kind="place_type", priority=3),
-                PreferenceTag(tag="한강공원", verifiable=True, preference_kind="place_type", priority=3),
+                PreferenceTag(
+                    tag="플스방", verifiable=True, preference_kind="place_type", priority=3
+                ),
+                PreferenceTag(
+                    tag="한강공원", verifiable=True, preference_kind="place_type", priority=3
+                ),
             ]
         }
     )
@@ -478,3 +483,30 @@ def test_required_meal_place_replaces_same_tag_and_keeps_other_liked_tag():
         )
         assert required_meal.start_time < "19:00"
         assert required_meal.end_time > "18:00"
+
+
+def test_diagnose_empty_result_blames_region_when_no_plans_can_be_built():
+    conditions = _conditions()
+
+    reason, adjustable = diagnose_empty_result(conditions, [])
+
+    assert "지역" in reason
+    assert adjustable == ["region"]
+
+
+def test_diagnose_empty_result_also_flags_required_places_when_given():
+    conditions = _conditions()
+
+    reason, adjustable = diagnose_empty_result(conditions, [], required_place_ids=("missing-id",))
+
+    assert adjustable == ["region", "required_places"]
+
+
+def test_diagnose_empty_result_blames_time_and_budget_when_plans_exist():
+    conditions = _conditions()
+    places = _places()
+
+    reason, adjustable = diagnose_empty_result(conditions, places)
+
+    assert "시간대" in reason
+    assert adjustable == ["time_range", "budget_per_person"]
