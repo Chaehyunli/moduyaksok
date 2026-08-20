@@ -46,6 +46,25 @@ export function buildProgressMessages(conditions: ProgressConditions): string[] 
   return messages
 }
 
+// 일정 생성 전 정규화 확인 화면(POST /schedules/normalize-preview) 대기 중 순환
+// 표시할 문구 — Step1 태그 추출 + (조건부) 의미 충돌 판단까지 도는 동안 보여준다.
+export function buildNormalizePreviewProgressMessages(conditions: {
+  likedText: string
+  dislikedText: string
+}): string[] {
+  const messages: string[] = ['입력하신 내용을 살펴보고 있어요']
+
+  const liked = quote(conditions.likedText)
+  if (liked) messages.push(`"${liked}"에서 조건을 뽑고 있어요`)
+
+  const disliked = quote(conditions.dislikedText)
+  if (disliked) messages.push(`"${disliked}"에서 조건을 뽑고 있어요`)
+
+  if (liked && disliked) messages.push('겹치는 조건이 있는지 확인하고 있어요')
+  messages.push('거의 다 됐어요')
+  return messages
+}
+
 // 후보 목록에서 필수 장소를 반영해 다시 생성할 때의 문구다. 초기 조건을 다시
 // 해석하는 과정과 달리, 이미 고른 장소를 새 후보에 배치하는 과정에 초점을 둔다.
 export function buildRegenerationProgressMessages(requiredPlaceNames: string[]): string[] {

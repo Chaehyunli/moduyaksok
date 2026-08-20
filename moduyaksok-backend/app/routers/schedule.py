@@ -118,7 +118,19 @@
 #             우회하면 동일 시간·역전된 time_range가 그대로 파이프라인까지 가는
 #             문제(docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 5). 종료가
 #             시작보다 늦지 않으면 422.
+# 2026-08-20(2차), ScheduleCreateRequest.headcount/budget_per_person에 Field(ge=,
+#             le=) 추가(항목 7) — 프런트는 0보다 큰지만 확인해서, 매우 큰 인원·
+#             1인 100원 같은 예산이 API 직접 호출로 파이프라인까지 갈 수 있었다.
+#             범위(인원 1~30명, 1인 예산 1,000~1,000,000원)는 사용자 결정.
+# 2026-08-20(3차), POST /schedules/normalize-preview 응답에 semantic_conflicts
+#             추가(항목 2 — 초밥/해산물처럼 의미가 겹치는 좋아요·싫어요).
+#             normalize_step1.detect_semantic_conflicts()가 양쪽 verifiable 태그를
+#             비교해 겹칠 수 있는 쌍만 뽑는다. 강제 선택 UI 대신 설명만 보여주고,
+#             실제 조정은 이미 있는 태그 이동/제외 컨트롤(항목 1·3)로 하기로
+#             결정(사용자 확인) — generate_algorithm_step2._matches_verifiable_dislike()
+#             의 문자열 매칭 필터링 로직 자체는 이번엔 안 건드림.
 # ------------------------------------------------------------------
+import asyncio
 import logging
 import secrets
 import time
@@ -143,14 +155,22 @@ from app.models.schedule import (
 from app.models.user import User
 from app.pipeline.enrich_step4 import enrich_routes
 from app.pipeline.generate_algorithm_step2 import _MAX_PLACES, generate_algorithm_candidates
+from app.pipeline.normalize_step1 import (
+    SemanticConflict,
+    detect_semantic_conflicts,
+    dropped_verifiable_tags,
+    extract_tags,
+)
 from app.pipeline.orchestrate import generate_schedule_candidates, regenerate_schedule_candidates
 from app.pipeline.schemas import (
     Activity,
     Candidate,
     InfeasibleResponse,
     NormalizedConditions,
+    PreferenceTag,
     RequiredPlace,
     ScheduleResponse,
+    cap_verifiable_tags,
 )
 from app.pipeline.synthesize_step3 import synthesize_and_validate
 from app.pipeline.travel_estimate import ManualTimeConflictError, apply_manual_time
@@ -165,13 +185,23 @@ router = APIRouter()
 
 class ScheduleCreateRequest(BaseModel):
     purpose: Literal["date", "friends", "family", "party", "other"]
-    headcount: int
+    # 프런트는 0보다 큰지만 확인한다 — 비현실적인 인원/예산(수천 명, 1인 100원 등)이
+    # API 직접 호출로 파이프라인까지 들어가는 걸 막는 범위(사용자 결정,
+    # docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 7).
+    headcount: int = Field(ge=1, le=30)
     time_range: tuple[datetime, datetime]
     region: str
     liked_text: str = Field(default="", max_length=50)
     disliked_text: str = Field(default="", max_length=50)
-    budget_per_person: int
+    budget_per_person: int = Field(ge=1_000, le=1_000_000)
     api_key: str  # 클라이언트가 로컬에서 복호화해 실어 보낸 평문. 서버는 저장하지 않는다.
+    # 사용자가 POST /schedules/normalize-preview 응답을 보고 확인·수정한 태그.
+    # 둘 중 하나라도 None이 아니면 "확인 화면을 거쳤다"는 뜻으로 보고
+    # normalize_conditions()가 LLM 재호출 없이 이 값을 그대로 쓴다
+    # (app/pipeline/normalize_step1.py 참고). liked_text/disliked_text가 둘 다
+    # 비어 프런트가 확인 화면을 스킵한 경우엔 None으로 둔다.
+    resolved_liked_tags: list[PreferenceTag] | None = None
+    resolved_disliked_tags: list[PreferenceTag] | None = None
 
     # 프런트가 시작<종료만 통과시키지만, 요청을 직접 조작해 우회할 수 있으므로
     # 여기서 다시 검증한다(NormalizedConditions.validate_region과 같은 패턴).
@@ -181,6 +211,26 @@ class ScheduleCreateRequest(BaseModel):
         if end <= start:
             raise ValueError("time_range의 종료 시간은 시작 시간보다 늦어야 합니다")
         return self
+
+
+class NormalizePreviewRequest(BaseModel):
+    liked_text: str = Field(default="", max_length=50)
+    disliked_text: str = Field(default="", max_length=50)
+    api_key: str  # 클라이언트가 로컬에서 복호화해 실어 보낸 평문. 서버는 저장하지 않는다.
+
+
+class NormalizePreviewResponse(BaseModel):
+    liked_tags: list[PreferenceTag]
+    disliked_tags: list[PreferenceTag]
+    # verifiable=true 상한(MAX_VERIFIABLE_TAGS) 때문에 이번 일정에 반영되지 않는 태그.
+    dropped_liked_tags: list[PreferenceTag]
+    dropped_disliked_tags: list[PreferenceTag]
+    # liked_tags/disliked_tags 둘 다에 같은 문구로 들어간 태그(직접 충돌) —
+    # 프런트가 이 태그들만 선택 UI로 강조해서 사용자가 셋 중 하나를 고르게 한다.
+    conflicting_tags: list[str]
+    # 문구는 다르지만 의미가 겹칠 수 있는 쌍(예: 초밥/해산물, 항목 2) — 강제 선택은
+    # 아니고 설명만 보여준다. 실제 조정은 이미 있는 태그 이동/제외 버튼으로 한다.
+    semantic_conflicts: list[SemanticConflict] = []
 
 
 class RoutesRequest(BaseModel):
@@ -1103,6 +1153,49 @@ async def create_schedule(
         place_pool=place_pool,
         required_places=[],
         applied_required_place_ids=[],
+    )
+
+
+@router.post("/schedules/normalize-preview", response_model=NormalizePreviewResponse)
+async def preview_schedule_normalization(
+    body: NormalizePreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+):
+    """좋아요·싫어요 자유 텍스트만 Step1(정규화)로 미리 돌려서, 실제 일정 생성
+    파이프라인(Step2~4)을 태우기 전에 사용자가 분류 결과·직접 충돌·초과 태그·의미
+    충돌을 확인·수정할 수 있게 한다(docs/입력_엣지케이스_개선계획_2026-08-14.md 항목
+    1·2·3·4). 의미 충돌 판단(detect_semantic_conflicts)은 양쪽에 verifiable 태그가
+    있을 때만 조건부로 도는 LOW 티어 보조 호출이라, 평소엔 LLM 1콜과 다르지 않다.
+    """
+    credential = _get_user_credential(session, current_user.id)
+    loop = asyncio.get_running_loop()
+    extracted = await loop.run_in_executor(
+        None, extract_tags, credential.provider, body.api_key, body.liked_text, body.disliked_text
+    )
+
+    liked_tags = cap_verifiable_tags(extracted.liked_tags)
+    disliked_tags = cap_verifiable_tags(extracted.disliked_tags)
+    conflicting = {t.tag for t in liked_tags} & {t.tag for t in disliked_tags}
+
+    verifiable_liked = [t.tag for t in liked_tags if t.verifiable]
+    verifiable_disliked = [t.tag for t in disliked_tags if t.verifiable]
+    semantic_conflicts = await loop.run_in_executor(
+        None,
+        detect_semantic_conflicts,
+        credential.provider,
+        body.api_key,
+        verifiable_liked,
+        verifiable_disliked,
+    )
+
+    return NormalizePreviewResponse(
+        liked_tags=liked_tags,
+        disliked_tags=disliked_tags,
+        dropped_liked_tags=dropped_verifiable_tags(extracted.liked_tags),
+        dropped_disliked_tags=dropped_verifiable_tags(extracted.disliked_tags),
+        conflicting_tags=sorted(conflicting),
+        semantic_conflicts=semantic_conflicts,
     )
 
 

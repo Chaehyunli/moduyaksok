@@ -47,6 +47,24 @@
 #             (한강공원 등도 후보로 탐색되게 해달라는 요청), "공원"도 방탈출과
 #             같은 place_type/verifiable=true로 분류돼야 검색이 실제로 걸린다 —
 #             verifiable=true 설명과 예시 5번(방탈출) 안내문 둘 다에 "공원" 추가.
+# 2026-08-20, LLM 호출부를 extract_tags()로 분리, dropped_verifiable_tags() 추가 —
+#             POST /schedules/normalize-preview(제출 전 정규화 결과·직접 충돌·초과
+#             태그를 사용자에게 보여주는 화면용, docs/입력_엣지케이스_개선계획_
+#             2026-08-14.md 항목 1·3·4)가 이 함수들을 재사용한다.
+#             normalize_conditions()는 raw_input에 resolved_liked_tags/
+#             resolved_disliked_tags(사용자가 그 화면에서 확정한 태그)가 있으면
+#             LLM을 다시 안 부르고 그 값을 그대로 쓰도록 변경 — 재호출 시 LLM
+#             비결정성으로 사용자의 충돌 해결 선택이 무시될 수 있어서, "확인 화면에서
+#             확정한 값은 그대로 간다"를 보장하려면 여기서 우회 경로가 필요했다.
+# 2026-08-20(2차), detect_semantic_conflicts() 추가(항목 2 — 초밥/해산물처럼 좋아요
+#             태그가 싫어요 태그의 하위 개념일 때). generate_algorithm_step2.
+#             _matches_verifiable_dislike()가 장소 title/category 텍스트에 싫어요
+#             태그 문자열이 있으면 통째로 제외하는데, 이 필터링 로직 자체는 안
+#             건드리기로 결정(사용자 확인) — 대신 정규화 미리보기 화면에 "겹칠 수
+#             있어요" 설명만 보여주고, 실제 조정은 그 화면에 이미 있는 태그
+#             이동/제외 버튼(항목 1·3에서 구현)으로 사용자가 직접 하게 한다. 좋아요·
+#             싫어요 둘 다 verifiable 태그가 있을 때만 호출되는 조건부 LOW 티어
+#             보조 판단이라 평소엔 비용이 안 든다.
 # ------------------------------------------------------------------
 from pydantic import BaseModel
 
@@ -176,22 +194,22 @@ class _ExtractedTags(BaseModel):
     disliked_tags: list[PreferenceTag]
 
 
-def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> NormalizedConditions:
-    """POST /schedules 요청 바디를 NormalizedConditions로 변환한다.
-
-    raw_input의 purpose/headcount/time_range/region/budget_per_person은 프런트에서
-    이미 구조화해서 보낸 값이라 그대로 통과시키고, liked_text/disliked_text(자유
-    텍스트, 각 최대 50자)만 LLM 1회 호출로 구조화 태그(PreferenceTag)로 뽑는다.
+def extract_tags(
+    provider: str, api_key: str, liked_text: str, disliked_text: str
+) -> _ExtractedTags:
+    """좋아하는/싫어하는 것 자유 텍스트를 LLM 1회 호출로 구조화 태그로 뽑는다(cap
+    적용 전 원본). normalize_conditions()와 정규화 미리보기 엔드포인트
+    (routers/schedule.py의 POST /schedules/normalize-preview, 사용자가 제출 전
+    분류 결과·충돌을 확인하는 화면용, docs/입력_엣지케이스_개선계획_2026-08-14.md
+    항목 1·3·4) 둘 다 이 함수를 쓴다 — 같은 텍스트가 두 곳에서 다르게 분류될 일이
+    없게 추출 로직을 한 곳에 둔다.
 
     자유 텍스트가 그대로 프롬프트에 들어가니 프롬프트 인젝션 가능성을 염두에 뒀다 —
     structured output으로 출력 스키마를 강제하면 "다른 텍스트를 출력하게" 만들 수는
     있어도 이후 파이프라인 흐름 자체를 바꾸진 못한다.
     """
-    liked_text = raw_input.get("liked_text", "")
-    disliked_text = raw_input.get("disliked_text", "")
     user_prompt = f"좋아하는 것: {liked_text or '(없음)'}\n싫어하는 것: {disliked_text or '(없음)'}"
-
-    extracted = call_structured(
+    return call_structured(
         provider=provider,
         api_key=api_key,
         model=get_model(provider, TIER),
@@ -200,12 +218,129 @@ def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> Normal
         schema=_ExtractedTags,
     )
 
+
+class SemanticConflict(BaseModel):
+    liked_tag: str
+    disliked_tag: str
+    # 사용자에게 그대로 보여줄 한국어 설명. LLM이 직접 문장을 만든다(예: "초밥은
+    # 해산물에 포함될 수 있어요") — 프런트가 별도 템플릿 문구를 조립하지 않는다.
+    explanation: str
+
+
+class _SemanticConflictBatch(BaseModel):
+    conflicts: list[SemanticConflict]
+
+
+# 좋아하는/싫어하는 태그가 상·하위 개념이거나 강하게 겹칠 때(예: 초밥/해산물)를
+# 판단하는 프롬프트. "카테고리가 같다"와 "포함 관계다"를 구분하도록 반례를
+# 직접 예시로 박아넣었다(예시 4번, 스타벅스/투썸플레이스) — 이걸 안 넣으면 같은
+# 업종이기만 하면 다 겹친다고 오탐할 위험이 컸다.
+_SEMANTIC_CONFLICT_TIER = ModelTier.LOW
+
+_SEMANTIC_CONFLICT_PROMPT = """\
+# Role
+너는 음식·장소 카테고리 사이의 포함 관계를 판단하는 도우미다.
+
+# Task
+좋아하는 것 목록과 싫어하는 것 목록을 받는다. 좋아하는 태그가 싫어하는 태그의 \
+하위 개념이거나(예: 초밥은 해산물에 포함될 수 있음), 실제로 같은 장소가 검색될 \
+정도로 강하게 겹치는 쌍만 골라라.
+- 단순히 같은 업종·카테고리라는 이유만으로 겹친다고 보면 안 된다. 서로 다른 \
+구체적인 대상(예: 스타벅스 vs 투썸플레이스)은 업종이 같아도 겹치지 않는다.
+- 애매하거나 약한 연관은 포함하지 마라 — 확실한 쌍만 골라라.
+- 겹치는 쌍마다 사용자에게 그대로 보여줄 짧은 한국어 설명을 써라 \
+(예: "초밥은 해산물에 포함될 수 있어요").
+
+# Format
+conflicts: {liked_tag, disliked_tag, explanation} 객체 배열. 겹치는 쌍이 없으면 빈 배열.
+
+# Examples
+
+좋아하는 것: 초밥, 파스타 / 싫어하는 것: 해산물
+출력: conflicts=[{liked_tag: "초밥", disliked_tag: "해산물", \
+explanation: "초밥은 해산물에 포함될 수 있어요"}] \
+(파스타는 해산물과 무관하므로 포함하지 않는다)
+
+좋아하는 것: 삼겹살 / 싫어하는 것: 해산물
+출력: conflicts=[] (삼겹살은 해산물과 무관하다)
+
+좋아하는 것: 새우튀김 / 싫어하는 것: 해산물
+출력: conflicts=[{liked_tag: "새우튀김", disliked_tag: "해산물", \
+explanation: "새우튀김은 해산물에 포함될 수 있어요"}]
+
+좋아하는 것: 스타벅스 / 싫어하는 것: 투썸플레이스
+출력: conflicts=[] \
+(둘 다 카페 브랜드지만 서로 다른 매장이라 겹치지 않는다 — 업종이 같다고 무조건 겹치는 건 아니다)
+"""
+
+
+def detect_semantic_conflicts(
+    provider: str, api_key: str, liked_tags: list[str], disliked_tags: list[str]
+) -> list[SemanticConflict]:
+    """좋아요·싫어요 둘 다에 verifiable 태그가 있을 때만 호출되는 조건부 보조 판단
+    (docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 2, 2026-08-20). extract_tags()와
+    같은 호출에 얹지 않고 별도 LOW 티어 호출로 분리했다 — generate_step2가 "장소
+    선택"과 "시간 배정"을 분리한 것과 같은 이유로, 한 호출에 추출과 관계 판단을
+    같이 시키면 LOW 티어 모델의 추출 품질이 흔들릴 위험이 있다(백엔드 CLAUDE.md
+    "모델 티어" 절 참고). 둘 중 하나라도 비어 있으면 겹칠 게 없으니 호출 자체를
+    생략한다 — 평소(좋아요만 있거나 싫어요만 있는 흔한 경우)엔 추가 비용이 없다.
+    """
+    if not liked_tags or not disliked_tags:
+        return []
+    user_prompt = f"좋아하는 것: {', '.join(liked_tags)} / 싫어하는 것: {', '.join(disliked_tags)}"
+    result = call_structured(
+        provider=provider,
+        api_key=api_key,
+        model=get_model(provider, _SEMANTIC_CONFLICT_TIER),
+        system=_SEMANTIC_CONFLICT_PROMPT,
+        user=user_prompt,
+        schema=_SemanticConflictBatch,
+    )
+    return result.conflicts
+
+
+def dropped_verifiable_tags(tags: list[PreferenceTag]) -> list[PreferenceTag]:
+    """cap_verifiable_tags()가 잘라내는 것과 같은 규칙(verifiable=true 앞
+    MAX_VERIFIABLE_TAGS개만 유지)으로, 실제로 잘려나가는 태그만 골라낸다 —
+    정규화 미리보기 화면이 "이 조건들은 반영되지 않아요"를 보여주는 데 쓴다."""
+    verifiable = [t for t in tags if t.verifiable]
+    return verifiable[MAX_VERIFIABLE_TAGS:]
+
+
+def normalize_conditions(provider: str, api_key: str, raw_input: dict) -> NormalizedConditions:
+    """POST /schedules 요청 바디를 NormalizedConditions로 변환한다.
+
+    raw_input의 purpose/headcount/time_range/region/budget_per_person은 프런트에서
+    이미 구조화해서 보낸 값이라 그대로 통과시킨다. liked_tags/disliked_tags는:
+    - raw_input에 resolved_liked_tags/resolved_disliked_tags(사용자가 정규화
+      미리보기 화면에서 충돌·오분류를 직접 확정한 태그 목록, 둘 중 하나라도 있으면
+      "확정됨"으로 본다)가 있으면 그 값을 그대로 쓰고 LLM을 다시 안 부른다 — 여기서
+      다시 추출하면 LLM 비결정성 때문에 사용자가 화면에서 고른 선택(예: "초밥을
+      좋아요로 반영")이 결과에 안 반영될 수 있다.
+    - 없으면(정규화 확인 화면을 안 거친 요청 — 예: liked_text/disliked_text가 둘 다
+      비어서 프런트가 화면을 스킵한 경우) extract_tags()로 LLM 1회 호출.
+    """
+    resolved_liked = raw_input.get("resolved_liked_tags")
+    resolved_disliked = raw_input.get("resolved_disliked_tags")
+    if resolved_liked is not None or resolved_disliked is not None:
+        liked_tags = resolved_liked or []
+        disliked_tags = resolved_disliked or []
+    else:
+        extracted = extract_tags(
+            provider,
+            api_key,
+            raw_input.get("liked_text", ""),
+            raw_input.get("disliked_text", ""),
+        )
+        liked_tags = extracted.liked_tags
+        disliked_tags = extracted.disliked_tags
+
     return NormalizedConditions(
         purpose=raw_input["purpose"],
         headcount=raw_input["headcount"],
         time_range=tuple(raw_input["time_range"]),
         region=raw_input["region"],
-        liked_tags=extracted.liked_tags,
-        disliked_tags=extracted.disliked_tags,
+        liked_tags=liked_tags,
+        disliked_tags=disliked_tags,
         budget_per_person=raw_input["budget_per_person"],
     )

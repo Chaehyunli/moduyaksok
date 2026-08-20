@@ -9,8 +9,15 @@
 # ------------------------------------------------------------------
 from datetime import datetime
 
-from app.pipeline.normalize_step1 import _SYSTEM_PROMPT, _ExtractedTags, normalize_conditions
-from app.pipeline.schemas import PreferenceTag
+from app.pipeline.normalize_step1 import (
+    _SYSTEM_PROMPT,
+    _ExtractedTags,
+    _SemanticConflictBatch,
+    detect_semantic_conflicts,
+    dropped_verifiable_tags,
+    normalize_conditions,
+)
+from app.pipeline.schemas import MAX_VERIFIABLE_TAGS, PreferenceTag
 
 _RAW_INPUT = {
     "purpose": "date",
@@ -146,3 +153,100 @@ def test_system_prompt_requires_preference_kind_and_priority():
     assert "preference_kind" in _SYSTEM_PROMPT
     assert "priority" in _SYSTEM_PROMPT
     assert "중요도 1~5" in _SYSTEM_PROMPT
+
+
+def test_normalize_conditions_uses_resolved_tags_without_calling_llm(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError(
+            "resolved_liked_tags/resolved_disliked_tags가 있으면 LLM을 부르면 안 됨"
+        )
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fail_if_called)
+
+    resolved_liked = [PreferenceTag(tag="초밥", verifiable=True, is_meal=True)]
+    raw = {**_RAW_INPUT, "resolved_liked_tags": resolved_liked, "resolved_disliked_tags": []}
+
+    result = normalize_conditions("anthropic", "sk-ant-fake", raw)
+
+    assert result.liked_tags == resolved_liked
+    assert result.disliked_tags == []
+
+
+def test_normalize_conditions_falls_back_to_llm_when_no_resolved_tags(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.normalize_step1.call_structured",
+        lambda **kwargs: _ExtractedTags(liked_tags=_SAMPLE_LIKED, disliked_tags=_SAMPLE_DISLIKED),
+    )
+
+    result = normalize_conditions("anthropic", "sk-ant-fake", _RAW_INPUT)
+
+    assert result.liked_tags == _SAMPLE_LIKED
+
+
+def test_dropped_verifiable_tags_returns_tags_beyond_cap():
+    tags = [PreferenceTag(tag=f"태그{i}", verifiable=True) for i in range(MAX_VERIFIABLE_TAGS + 2)]
+
+    dropped = dropped_verifiable_tags(tags)
+
+    assert [t.tag for t in dropped] == [
+        f"태그{MAX_VERIFIABLE_TAGS}",
+        f"태그{MAX_VERIFIABLE_TAGS + 1}",
+    ]
+
+
+def test_dropped_verifiable_tags_ignores_non_verifiable():
+    tags = [PreferenceTag(tag="조용한 곳", verifiable=False)]
+
+    assert dropped_verifiable_tags(tags) == []
+
+
+# ── detect_semantic_conflicts ───────────────────────────────────────────
+
+
+def test_detect_semantic_conflicts_skips_llm_call_when_liked_empty(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("좋아요가 비었으면 LLM을 부르면 안 됨")
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fail_if_called)
+
+    result = detect_semantic_conflicts("anthropic", "sk-ant-fake", [], ["해산물"])
+
+    assert result == []
+
+
+def test_detect_semantic_conflicts_skips_llm_call_when_disliked_empty(monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("싫어요가 비었으면 LLM을 부르면 안 됨")
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fail_if_called)
+
+    result = detect_semantic_conflicts("anthropic", "sk-ant-fake", ["초밥"], [])
+
+    assert result == []
+
+
+def test_detect_semantic_conflicts_returns_llm_result_when_both_sides_present(monkeypatch):
+    captured: dict = {}
+
+    def fake_call_structured(**kwargs):
+        captured.update(kwargs)
+        return _SemanticConflictBatch(
+            conflicts=[
+                {
+                    "liked_tag": "초밥",
+                    "disliked_tag": "해산물",
+                    "explanation": "초밥은 해산물에 포함될 수 있어요",
+                }
+            ]
+        )
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fake_call_structured)
+
+    result = detect_semantic_conflicts("anthropic", "sk-ant-fake", ["초밥", "파스타"], ["해산물"])
+
+    assert len(result) == 1
+    assert result[0].liked_tag == "초밥"
+    assert result[0].disliked_tag == "해산물"
+    assert (
+        "초밥" in captured["user"] and "파스타" in captured["user"] and "해산물" in captured["user"]
+    )

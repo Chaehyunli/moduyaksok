@@ -121,6 +121,16 @@ MAX_VERIFIABLE_TAGS = 5
 # ── Step 1. 조건 정규화 (normalize_conditions) 출력 ────────────────────────
 
 
+def cap_verifiable_tags(tags: list[PreferenceTag]) -> list[PreferenceTag]:
+    """verifiable=true 태그를 앞 MAX_VERIFIABLE_TAGS개만 남긴다(순서=중요도, Step1이
+    이미 그렇게 정렬해 뽑음). verifiable=false는 검색 호출을 안 만드니 제한 없이 그대로
+    둔다. NormalizedConditions.cap_verifiable_tags(field validator)와 정규화 미리보기
+    엔드포인트(routers/schedule.py) 둘 다 이 함수 하나로 같은 규칙을 쓴다."""
+    verifiable = [t for t in tags if t.verifiable][:MAX_VERIFIABLE_TAGS]
+    non_verifiable = [t for t in tags if not t.verifiable]
+    return verifiable + non_verifiable
+
+
 class PreferenceTag(BaseModel):
     tag: str
     # place_candidates의 카테고리/이름 같은 데이터로 확인 가능한 객관적 태그면 True
@@ -189,10 +199,8 @@ class NormalizedConditions(BaseModel):
     # 상한과 무관하게 그대로 둔다.
     @field_validator("liked_tags", "disliked_tags")
     @classmethod
-    def cap_verifiable_tags(cls, v: list[PreferenceTag]) -> list[PreferenceTag]:
-        verifiable = [t for t in v if t.verifiable][:MAX_VERIFIABLE_TAGS]
-        non_verifiable = [t for t in v if not t.verifiable]
-        return verifiable + non_verifiable
+    def _cap_verifiable_tags(cls, v: list[PreferenceTag]) -> list[PreferenceTag]:
+        return cap_verifiable_tags(v)
 
 
 # ── Step 2. 후보 생성 (generate_candidates) 출력 ───────────────────────────

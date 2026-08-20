@@ -33,7 +33,9 @@ from uuid import UUID
 import pytest
 
 from app.models.llm_credential import LLMCredential
+from app.pipeline.normalize_step1 import SemanticConflict, _ExtractedTags
 from app.pipeline.schemas import (
+    MAX_VERIFIABLE_TAGS,
     Activity,
     Candidate,
     InfeasibleResponse,
@@ -198,6 +200,188 @@ def test_create_schedule_rejects_non_increasing_time_range(
     response = client.post("/schedules", json=body, headers=headers)
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("headcount", [0, -1, 31])
+def test_create_schedule_rejects_headcount_out_of_range(client, session, monkeypatch, headcount):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    body = {**_CREATE_BODY, "headcount": headcount}
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("budget_per_person", [0, 999, 1_000_001])
+def test_create_schedule_rejects_budget_per_person_out_of_range(
+    client, session, monkeypatch, budget_per_person
+):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    body = {**_CREATE_BODY, "budget_per_person": budget_per_person}
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("headcount", [1, 30])
+@pytest.mark.parametrize("budget_per_person", [1_000, 1_000_000])
+def test_create_schedule_accepts_headcount_and_budget_boundaries(
+    client, session, monkeypatch, headcount, budget_per_person
+):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    _mock_pipeline_success(monkeypatch)
+    body = {**_CREATE_BODY, "headcount": headcount, "budget_per_person": budget_per_person}
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 200
+
+
+def test_normalize_preview_flags_direct_conflict(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    monkeypatch.setattr(
+        "app.routers.schedule.extract_tags",
+        lambda provider, api_key, liked_text, disliked_text: _ExtractedTags(
+            liked_tags=[PreferenceTag(tag="초밥", verifiable=True, is_meal=True)],
+            disliked_tags=[PreferenceTag(tag="초밥", verifiable=True, is_meal=True)],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.routers.schedule.detect_semantic_conflicts",
+        lambda provider, api_key, liked_tags, disliked_tags: [],
+    )
+
+    response = client.post(
+        "/schedules/normalize-preview",
+        json={"liked_text": "초밥", "disliked_text": "초밥", "api_key": "sk-ant-fake"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["conflicting_tags"] == ["초밥"]
+
+
+def test_normalize_preview_reports_dropped_tags_beyond_cap(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    over_cap = [
+        PreferenceTag(tag=f"태그{i}", verifiable=True) for i in range(MAX_VERIFIABLE_TAGS + 1)
+    ]
+    monkeypatch.setattr(
+        "app.routers.schedule.extract_tags",
+        lambda provider, api_key, liked_text, disliked_text: _ExtractedTags(
+            liked_tags=over_cap, disliked_tags=[]
+        ),
+    )
+
+    response = client.post(
+        "/schedules/normalize-preview",
+        json={"liked_text": "많은 태그", "disliked_text": "", "api_key": "sk-ant-fake"},
+        headers=headers,
+    )
+
+    body = response.json()
+    assert len(body["liked_tags"]) == MAX_VERIFIABLE_TAGS
+    assert [t["tag"] for t in body["dropped_liked_tags"]] == [f"태그{MAX_VERIFIABLE_TAGS}"]
+    assert body["conflicting_tags"] == []
+
+
+def test_normalize_preview_includes_semantic_conflicts(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    monkeypatch.setattr(
+        "app.routers.schedule.extract_tags",
+        lambda provider, api_key, liked_text, disliked_text: _ExtractedTags(
+            liked_tags=[PreferenceTag(tag="초밥", verifiable=True, is_meal=True)],
+            disliked_tags=[PreferenceTag(tag="해산물", verifiable=True, is_meal=True)],
+        ),
+    )
+    captured: dict = {}
+
+    def fake_detect(provider, api_key, liked_tags, disliked_tags):
+        captured["liked_tags"] = liked_tags
+        captured["disliked_tags"] = disliked_tags
+        return [
+            SemanticConflict(
+                liked_tag="초밥",
+                disliked_tag="해산물",
+                explanation="초밥은 해산물에 포함될 수 있어요",
+            )
+        ]
+
+    monkeypatch.setattr("app.routers.schedule.detect_semantic_conflicts", fake_detect)
+
+    response = client.post(
+        "/schedules/normalize-preview",
+        json={"liked_text": "초밥", "disliked_text": "해산물", "api_key": "sk-ant-fake"},
+        headers=headers,
+    )
+
+    body = response.json()
+    assert body["semantic_conflicts"] == [
+        {
+            "liked_tag": "초밥",
+            "disliked_tag": "해산물",
+            "explanation": "초밥은 해산물에 포함될 수 있어요",
+        }
+    ]
+    assert captured == {"liked_tags": ["초밥"], "disliked_tags": ["해산물"]}
+
+
+def test_normalize_preview_requires_auth(client):
+    response = client.post(
+        "/schedules/normalize-preview",
+        json={"liked_text": "초밥", "disliked_text": "", "api_key": "sk-ant-fake"},
+    )
+    assert response.status_code == 401
+
+
+def test_create_schedule_uses_resolved_tags_without_reextracting(client, session, monkeypatch):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+
+    def fail_if_normalize_called(provider, api_key, raw_input):
+        raise AssertionError(
+            "resolved tags가 있으면 normalize_conditions가 LLM을 다시 부르면 안 됨"
+        )
+
+    resolved_liked = [PreferenceTag(tag="초밥", verifiable=True, is_meal=True)]
+    captured_conditions: dict = {}
+
+    async def fake_generate(provider, api_key, session_id, raw_input):
+        from app.pipeline.normalize_step1 import normalize_conditions as real_normalize
+
+        assert raw_input["resolved_liked_tags"] == [
+            t.model_dump(mode="json") for t in resolved_liked
+        ]
+        conditions = real_normalize(provider, api_key, raw_input)
+        captured_conditions["value"] = conditions
+        return (
+            ScheduleResponse(session_id="x", candidates=[_candidate()], place_pool={}),
+            conditions,
+            [],
+        )
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fail_if_normalize_called)
+    monkeypatch.setattr("app.routers.schedule.generate_schedule_candidates", fake_generate)
+
+    body = {
+        **_CREATE_BODY,
+        "liked_text": "초밥",
+        "disliked_text": "",
+        "resolved_liked_tags": [t.model_dump(mode="json") for t in resolved_liked],
+        "resolved_disliked_tags": [],
+    }
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 200
+    assert captured_conditions["value"].liked_tags == resolved_liked
 
 
 def test_create_schedule_success_returns_candidates_and_persists_session(

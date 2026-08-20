@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildNormalizePreviewProgressMessages,
   buildRegenerationProgressMessages,
   buildReplacementProgressMessages,
 } from './progressMessages'
@@ -21,5 +22,21 @@ describe('작업별 진행 문구', () => {
     const messages = buildReplacementProgressMessages([])
     expect(messages).toContain('어울리는 새 장소를 찾고 있어요')
     expect(messages.join(' ')).not.toContain('뺀 자리')
+  })
+
+  it('정규화 미리보기 문구는 좋아요·싫어요가 둘 다 있으면 의미 충돌 확인 문구까지 넣는다', () => {
+    const messages = buildNormalizePreviewProgressMessages({
+      likedText: '초밥',
+      dislikedText: '해산물',
+    })
+    expect(messages).toContain('"초밥"에서 조건을 뽑고 있어요')
+    expect(messages).toContain('"해산물"에서 조건을 뽑고 있어요')
+    expect(messages).toContain('겹치는 조건이 있는지 확인하고 있어요')
+  })
+
+  it('정규화 미리보기 문구는 한쪽만 있으면 의미 충돌 확인 문구를 안 넣는다', () => {
+    const messages = buildNormalizePreviewProgressMessages({ likedText: '초밥', dislikedText: '' })
+    expect(messages).toContain('"초밥"에서 조건을 뽑고 있어요')
+    expect(messages.join(' ')).not.toContain('겹치는 조건')
   })
 })

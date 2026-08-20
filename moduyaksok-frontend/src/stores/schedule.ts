@@ -128,6 +128,35 @@ export interface GenerationNotice {
   sessionId: string | null
 }
 
+// Step1(정규화)이 뽑아낸 좋아요/싫어요 태그 한 건. 제출 전 확인 화면
+// (NormalizeConfirmModal)이 사용자가 직접 충돌·오분류를 확인·수정하는 단위다
+// (docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 1·3·4).
+export interface PreferenceTag {
+  tag: string
+  verifiable: boolean
+  isMeal: boolean
+  preferenceKind: string | null
+  priority: number
+}
+
+export interface SemanticConflict {
+  likedTag: string
+  dislikedTag: string
+  explanation: string
+}
+
+export interface NormalizePreview {
+  likedTags: PreferenceTag[]
+  dislikedTags: PreferenceTag[]
+  // verifiable=true 상한(5개) 때문에 이번 일정에 반영되지 않는 태그.
+  droppedLikedTags: PreferenceTag[]
+  droppedDislikedTags: PreferenceTag[]
+  // liked_tags/disliked_tags 둘 다에 같은 문구로 들어간 태그 — 확인 화면이 이
+  // 태그들만 선택 UI로 강조한다.
+  conflictingTags: string[]
+  semanticConflicts: SemanticConflict[]
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mapApiActivity(raw: any): Activity {
   return {
@@ -277,6 +306,9 @@ export const useScheduleStore = defineStore('schedule', {
     // 전역 알림을 띄우고, 사용자가 원할 때 후보 목록으로 이동하게 하는 상태다.
     isGenerating: false,
     generationNotice: null as GenerationNotice | null,
+    // 409 응답의 adjustable_conditions를 보관해 후보 화면이 원인 필드로 곧장
+    // 돌아가게 한다.
+    scheduleAdjustableConditions: [] as string[],
   }),
   getters: {
     selectedCandidate(state): Candidate | undefined {
@@ -289,7 +321,37 @@ export const useScheduleStore = defineStore('schedule', {
     },
   },
   actions: {
-    async submitConditions(conditions: Conditions): Promise<boolean> {
+    async previewNormalization(likedText: string, dislikedText: string): Promise<NormalizePreview> {
+      const apiKey = await useCredentialSessionStore().ensureDecryptedApiKey()
+      const { data } = await api.post('/schedules/normalize-preview', {
+        liked_text: likedText,
+        disliked_text: dislikedText,
+        api_key: apiKey,
+      })
+      const mapTag = (tag: any): PreferenceTag => ({
+        tag: tag.tag,
+        verifiable: tag.verifiable,
+        isMeal: tag.is_meal,
+        preferenceKind: tag.preference_kind ?? null,
+        priority: tag.priority,
+      })
+      return {
+        likedTags: (data.liked_tags ?? []).map(mapTag),
+        dislikedTags: (data.disliked_tags ?? []).map(mapTag),
+        droppedLikedTags: (data.dropped_liked_tags ?? []).map(mapTag),
+        droppedDislikedTags: (data.dropped_disliked_tags ?? []).map(mapTag),
+        conflictingTags: data.conflicting_tags ?? [],
+        semanticConflicts: (data.semantic_conflicts ?? []).map((conflict: any) => ({
+          likedTag: conflict.liked_tag,
+          dislikedTag: conflict.disliked_tag,
+          explanation: conflict.explanation,
+        })),
+      }
+    },
+    async submitConditions(
+      conditions: Conditions,
+      resolved?: { liked: PreferenceTag[]; disliked: PreferenceTag[] },
+    ): Promise<boolean> {
       if (this.isGenerating) return false
       this.conditions = conditions
       this.selectedCandidateId = null
@@ -302,6 +364,7 @@ export const useScheduleStore = defineStore('schedule', {
       this.scheduleStatus = 'draft'
       this.routeSelectionDirtyCandidateIds = []
       this.generationNotice = null
+      this.scheduleAdjustableConditions = []
       this.isGenerating = true
       localStorage.removeItem(ACTIVE_DRAFT_SESSION_KEY)
 
@@ -317,6 +380,20 @@ export const useScheduleStore = defineStore('schedule', {
           disliked_text: conditions.dislikedText,
           budget_per_person: conditions.budgetPerPerson,
           api_key: apiKey,
+          resolved_liked_tags: resolved?.liked.map((tag) => ({
+            tag: tag.tag,
+            verifiable: tag.verifiable,
+            is_meal: tag.isMeal,
+            preference_kind: tag.preferenceKind,
+            priority: tag.priority,
+          })),
+          resolved_disliked_tags: resolved?.disliked.map((tag) => ({
+            tag: tag.tag,
+            verifiable: tag.verifiable,
+            is_meal: tag.isMeal,
+            preference_kind: tag.preferenceKind,
+            priority: tag.priority,
+          })),
         })
         this.sessionId = data.session_id
         localStorage.setItem(ACTIVE_DRAFT_SESSION_KEY, data.session_id)
@@ -334,6 +411,7 @@ export const useScheduleStore = defineStore('schedule', {
         if (err.response?.status === 409) {
           this.scheduleError =
             err.response.data?.reason ?? '이 조건으로는 일정을 만들 수 없어요.'
+          this.scheduleAdjustableConditions = err.response.data?.adjustable_conditions ?? []
         } else {
           this.scheduleError = '일정을 만드는 중 문제가 생겼어요. 잠시 후 다시 시도해주세요.'
         }
@@ -499,6 +577,7 @@ export const useScheduleStore = defineStore('schedule', {
     async regenerateSchedule() {
       if (!this.sessionId) return
       this.scheduleError = null
+      this.scheduleAdjustableConditions = []
       try {
         const apiKey = await useCredentialSessionStore().ensureDecryptedApiKey()
         const { data } = await api.post(`/schedules/${this.sessionId}/regenerate`, {
@@ -514,6 +593,7 @@ export const useScheduleStore = defineStore('schedule', {
       } catch (err: any) {
         if (err.response?.status === 409) {
           this.scheduleError = err.response.data?.reason ?? '필수 장소를 포함한 일정을 만들지 못했어요.'
+          this.scheduleAdjustableConditions = err.response.data?.adjustable_conditions ?? []
         } else if (err.response?.status === 422) {
           this.scheduleError = err.response.data?.detail ?? '필수 장소를 먼저 선택해주세요.'
         } else {

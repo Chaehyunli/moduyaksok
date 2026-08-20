@@ -33,7 +33,7 @@ watch(() => props.messages, start)
     <div class="h-2 w-full max-w-xs overflow-hidden rounded-full border-2 border-ink bg-paper">
       <div class="h-full w-1/3 animate-doodle-progress rounded-full bg-red" />
     </div>
-    <p class="font-hand text-base text-ink/70">{{ messages[index] ?? '일정을 만드는 중이에요...' }}</p>
+    <p class="font-hand text-base text-ink">{{ messages[index] ?? '일정을 만드는 중이에요...' }}</p>
   </div>
 </template>
 
