@@ -181,6 +181,25 @@ def test_create_schedule_rejects_preference_text_over_fifty_characters(
     assert response.json()["detail"][0]["loc"][-1] == field
 
 
+@pytest.mark.parametrize(
+    "time_range",
+    [
+        ["2026-08-15T18:00:00", "2026-08-15T18:00:00"],  # 동일 시간
+        ["2026-08-15T19:00:00", "2026-08-15T12:00:00"],  # 역전
+    ],
+)
+def test_create_schedule_rejects_non_increasing_time_range(
+    client, session, monkeypatch, time_range
+):
+    headers, user_id = _login(client, monkeypatch)
+    _register_credential(session, user_id)
+    body = {**_CREATE_BODY, "time_range": time_range}
+
+    response = client.post("/schedules", json=body, headers=headers)
+
+    assert response.status_code == 422
+
+
 def test_create_schedule_success_returns_candidates_and_persists_session(
     client, session, monkeypatch
 ):

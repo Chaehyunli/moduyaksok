@@ -113,6 +113,11 @@
 #             장소가 일반 필수 장소와 같은 별 그림을 써서 구분이 안 된다는
 #             지적. is_required와 별개 플래그로 둬서 프런트가 전용 그림을
 #             고를 수 있게 한다(app/lib/categoryImages.ts 참고).
+# 2026-08-20, ScheduleCreateRequest에 model_validator(validate_time_range) 추가 —
+#             프런트는 시작<종료만 통과시키는데, 요청 직접 조작(API 직호출)으로
+#             우회하면 동일 시간·역전된 time_range가 그대로 파이프라인까지 가는
+#             문제(docs/입력_엣지케이스_개선계획_2026-08-14.md 항목 5). 종료가
+#             시작보다 늦지 않으면 422.
 # ------------------------------------------------------------------
 import logging
 import secrets
@@ -124,7 +129,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlmodel import Session, select
 
 from app.db import get_session
@@ -167,6 +172,15 @@ class ScheduleCreateRequest(BaseModel):
     disliked_text: str = Field(default="", max_length=50)
     budget_per_person: int
     api_key: str  # 클라이언트가 로컬에서 복호화해 실어 보낸 평문. 서버는 저장하지 않는다.
+
+    # 프런트가 시작<종료만 통과시키지만, 요청을 직접 조작해 우회할 수 있으므로
+    # 여기서 다시 검증한다(NormalizedConditions.validate_region과 같은 패턴).
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "ScheduleCreateRequest":
+        start, end = self.time_range
+        if end <= start:
+            raise ValueError("time_range의 종료 시간은 시작 시간보다 늦어야 합니다")
+        return self
 
 
 class RoutesRequest(BaseModel):
