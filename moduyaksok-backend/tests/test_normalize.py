@@ -250,3 +250,41 @@ def test_detect_semantic_conflicts_returns_llm_result_when_both_sides_present(mo
     assert (
         "초밥" in captured["user"] and "파스타" in captured["user"] and "해산물" in captured["user"]
     )
+
+
+def test_detect_semantic_conflicts_passes_dessert_examples_to_llm_and_returns_all_pairs(
+    monkeypatch,
+):
+    captured: dict = {}
+
+    def fake_call_structured(**kwargs):
+        captured.update(kwargs)
+        return _SemanticConflictBatch(
+            conflicts=[
+                {
+                    "liked_tag": "디저트",
+                    "disliked_tag": tag,
+                    "explanation": f"{tag}는 디저트에 포함될 수 있어요",
+                }
+                for tag in ["와플", "케이크", "케익", "쿠키"]
+            ]
+        )
+
+    monkeypatch.setattr("app.pipeline.normalize_step1.call_structured", fake_call_structured)
+
+    result = detect_semantic_conflicts(
+        "anthropic",
+        "sk-ant-fake",
+        ["디저트"],
+        ["와플", "케이크", "케익", "쿠키"],
+    )
+
+    assert "디저트 / 싫어하는 것: 와플, 케이크, 케익, 쿠키" in captured["user"]
+    assert "디저트 / 싫어하는 것: 와플, 케이크, 케익, 쿠키" in captured["system"]
+    assert "좋아하는 것: 와플, 쿠키 / 싫어하는 것: 디저트" in captured["system"]
+    assert [(conflict.liked_tag, conflict.disliked_tag) for conflict in result] == [
+        ("디저트", "와플"),
+        ("디저트", "케이크"),
+        ("디저트", "케익"),
+        ("디저트", "쿠키"),
+    ]

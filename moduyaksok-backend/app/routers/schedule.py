@@ -126,8 +126,8 @@
 #             추가(항목 2 — 초밥/해산물처럼 의미가 겹치는 좋아요·싫어요).
 #             normalize_step1.detect_semantic_conflicts()가 양쪽 verifiable 태그를
 #             비교해 겹칠 수 있는 쌍만 뽑는다. 강제 선택 UI 대신 설명만 보여주고,
-#             실제 조정은 모달의 선택 필수 UI(좋아요 유지/싫어요 유지/둘 다 제외)로
-#             확정해 resolved 태그에 반영한다. Step2의 비선호 문자열 매칭 필터링
+#             실제 조정은 모달의 기존 태그 이동/제외 UI로 하고, 충돌이 해소된 최종
+#             태그만 resolved 태그에 반영한다. Step2의 비선호 문자열 매칭 필터링
 #             로직 자체는 이번엔 안 건드림.
 # ------------------------------------------------------------------
 import asyncio
@@ -242,8 +242,8 @@ class NormalizePreviewResponse(BaseModel):
     # 프런트가 이 태그들만 선택 UI로 강조해서 사용자가 셋 중 하나를 고르게 한다.
     conflicting_tags: list[str]
     # 문구는 다르지만 의미가 겹칠 수 있는 쌍(예: 초밥/해산물, 항목 2) — 프런트는
-    # 쌍마다 좋아요 유지/싫어요 유지/둘 다 제외 중 하나를 고르게 해 resolved 태그를
-    # 모순 없이 만든다. 이 판단은 LLM 보조 결과라 서버의 결정적 422 규칙에는 넣지
+    # 기존 태그 이동/제외로 충돌을 해소한 최종 목록을 resolved 태그로 보낸다. 이
+    # 판단은 LLM 보조 결과라 서버의 결정적 422 규칙에는 넣지
     # 않고, 동일 문구 직접 충돌만 ScheduleCreateRequest가 서버에서 422로 막는다.
     semantic_conflicts: list[SemanticConflict] = []
 
