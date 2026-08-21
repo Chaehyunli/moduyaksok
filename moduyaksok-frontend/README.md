@@ -77,12 +77,15 @@ Tailwind v4 `@theme`(`src/style.css`)에 정의되어 있어 `bg-paper`, `text-i
 | `StickyNote` | 회전된 스티키노트 카드. `rotate="-2deg"` 등 — 같은 카드 3개를 나란히 두지 말고 회전각을 다르게 줘서 배치 |
 | `DoodleBadge` | 상태 뱃지. `tone="ok\|warn\|neutral"` |
 | `DoodleAlert` | 경고/에러 배너. `#actions` 슬롯으로 대응 버튼 배치 |
-| `DoodleModal` | 모달. `open`, `title` prop, `@close` |
+| `DoodleModal` | 모달. `open`, `title` prop, `@close`. 세로 콘텐츠가 뷰포트보다 길어도 `max-h-[85vh] flex flex-col` + 슬롯 `overflow-y-auto`로 헤더는 고정 노출, 본문만 스크롤 |
 | `LoginModal` | `App.vue`에 전역으로 마운트된 로그인 모달(`DoodleModal` 래핑). 비로그인 상태로 보호된 라우트에 진입하면 별도 `/login` 페이지 대신 메인 화면 위에 이걸 띄운다(`stores/auth.ts`의 `showLoginModal`/`openLoginModal`) |
+| `PassphraseModal` | `App.vue`에 전역으로 마운트(`DoodleModal` 래핑). BYOK 키를 로컬 복호화해야 하는 시점에 `stores/credentialSession.ts`의 `showPassphraseModal`을 보고 열려, 사용자 패스프레이즈를 입력받아 그 스토어로 넘긴다 |
 | `AddCustomPlaceModal` | `CandidatesView.vue`의 좋아요 태그 그룹 "+" 버튼으로 여는 모달(`DoodleModal` 래핑). 이름/주소로 네이버 지역검색을 직접 호출해 결과 목록을 보여주고, 탭해서 고르면 `is_custom` 필수 장소로 저장(최대 3개) |
-| `NormalizeConfirmModal` | `ConditionWizardView.vue`가 일정 생성 직전에 여는 모달(`DoodleModal` 래핑). 좋아요·싫어요 텍스트를 정규화한 결과(`POST /schedules/normalize-preview`)를 보여주고, 같은 태그가 양쪽에 있으면(직접 충돌) 좋아요/싫어요/제외 3버튼 중 하나를 고르기 전엔 진행 버튼을 막는다. 의미 충돌도 같은 색 태그 박스와 설명으로 보여주며, 기존 태그 이동·제외로 충돌이 사라질 때까지 진행을 막는다. 비충돌 태그도 반대쪽 이동·제외 가능(오분류 수정), 상한(5개) 초과로 안 반영되는 태그도 안내 |
+| `NormalizeConfirmModal` | `ConditionWizardView.vue`가 일정 생성 직전에 여는 모달(`DoodleModal` 래핑). 좋아요·싫어요 텍스트를 정규화한 결과(`POST /schedules/normalize-preview`)를 보여주고, 같은 태그가 양쪽에 있으면(직접 충돌) 좋아요/싫어요/제외 3버튼 중 하나를 고르기 전엔 진행 버튼을 막는다. 의미 충돌도 같은 색 태그 박스와 설명으로 보여주며(조건 태깅 팔레트를 `tagColorStyle()` 재사용해 충돌 쌍을 같은 색으로 매칭), 기존 태그 이동·제외로 충돌이 사라질 때까지 진행을 막는다. 비충돌 태그도 반대쪽 이동·제외 가능(오분류 수정), 상한(5개) 초과로 안 반영되는 태그도 안내 |
 | `DoodleStepper` | 단계 진행 표시 (다단계 입력 폼용) |
 | `DoodleProgress` | 대기 중 순환 진행 문구 + 인디케이터 바. `messages`(string[]), `intervalMs` prop — 일정 생성/재생성처럼 응답까지 시간이 걸리는 작업에서 문구를 2.2초 간격으로 순환 표시 |
+| `DoodleAccordion` | 접고 펼치는 카드. `expanded`(v-model 아님, `update:expanded` emit)·`highlight` prop — `CandidatesView`/`CandidateDetailView`에서 태그·카테고리별 후보 목록 접기 |
+| `DoodleMap` | Naver Maps JS SDK 래핑 지도. `markers`(좌표+순서), `segments`(경로 좌표+이동수단) prop — `CandidateDetailView`/`PublicShareView`에서 장소 마커와 이동 경로 표시 |
 | `DoodleDivider` | 점선 구분선 |
 | `DoodleStar` / `DoodleArrow` / `DoodleUnderline` | 장식용 손그림 SVG (별, 화살표, 밑줄 강조) |
 
@@ -136,7 +139,9 @@ src/
                          PublicShareView 공용)
   views/                화면 (라우트 단위, settings/ 하위는 API 키 등록 흐름)
   router/               vue-router 설정 + 인증 가드
-  stores/app.ts          Pinia — 로그인/API 키 등록 상태, 조건 입력값, 일정 후보·경로(실제 API 연동)
+  stores/auth.ts         Pinia — 로그인 상태, 로그인 모달 열림/닫힘
+  stores/schedule.ts      Pinia — 조건 입력값, 일정 후보·경로(실제 API 연동)
+  stores/credentialSession.ts  Pinia — 세션 중 복호화한 BYOK 평문 키, 패스프레이즈 모달 열림/닫힘
   lib/api.ts            axios 클라이언트
   style.css             Tailwind + 디자인 토큰 + 노트 배경/흔들림 필터
 ```

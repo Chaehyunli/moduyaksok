@@ -173,8 +173,8 @@ ruff format --check .
 pytest -q
 ```
 
-기본 `pytest`는 provider와 외부 API를 mock하며 과금되는 DeepEval 평가 17개를 자동으로
-제외합니다. 현재 기본 테스트는 374개입니다.
+기본 `pytest`는 provider와 외부 API를 mock하며 과금되는 DeepEval 평가 19개를 자동으로
+제외합니다. 현재 기본 테스트는 447개입니다.
 
 실제 LLM 품질 평가는 별도로 실행합니다. API 사용 비용이 발생할 수 있습니다.
 
@@ -191,7 +191,7 @@ npm run build
 ```
 
 `npm run build`는 Vue·TypeScript 타입 검사와 프로덕션 번들을 함께 검증합니다. 현재
-프런트엔드 테스트는 17개입니다.
+프런트엔드 테스트는 17개 파일, 54개입니다.
 
 ## 인증과 보안 메모
 
